@@ -134,6 +134,7 @@ function SimpleBarChart({ chart }: { chart: ChartBlock }) {
 
       <div className="space-y-3">
         {chart.items.map((item) => {
+          const maxValue = 100
           const width = `${Math.max(4, Math.round((item.value / maxValue) * 100))}%`;
           return (
             <div key={`${chart.title}-${item.label}`}>
@@ -305,7 +306,7 @@ export default function RoleDashboard() {
                   <div className="flex h-full flex-col justify-between gap-4">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-sm text-slate-500">{card.label}</p>
+                        <p className="text-sm text-slate-500 ">{card.label}</p>
                         <p className="mt-2 text-3xl font-bold text-slate-900">{formatValue(card.value)}</p>
                       </div>
                       <div className={`rounded-2xl p-3 ${tone}`}>

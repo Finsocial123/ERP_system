@@ -1,0 +1,613 @@
+from datetime import date, datetime, timedelta
+from typing import Any
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import inspect, or_, text
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
+from app.dependencies.auth import current_school_id, get_current_user
+from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject
+from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
+from app.models.school import School
+from app.models.user import User, UserRole
+
+router = APIRouter(prefix="/dashboard", tags=["Phase 3 - Dashboard and Quick Analytics"])
+
+ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
+
+
+def _iso(value: date | datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat()
+
+
+def _count(db: Session, query) -> int:
+    return int(query.count() or 0)
+
+
+def _current_session(db: Session, school_id: int) -> AcademicSession | None:
+    today = date.today()
+    active = (
+        db.query(AcademicSession)
+        .filter(AcademicSession.school_id == school_id, AcademicSession.is_active.is_(True))
+        .order_by(AcademicSession.id.desc())
+        .first()
+    )
+    if active:
+        return active
+
+    by_date = (
+        db.query(AcademicSession)
+        .filter(
+            AcademicSession.school_id == school_id,
+            AcademicSession.start_date <= today,
+            AcademicSession.end_date >= today,
+        )
+        .order_by(AcademicSession.id.desc())
+        .first()
+    )
+    if by_date:
+        return by_date
+
+    return (
+        db.query(AcademicSession)
+        .filter(AcademicSession.school_id == school_id)
+        .order_by(AcademicSession.id.desc())
+        .first()
+    )
+
+
+def _session_payload(session: AcademicSession | None) -> dict[str, Any] | None:
+    if not session:
+        return None
+    return {
+        "id": session.id,
+        "name": session.name,
+        "start_date": _iso(session.start_date),
+        "end_date": _iso(session.end_date),
+        "is_active": session.is_active,
+    }
+
+
+def _full_student_name(student: Student) -> str:
+    return f"{student.first_name} {student.last_name or ''}".strip()
+
+
+def _admin_counts(db: Session, school_id: int) -> dict[str, int]:
+    return {
+        "academic_sessions": _count(db, db.query(AcademicSession).filter(AcademicSession.school_id == school_id)),
+        "departments": _count(db, db.query(Department).filter(Department.school_id == school_id)),
+        "classes": _count(db, db.query(SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True))),
+        "sections": _count(db, db.query(Section).filter(Section.school_id == school_id, Section.is_active.is_(True))),
+        "subjects": _count(db, db.query(Subject).filter(Subject.school_id == school_id, Subject.is_active.is_(True))),
+        "students": _count(db, db.query(Student).filter(Student.school_id == school_id, Student.is_active.is_(True))),
+        "teachers": _count(db, db.query(Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True))),
+    }
+
+
+def _new_admissions_count(db: Session, school_id: int, days: int = 30) -> int:
+    since_date = date.today() - timedelta(days=days)
+    since_datetime = datetime.combine(since_date, datetime.min.time())
+    return _count(
+        db,
+        db.query(Student).filter(
+            Student.school_id == school_id,
+            Student.is_active.is_(True),
+            or_(Student.admission_date >= since_date, Student.created_at >= since_datetime),
+        ),
+    )
+
+
+def _optional_table_count(
+    db: Session,
+    table_names: list[str],
+    school_id: int,
+    date_columns: list[str] | None = None,
+    date_value: date | None = None,
+    status_columns: list[str] | None = None,
+    status_values: list[str] | None = None,
+) -> int:
+    """Safe count for future Phase 4/6 tables.
+
+    Phase 3 needs cards for attendance and pending fees, but those modules are
+    created in later phases. This function returns 0 now and automatically starts
+    reading matching tables once the later phase tables exist.
+    """
+    inspector = inspect(db.bind)
+    existing_tables = set(inspector.get_table_names())
+
+    for table_name in table_names:
+        if table_name not in existing_tables:
+            continue
+
+        columns = {column["name"] for column in inspector.get_columns(table_name)}
+        where = []
+        params: dict[str, Any] = {}
+
+        if "school_id" in columns:
+            where.append("school_id = :school_id")
+            params["school_id"] = school_id
+
+        if date_columns and date_value:
+            date_column = next((column for column in date_columns if column in columns), None)
+            if date_column:
+                where.append(f"{date_column} = :date_value")
+                params["date_value"] = date_value
+
+        if status_columns and status_values:
+            status_column = next((column for column in status_columns if column in columns), None)
+            if status_column:
+                placeholders = []
+                for index, value in enumerate(status_values):
+                    key = f"status_{index}"
+                    placeholders.append(f":{key}")
+                    params[key] = value.upper()
+                where.append(f"UPPER({status_column}) IN ({', '.join(placeholders)})")
+
+        sql = f"SELECT COUNT(*) FROM {table_name}"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+
+        try:
+            return int(db.execute(text(sql), params).scalar() or 0)
+        except Exception:
+            return 0
+
+    return 0
+
+
+def _today_attendance_count(db: Session, school_id: int) -> int:
+    return _optional_table_count(
+        db,
+        table_names=["student_attendance", "student_attendances", "attendance", "attendance_records"],
+        school_id=school_id,
+        date_columns=["attendance_date", "date", "marked_date"],
+        date_value=date.today(),
+    )
+
+
+def _pending_fees_count(db: Session, school_id: int) -> int:
+    return _optional_table_count(
+        db,
+        table_names=["student_fee_records", "fee_records", "student_fees", "fees"],
+        school_id=school_id,
+        status_columns=["status", "payment_status"],
+        status_values=["PENDING", "PARTIAL", "DUE", "UNPAID"],
+    )
+
+
+def _teacher_for_user(db: Session, school_id: int, user: User) -> Teacher | None:
+    teacher = db.query(Teacher).filter(Teacher.school_id == school_id, Teacher.user_id == user.id).first()
+    if teacher:
+        return teacher
+
+    conditions = []
+    if user.email:
+        conditions.append(Teacher.email == user.email)
+    if user.phone:
+        conditions.append(Teacher.phone == user.phone)
+    if not conditions:
+        return None
+
+    return (
+        db.query(Teacher)
+        .filter(Teacher.school_id == school_id, Teacher.is_active.is_(True), or_(*conditions))
+        .first()
+    )
+
+
+def _student_for_user(db: Session, school_id: int, user: User) -> Student | None:
+    student = db.query(Student).filter(Student.school_id == school_id, Student.user_id == user.id).first()
+    if student:
+        return student
+
+    conditions = []
+    if user.email:
+        conditions.append(Student.email == user.email)
+    if user.phone:
+        conditions.append(Student.phone == user.phone)
+    if user.login_id:
+        conditions.append(Student.admission_no == user.login_id)
+    if not conditions:
+        return None
+
+    return (
+        db.query(Student)
+        .filter(Student.school_id == school_id, Student.is_active.is_(True), or_(*conditions))
+        .first()
+    )
+
+
+def _children_for_parent(db: Session, school_id: int, user: User) -> list[Student]:
+    guardians_query = db.query(ParentGuardian).filter(ParentGuardian.school_id == school_id, ParentGuardian.is_active.is_(True))
+    conditions = []
+    if user.email:
+        conditions.append(ParentGuardian.email == user.email)
+    if user.phone:
+        conditions.append(ParentGuardian.phone == user.phone)
+    if not conditions:
+        return []
+
+    guardians = guardians_query.filter(or_(*conditions)).all()
+    guardian_ids = [guardian.id for guardian in guardians]
+    if not guardian_ids:
+        return []
+
+    return (
+        db.query(Student)
+        .filter(Student.school_id == school_id, Student.guardian_id.in_(guardian_ids), Student.is_active.is_(True))
+        .order_by(Student.id.desc())
+        .all()
+    )
+
+
+def _teacher_student_count(db: Session, school_id: int, teacher: Teacher | None) -> int:
+    if not teacher:
+        return 0
+
+    scopes: set[tuple[int | None, int | None]] = set()
+    subject_assignments = db.query(TeacherSubject).filter(TeacherSubject.school_id == school_id, TeacherSubject.teacher_id == teacher.id).all()
+    class_assignments = db.query(ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id).all()
+
+    for assignment in subject_assignments:
+        if assignment.class_id:
+            scopes.add((assignment.class_id, assignment.section_id))
+    for assignment in class_assignments:
+        scopes.add((assignment.class_id, assignment.section_id))
+
+    student_ids: set[int] = set()
+    for class_id, section_id in scopes:
+        query = db.query(Student.id).filter(Student.school_id == school_id, Student.is_active.is_(True))
+        if class_id:
+            query = query.filter(Student.class_id == class_id)
+        if section_id:
+            query = query.filter(Student.section_id == section_id)
+        student_ids.update(row[0] for row in query.all())
+
+    return len(student_ids)
+
+
+def _recent_activities(db: Session, school_id: int, role: str, limit: int = 8) -> list[dict[str, Any]]:
+    activities: list[dict[str, Any]] = []
+
+    def add(kind: str, title: str, description: str | None, created_at: datetime | date | None):
+        activities.append(
+            {
+                "kind": kind,
+                "title": title,
+                "description": description,
+                "created_at": _iso(created_at),
+            }
+        )
+
+    session = _current_session(db, school_id)
+    if session:
+        add("academic_session", "Current academic session", session.name, session.created_at)
+
+    if role in ADMIN_ROLES or role == UserRole.TEACHER.value:
+        for student in db.query(Student).filter(Student.school_id == school_id).order_by(Student.created_at.desc()).limit(4).all():
+            add("student", "Student added", f"{_full_student_name(student)} · Admission No: {student.admission_no}", student.created_at)
+
+    if role in ADMIN_ROLES:
+        for teacher in db.query(Teacher).filter(Teacher.school_id == school_id).order_by(Teacher.created_at.desc()).limit(3).all():
+            add("teacher", "Teacher added", f"{teacher.full_name} · Employee ID: {teacher.employee_id}", teacher.created_at)
+
+    for subject in db.query(Subject).filter(Subject.school_id == school_id).order_by(Subject.created_at.desc()).limit(3).all():
+        add("subject", "Subject configured", subject.name, subject.created_at)
+
+    for school_class in db.query(SchoolClass).filter(SchoolClass.school_id == school_id).order_by(SchoolClass.created_at.desc()).limit(3).all():
+        add("class", "Class configured", school_class.name, school_class.created_at)
+
+    activities.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return activities[:limit]
+
+
+def _admin_charts(db: Session, school_id: int, counts: dict[str, int]) -> list[dict[str, Any]]:
+    class_rows = db.query(SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True)).order_by(SchoolClass.name.asc()).all()
+    students_by_class = []
+    for school_class in class_rows:
+        students_by_class.append(
+            {
+                "label": school_class.name,
+                "value": _count(
+                    db,
+                    db.query(Student).filter(
+                        Student.school_id == school_id,
+                        Student.class_id == school_class.id,
+                        Student.is_active.is_(True),
+                    ),
+                ),
+            }
+        )
+
+    setup_summary = [
+        {"label": "Classes", "value": counts["classes"]},
+        {"label": "Sections", "value": counts["sections"]},
+        {"label": "Subjects", "value": counts["subjects"]},
+        {"label": "Departments", "value": counts["departments"]},
+    ]
+
+    people_summary = [
+        {"label": "Students", "value": counts["students"]},
+        {"label": "Teachers", "value": counts["teachers"]},
+    ]
+
+    return [
+        {"title": "People overview", "type": "bar", "items": people_summary},
+        {"title": "Academic setup", "type": "bar", "items": setup_summary},
+        {"title": "Students by class", "type": "bar", "items": students_by_class or [{"label": "No classes", "value": 0}]},
+    ]
+
+
+def _card(key: str, label: str, value: int | str, helper: str = "", tone: str = "default") -> dict[str, Any]:
+    return {"key": key, "label": label, "value": value, "helper": helper, "tone": tone}
+
+
+def _admin_dashboard(db: Session, school_id: int) -> dict[str, Any]:
+    counts = _admin_counts(db, school_id)
+    session = _current_session(db, school_id)
+    new_admissions = _new_admissions_count(db, school_id)
+    today_attendance = _today_attendance_count(db, school_id)
+    pending_fees = _pending_fees_count(db, school_id)
+
+    cards = [
+        _card("teachers", "Total Teachers", counts["teachers"], "Active teaching staff"),
+        _card("students", "Total Students", counts["students"], "Active student records"),
+        _card("today_attendance", "Today Attendance", today_attendance, "Marked records for today", "info"),
+        _card("pending_fees", "Pending Fees", pending_fees, "Pending fee records when fee module is added", "warning"),
+        _card("new_admissions", "New Admissions", new_admissions, "Admissions in the last 30 days", "success"),
+        _card("current_session", "Current Academic Session", session.name if session else "Not set", "Active/latest session"),
+    ]
+
+    counts.update(
+        {
+            "today_attendance": today_attendance,
+            "pending_fees": pending_fees,
+            "new_admissions": new_admissions,
+        }
+    )
+
+    return {
+        "role_dashboard": "admin",
+        "title": "Admin Dashboard",
+        "description": "Quick analytics for students, staff, attendance, fees and academic setup.",
+        "cards": cards,
+        "counts": counts,
+        "current_academic_session": _session_payload(session),
+        "recent_activities": _recent_activities(db, school_id, UserRole.SCHOOL_ADMIN.value),
+        "charts": _admin_charts(db, school_id, counts),
+        "next_steps": ["Attendance Management", "Homework", "Fees", "Timetable", "Exams"],
+    }
+
+
+def _teacher_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]:
+    teacher = _teacher_for_user(db, school_id, user)
+    my_subjects = 0
+    my_classes = 0
+    total_students = 0
+
+    if teacher:
+        my_subjects = _count(db, db.query(TeacherSubject).filter(TeacherSubject.school_id == school_id, TeacherSubject.teacher_id == teacher.id))
+        my_classes = _count(db, db.query(ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id))
+        total_students = _teacher_student_count(db, school_id, teacher)
+
+    cards = [
+        _card("my_subjects", "My Subjects", my_subjects, "Assigned subject scopes"),
+        _card("my_classes", "My Classes", my_classes, "Class teacher assignments"),
+        _card("total_students", "My Students", total_students, "Students in assigned classes"),
+        _card("today_attendance", "Today Attendance", _today_attendance_count(db, school_id), "Phase 4 attendance data", "info"),
+        _card("pending_homework", "Pending Homework", 0, "Homework module comes in Phase 5", "warning"),
+    ]
+
+    return {
+        "role_dashboard": "teacher",
+        "title": "Teacher Dashboard",
+        "description": "Assigned classes, students, attendance and upcoming homework tools.",
+        "cards": cards,
+        "counts": {card["key"]: card["value"] for card in cards if isinstance(card["value"], int)},
+        "current_academic_session": _session_payload(_current_session(db, school_id)),
+        "recent_activities": _recent_activities(db, school_id, UserRole.TEACHER.value),
+        "charts": [
+            {
+                "title": "Teacher workload",
+                "type": "bar",
+                "items": [
+                    {"label": "Subjects", "value": my_subjects},
+                    {"label": "Classes", "value": my_classes},
+                    {"label": "Students", "value": total_students},
+                ],
+            }
+        ],
+        "next_steps": ["Mark attendance", "Create homework", "View timetable", "Check submissions"],
+    }
+
+
+def _student_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]:
+    student = _student_for_user(db, school_id, user)
+    class_label = "Not assigned"
+    if student and student.school_class:
+        class_label = student.school_class.name
+        if student.section:
+            class_label += f" - {student.section.name}"
+
+    cards = [
+        _card("homework", "Homework", 0, "Homework module comes in Phase 5"),
+        _card("attendance_percent", "Attendance %", 0, "Attendance module comes in Phase 4", "info"),
+        _card("pending_fees", "Pending Fees", _pending_fees_count(db, school_id), "Fee module comes in Phase 6", "warning"),
+        _card("notices", "Notices", 0, "Communication module comes in Phase 9"),
+        _card("current_class", "Current Class", class_label, "Student class and section"),
+    ]
+
+    return {
+        "role_dashboard": "student",
+        "title": "Student Dashboard",
+        "description": "Student quick view for homework, attendance, fees and notices.",
+        "cards": cards,
+        "counts": {card["key"]: card["value"] for card in cards if isinstance(card["value"], int)},
+        "current_academic_session": _session_payload(_current_session(db, school_id)),
+        "recent_activities": _recent_activities(db, school_id, UserRole.STUDENT.value),
+        "charts": [
+            {
+                "title": "Student summary",
+                "type": "bar",
+                "items": [
+                    {"label": "Homework", "value": 0},
+                    {"label": "Attendance", "value": 0},
+                    {"label": "Notices", "value": 0},
+                ],
+            }
+        ],
+        "next_steps": ["View homework", "Track attendance", "View fees", "Check notices"],
+    }
+
+
+def _parent_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]:
+    children = _children_for_parent(db, school_id, user)
+    cards = [
+        _card("children", "Children", len(children), "Linked active student profiles"),
+        _card("pending_fees", "Pending Fees", _pending_fees_count(db, school_id), "Fee module comes in Phase 6", "warning"),
+        _card("notices", "Notices", 0, "Communication module comes in Phase 9"),
+        _card("attendance_alerts", "Attendance Alerts", 0, "Low attendance warnings come in Phase 4", "info"),
+    ]
+
+    return {
+        "role_dashboard": "parent",
+        "title": "Parent Dashboard",
+        "description": "Parent quick view for child attendance, fees, notices and alerts.",
+        "cards": cards,
+        "counts": {card["key"]: card["value"] for card in cards if isinstance(card["value"], int)},
+        "current_academic_session": _session_payload(_current_session(db, school_id)),
+        "recent_activities": _recent_activities(db, school_id, UserRole.PARENT.value),
+        "charts": [
+            {
+                "title": "Parent summary",
+                "type": "bar",
+                "items": [
+                    {"label": "Children", "value": len(children)},
+                    {"label": "Fees", "value": 0},
+                    {"label": "Alerts", "value": 0},
+                ],
+            }
+        ],
+        "next_steps": ["Child attendance", "Fee status", "Homework", "Notices"],
+    }
+
+
+@router.get("/overview")
+def overview(
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    school = db.get(School, school_id)
+    role = current_user.role
+
+    if role == UserRole.TEACHER.value:
+        dashboard = _teacher_dashboard(db, school_id, current_user)
+    elif role == UserRole.STUDENT.value:
+        dashboard = _student_dashboard(db, school_id, current_user)
+    elif role == UserRole.PARENT.value:
+        dashboard = _parent_dashboard(db, school_id, current_user)
+    else:
+        dashboard = _admin_dashboard(db, school_id)
+
+    return {
+        "school": {
+            "id": school.id,
+            "name": school.name,
+            "type": school.institution_type,
+            "school_code": school.school_code,
+        }
+        if school
+        else None,
+        "user": {
+            "id": current_user.id,
+            "full_name": current_user.full_name,
+            "role": current_user.role,
+            "login_id": current_user.login_id,
+            "must_change_password": current_user.must_change_password,
+        },
+        "phase": "Phase 3 - Dashboard and Quick Analytics",
+        "quick_search_enabled": True,
+        **dashboard,
+    }
+
+
+@router.get("/quick-search")
+def quick_search(
+    q: str = Query(default="", min_length=0),
+    limit: int = Query(default=8, ge=1, le=20),
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    query_text = q.strip()
+    if not query_text:
+        return {"query": query_text, "results": []}
+
+    like = f"%{query_text}%"
+    results: list[dict[str, Any]] = []
+
+    def add(kind: str, title: str, subtitle: str, href: str | None = None):
+        if len(results) < limit:
+            results.append({"kind": kind, "title": title, "subtitle": subtitle, "href": href})
+
+    if current_user.role in ADMIN_ROLES or current_user.role == UserRole.TEACHER.value:
+        students = (
+            db.query(Student)
+            .filter(
+                Student.school_id == school_id,
+                Student.is_active.is_(True),
+                or_(
+                    Student.first_name.ilike(like),
+                    Student.last_name.ilike(like),
+                    Student.admission_no.ilike(like),
+                    Student.roll_number.ilike(like),
+                    Student.email.ilike(like),
+                ),
+            )
+            .order_by(Student.id.desc())
+            .limit(limit)
+            .all()
+        )
+        for student in students:
+            add("student", _full_student_name(student), f"Admission No: {student.admission_no}", "/students")
+
+    if current_user.role in ADMIN_ROLES:
+        teachers = (
+            db.query(Teacher)
+            .filter(
+                Teacher.school_id == school_id,
+                Teacher.is_active.is_(True),
+                or_(Teacher.full_name.ilike(like), Teacher.employee_id.ilike(like), Teacher.email.ilike(like)),
+            )
+            .order_by(Teacher.id.desc())
+            .limit(limit)
+            .all()
+        )
+        for teacher in teachers:
+            add("teacher", teacher.full_name, f"Employee ID: {teacher.employee_id}", "/teachers")
+
+    classes = (
+        db.query(SchoolClass)
+        .filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True), SchoolClass.name.ilike(like))
+        .order_by(SchoolClass.id.desc())
+        .limit(limit)
+        .all()
+    )
+    for school_class in classes:
+        add("class", school_class.name, "Class setup", "/setup/classes" if current_user.role in ADMIN_ROLES else None)
+
+    subjects = (
+        db.query(Subject)
+        .filter(Subject.school_id == school_id, Subject.is_active.is_(True), Subject.name.ilike(like))
+        .order_by(Subject.id.desc())
+        .limit(limit)
+        .all()
+    )
+    for subject in subjects:
+        add("subject", subject.name, "Subject setup", "/setup/subjects" if current_user.role in ADMIN_ROLES else None)
+
+    return {"query": query_text, "results": results[:limit]}

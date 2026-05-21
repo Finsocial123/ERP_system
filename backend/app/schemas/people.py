@@ -1,0 +1,180 @@
+from datetime import date
+
+from pydantic import BaseModel, EmailStr, Field
+
+
+class ParentGuardianBase(BaseModel):
+    full_name: str | None = Field(default=None, max_length=150)
+    relation: str | None = Field(default=None, max_length=80)
+    email: EmailStr | None = None
+    phone: str | None = Field(default=None, max_length=30)
+    alternate_phone: str | None = Field(default=None, max_length=30)
+    occupation: str | None = Field(default=None, max_length=120)
+    address: str | None = None
+
+
+class ParentGuardianCreate(ParentGuardianBase):
+    full_name: str = Field(min_length=2, max_length=150)
+
+
+class ParentGuardianUpdate(ParentGuardianBase):
+    is_active: bool | None = None
+
+
+class ParentGuardianRead(ParentGuardianBase):
+    id: int
+    full_name: str
+    is_active: bool
+
+    model_config = {"from_attributes": True}
+
+
+class StudentCreate(BaseModel):
+    create_login: bool = False
+    password: str | None = Field(default=None, min_length=6, max_length=72)
+    admission_no: str = Field(min_length=1, max_length=80)
+    roll_number: str | None = Field(default=None, max_length=80)
+    first_name: str = Field(min_length=1, max_length=120)
+    last_name: str | None = Field(default=None, max_length=120)
+    email: EmailStr | None = None
+    phone: str | None = Field(default=None, max_length=30)
+    gender: str | None = Field(default=None, max_length=30)
+    date_of_birth: date | None = None
+    blood_group: str | None = Field(default=None, max_length=20)
+    photo_url: str | None = Field(default=None, max_length=500)
+    address: str | None = None
+    admission_date: date | None = None
+    class_id: int | None = None
+    section_id: int | None = None
+    guardian: ParentGuardianCreate | None = None
+
+
+class StudentUpdate(BaseModel):
+    admission_no: str | None = Field(default=None, min_length=1, max_length=80)
+    roll_number: str | None = Field(default=None, max_length=80)
+    first_name: str | None = Field(default=None, min_length=1, max_length=120)
+    last_name: str | None = Field(default=None, max_length=120)
+    email: EmailStr | None = None
+    phone: str | None = Field(default=None, max_length=30)
+    gender: str | None = Field(default=None, max_length=30)
+    date_of_birth: date | None = None
+    blood_group: str | None = Field(default=None, max_length=20)
+    photo_url: str | None = Field(default=None, max_length=500)
+    address: str | None = None
+    admission_date: date | None = None
+    class_id: int | None = None
+    section_id: int | None = None
+    status: str | None = Field(default=None, max_length=30)
+    is_active: bool | None = None
+    guardian: ParentGuardianUpdate | None = None
+
+
+class StudentRead(BaseModel):
+    id: int
+    admission_no: str
+    roll_number: str | None = None
+    first_name: str
+    last_name: str | None = None
+    email: EmailStr | None = None
+    phone: str | None = None
+    gender: str | None = None
+    date_of_birth: date | None = None
+    blood_group: str | None = None
+    photo_url: str | None = None
+    address: str | None = None
+    admission_date: date | None = None
+    class_id: int | None = None
+    section_id: int | None = None
+    guardian: ParentGuardianRead | None = None
+    status: str
+    is_active: bool
+    user_id: int | None = None
+    temporary_password: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class TeacherCreate(BaseModel):
+    employee_id: str = Field(min_length=1, max_length=80)
+    full_name: str = Field(min_length=2, max_length=150)
+    email: EmailStr | None = None
+    phone: str | None = Field(default=None, max_length=30)
+    gender: str | None = Field(default=None, max_length=30)
+    department_id: int | None = None
+    qualification: str | None = Field(default=None, max_length=150)
+    specialization: str | None = Field(default=None, max_length=150)
+    joining_date: date | None = None
+    photo_url: str | None = Field(default=None, max_length=500)
+    address: str | None = None
+    create_login: bool = False
+    password: str | None = Field(default=None, min_length=6, max_length=72)
+
+
+class TeacherUpdate(BaseModel):
+    employee_id: str | None = Field(default=None, min_length=1, max_length=80)
+    full_name: str | None = Field(default=None, min_length=2, max_length=150)
+    email: EmailStr | None = None
+    phone: str | None = Field(default=None, max_length=30)
+    gender: str | None = Field(default=None, max_length=30)
+    department_id: int | None = None
+    qualification: str | None = Field(default=None, max_length=150)
+    specialization: str | None = Field(default=None, max_length=150)
+    joining_date: date | None = None
+    photo_url: str | None = Field(default=None, max_length=500)
+    address: str | None = None
+    status: str | None = Field(default=None, max_length=30)
+    is_active: bool | None = None
+
+
+class TeacherRead(BaseModel):
+    id: int
+    employee_id: str
+    full_name: str
+    email: EmailStr | None = None
+    phone: str | None = None
+    gender: str | None = None
+    department_id: int | None = None
+    qualification: str | None = None
+    specialization: str | None = None
+    joining_date: date | None = None
+    photo_url: str | None = None
+    address: str | None = None
+    status: str
+    is_active: bool
+    user_id: int | None = None
+    temporary_password: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class TeacherSubjectCreate(BaseModel):
+    subject_id: int
+    class_id: int | None = None
+    section_id: int | None = None
+
+
+class TeacherSubjectRead(BaseModel):
+    id: int
+    teacher_id: int
+    subject_id: int
+    class_id: int | None = None
+    section_id: int | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ClassTeacherCreate(BaseModel):
+    teacher_id: int
+    class_id: int
+    section_id: int | None = None
+    academic_session_id: int | None = None
+
+
+class ClassTeacherRead(BaseModel):
+    id: int
+    teacher_id: int
+    class_id: int
+    section_id: int | None = None
+    academic_session_id: int | None = None
+
+    model_config = {"from_attributes": True}

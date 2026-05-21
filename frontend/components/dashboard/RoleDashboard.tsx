@@ -88,6 +88,8 @@ const cardIcons: Record<string, LucideIcon> = {
   total_students: Users,
   pending_homework: Activity,
   homework: BookOpen,
+  homework_created: BookOpen,
+  submissions_to_check: Activity,
   attendance_percent: CalendarCheck,
   notices: Bell,
   children: Users,
@@ -249,7 +251,7 @@ export default function RoleDashboard() {
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h3 className="font-bold text-slate-900">Quick Search</h3>
-                <p className="text-sm text-slate-500">Search students, teachers, classes or subjects based on your role.</p>
+                <p className="text-sm text-slate-500">Search students, teachers, classes, subjects or homework based on your role.</p>
               </div>
               <div className="relative w-full lg:max-w-md">
                 <Search className="absolute left-3 top-2.5 text-slate-400" size={18} />

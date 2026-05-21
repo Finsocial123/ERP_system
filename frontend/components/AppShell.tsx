@@ -37,6 +37,7 @@ const navItems: NavItem[] = [
   { href: "/dashboard", label: "Admin Dashboard", icon: LayoutDashboard, roles: ADMIN_ROLES },
   { href: "/students", label: "Students", icon: Users, roles: ADMIN_ROLES },
   { href: "/teachers", label: "Teachers", icon: UserRound, roles: ADMIN_ROLES },
+  { href: "/homework", label: "Homework", icon: ClipboardList, roles: ADMIN_ROLES },
   { href: "/settings/school", label: "School Profile", icon: School, roles: ADMIN_ROLES },
   { href: "/setup/academic-sessions", label: "Academic Sessions", icon: GraduationCap, roles: ADMIN_ROLES },
   { href: "/setup/departments", label: "Departments", icon: Building2, roles: ADMIN_ROLES },
@@ -47,14 +48,15 @@ const navItems: NavItem[] = [
   { href: "/teacher-dashboard", label: "Teacher Dashboard", icon: LayoutDashboard, roles: ["TEACHER"] },
   { href: "/teacher-dashboard", label: "My Classes", icon: Home, roles: ["TEACHER"] },
   { href: "/teacher-dashboard", label: "Attendance", icon: CalendarCheck, roles: ["TEACHER"] },
-  { href: "/teacher-dashboard", label: "Homework", icon: ClipboardList, roles: ["TEACHER"] },
+  { href: "/teacher-homework", label: "Homework", icon: ClipboardList, roles: ["TEACHER"] },
 
   { href: "/student-dashboard", label: "Student Dashboard", icon: LayoutDashboard, roles: ["STUDENT"] },
-  { href: "/student-dashboard", label: "Homework", icon: ClipboardList, roles: ["STUDENT"] },
+  { href: "/student-homework", label: "Homework", icon: ClipboardList, roles: ["STUDENT"] },
   { href: "/student-dashboard", label: "Attendance", icon: CalendarCheck, roles: ["STUDENT"] },
   { href: "/student-dashboard", label: "Fees", icon: CreditCard, roles: ["STUDENT"] },
 
   { href: "/parent-dashboard", label: "Parent Dashboard", icon: LayoutDashboard, roles: ["PARENT"] },
+  { href: "/parent-homework", label: "Homework", icon: ClipboardList, roles: ["PARENT"] },
   { href: "/parent-dashboard", label: "Child Attendance", icon: CalendarCheck, roles: ["PARENT"] },
   { href: "/parent-dashboard", label: "Fees", icon: CreditCard, roles: ["PARENT"] },
 ];

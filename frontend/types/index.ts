@@ -149,3 +149,80 @@ export type ClassTeacherAssignment = {
   section_id?: number | null;
   academic_session_id?: number | null;
 };
+
+
+export type HomeworkMetaItem = {
+  id: number;
+  name: string;
+  extra?: string | null;
+};
+
+export type HomeworkMeta = {
+  classes: HomeworkMetaItem[];
+  sections: HomeworkMetaItem[];
+  subjects: HomeworkMetaItem[];
+  teachers: HomeworkMetaItem[];
+  current_academic_session_id?: number | null;
+};
+
+export type HomeworkStats = {
+  total_students: number;
+  pending: number;
+  submitted: number;
+  checked: number;
+};
+
+export type HomeworkAssignment = {
+  id: number;
+  title: string;
+  description?: string | null;
+  due_date: string;
+  class_id: number;
+  section_id?: number | null;
+  subject_id?: number | null;
+  teacher_id?: number | null;
+  academic_session_id?: number | null;
+  class_name?: string | null;
+  section_name?: string | null;
+  subject_name?: string | null;
+  teacher_name?: string | null;
+  attachment_url?: string | null;
+  attachment_filename?: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  stats: HomeworkStats;
+};
+
+export type StudentHomework = HomeworkAssignment & {
+  submission_id?: number | null;
+  submission_status: "PENDING" | "SUBMITTED" | "CHECKED" | string;
+  submitted_at?: string | null;
+  answer_text?: string | null;
+  submission_attachment_url?: string | null;
+  submission_attachment_filename?: string | null;
+  teacher_feedback?: string | null;
+  checked_at?: string | null;
+};
+
+export type ParentHomework = StudentHomework & {
+  student_id: number;
+  student_name: string;
+  admission_no: string;
+};
+
+export type HomeworkSubmission = {
+  id?: number | null;
+  homework_id: number;
+  student_id: number;
+  student_name: string;
+  admission_no: string;
+  roll_number?: string | null;
+  status: "PENDING" | "SUBMITTED" | "CHECKED" | string;
+  answer_text?: string | null;
+  attachment_url?: string | null;
+  attachment_filename?: string | null;
+  teacher_feedback?: string | null;
+  submitted_at?: string | null;
+  checked_at?: string | null;
+};

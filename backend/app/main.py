@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
@@ -8,6 +11,8 @@ from app.models import (  # noqa: F401
     AcademicSession,
     ClassTeacherAssignment,
     Department,
+    HomeworkAssignment,
+    HomeworkSubmission,
     ParentGuardian,
     School,
     SchoolClass,
@@ -18,12 +23,16 @@ from app.models import (  # noqa: F401
     TeacherSubject,
     User,
 )
-from app.routes import academic, auth, dashboard, people, schools
+from app.routes import academic, auth, dashboard, homework, people, schools
 
 Base.metadata.create_all(bind=engine)
 run_startup_migrations(engine)
 
-app = FastAPI(title="School ERP Phase 3 API", version="3.0.0")
+app = FastAPI(title="School ERP Phase 5 API", version="5.0.0")
+
+UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 app.add_middleware(
     CORSMiddleware,
@@ -36,7 +45,7 @@ app.add_middleware(
 
 @app.get("/")
 def root():
-    return {"message": "School ERP Phase 3 API is running"}
+    return {"message": "School ERP Phase 5 API is running"}
 
 
 @app.get("/health")
@@ -49,3 +58,4 @@ app.include_router(schools.router)
 app.include_router(academic.router)
 app.include_router(people.router)
 app.include_router(dashboard.router)
+app.include_router(homework.router)

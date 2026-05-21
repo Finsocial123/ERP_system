@@ -1,6 +1,6 @@
 import type { AuthResponse } from "@/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
 const TOKEN_KEY = "erp_access_token";
 const AUTH_KEY = "erp_auth";
 
@@ -59,4 +59,34 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   }
 
   return data as T;
+}
+
+
+export async function apiUpload<T>(path: string, formData: FormData, options: RequestInit = {}): Promise<T> {
+  const token = getToken();
+  const headers = new Headers(options.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    body: formData,
+    headers,
+  });
+
+  const contentType = res.headers.get("content-type") || "";
+  const data = contentType.includes("application/json") ? await res.json() : await res.text();
+
+  if (!res.ok) {
+    if (res.status === 401 && typeof window !== "undefined") clearAuth();
+    const message = typeof data === "object" && data?.detail ? data.detail : "Request failed";
+    throw new Error(Array.isArray(message) ? message.map((m) => m.msg).join(", ") : message);
+  }
+
+  return data as T;
+}
+
+export function fileUrl(path?: string | null) {
+  if (!path) return "";
+  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  return `${API_BASE}${path}`;
 }

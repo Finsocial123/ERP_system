@@ -10,8 +10,8 @@ import {
   ClipboardList,
   CreditCard,
   GraduationCap,
-  Home,
   LayoutDashboard,
+  Library,
   LogOut,
   Menu,
   School,
@@ -35,37 +35,42 @@ const ADMIN_ROLES = ["SUPER_ADMIN", "SCHOOL_OWNER", "SCHOOL_ADMIN"];
 
 const navItems: NavItem[] = [
   // ── Admin ──────────────────────────────────────────────────────────────────
-  { href: "/dashboard",               label: "Admin Dashboard",     icon: LayoutDashboard, roles: ADMIN_ROLES },
-  { href: "/students",                label: "Students",            icon: Users,           roles: ADMIN_ROLES },
-  { href: "/teachers",                label: "Teachers",            icon: UserRound,       roles: ADMIN_ROLES },
+  { href: "/dashboard",               label: "Admin Dashboard",   icon: LayoutDashboard, roles: ADMIN_ROLES },
+  { href: "/students",                label: "Students",          icon: Users,           roles: ADMIN_ROLES },
+  { href: "/teachers",                label: "Teachers",          icon: UserRound,       roles: ADMIN_ROLES },
   { href: "/homework", label: "Homework", icon: ClipboardList, roles: ADMIN_ROLES },
   { href: "/timetable", label: "Timetable", icon: CalendarCheck, roles: ADMIN_ROLES },
-  { href: "/attendance",              label: "Attendance",          icon: CalendarCheck,   roles: ADMIN_ROLES },
-  { href: "/settings/school",         label: "School Profile",      icon: School,          roles: ADMIN_ROLES },
-  { href: "/setup/academic-sessions", label: "Academic Sessions",   icon: GraduationCap,   roles: ADMIN_ROLES },
-  { href: "/setup/departments",       label: "Departments",         icon: Building2,       roles: ADMIN_ROLES },
-  { href: "/setup/classes",           label: "Classes",             icon: Settings,        roles: ADMIN_ROLES },
-  { href: "/setup/sections",          label: "Sections",            icon: Settings,        roles: ADMIN_ROLES },
-  { href: "/setup/subjects",          label: "Subjects",            icon: BookOpen,        roles: ADMIN_ROLES },
+  { href: "/attendance",              label: "Attendance",        icon: CalendarCheck,   roles: ADMIN_ROLES },
+  { href: "/library",                 label: "Library",           icon: Library,         roles: ADMIN_ROLES },
+  { href: "/settings/school",         label: "School Profile",    icon: School,          roles: ADMIN_ROLES },
+  { href: "/setup/academic-sessions", label: "Academic Sessions", icon: GraduationCap,   roles: ADMIN_ROLES },
+  { href: "/setup/departments",       label: "Departments",       icon: Building2,       roles: ADMIN_ROLES },
+  { href: "/setup/classes",           label: "Classes",           icon: Settings,        roles: ADMIN_ROLES },
+  { href: "/setup/sections",          label: "Sections",          icon: Settings,        roles: ADMIN_ROLES },
+  { href: "/setup/subjects",          label: "Subjects",          icon: BookOpen,        roles: ADMIN_ROLES },
 
-  { href: "/teacher-dashboard", label: "Teacher Dashboard", icon: LayoutDashboard, roles: ["TEACHER"] },
-  { href: "/teacher-dashboard", label: "My Classes", icon: Home, roles: ["TEACHER"] },
-  { href: "/attendance", label: "Attendance", icon: CalendarCheck, roles: ["TEACHER"] },
+  // ── Teacher ────────────────────────────────────────────────────────────────
+  { href: "/teacher-dashboard",       label: "Dashboard",         icon: LayoutDashboard, roles: ["TEACHER"] },
+  { href: "/attendance",              label: "Attendance",        icon: CalendarCheck,   roles: ["TEACHER"] },
   { href: "/teacher-homework", label: "Homework", icon: ClipboardList, roles: ["TEACHER"] },
   { href: "/teacher-timetable", label: "Timetable", icon: CalendarCheck, roles: ["TEACHER"] },
+  { href: "/homework",                label: "Homework",          icon: ClipboardList,   roles: ["TEACHER"] },
+  { href: "/library",                 label: "Library",           icon: Library,         roles: ["TEACHER"] },
 
-  { href: "/student-dashboard", label: "Student Dashboard", icon: LayoutDashboard, roles: ["STUDENT"] },
+  // ── Student ────────────────────────────────────────────────────────────────
+  { href: "/student-dashboard",       label: "Dashboard",         icon: LayoutDashboard, roles: ["STUDENT"] },
+  { href: "/attendance/my",           label: "My Attendance",     icon: CalendarCheck,   roles: ["STUDENT"] },
   { href: "/student-homework", label: "Homework", icon: ClipboardList, roles: ["STUDENT"] },
   { href: "/student-timetable", label: "Timetable", icon: CalendarCheck, roles: ["STUDENT"] },
-  { href: "/attendance/my", label: "Attendance", icon: CalendarCheck, roles: ["STUDENT"] },
-  { href: "/student-dashboard", label: "Fees", icon: CreditCard, roles: ["STUDENT"] },
+  { href: "/fees",                    label: "Fees",              icon: CreditCard,      roles: ["STUDENT"] },
+  { href: "/library",                 label: "Library",           icon: Library,         roles: ["STUDENT"] },
 
   // ── Parent ─────────────────────────────────────────────────────────────────
-  { href: "/parent-dashboard",        label: "Dashboard",           icon: LayoutDashboard, roles: ["PARENT"] },
+  { href: "/parent-dashboard",        label: "Dashboard",         icon: LayoutDashboard, roles: ["PARENT"] },
   { href: "/parent-homework", label: "Homework", icon: ClipboardList, roles: ["PARENT"] },
   { href: "/parent-timetable", label: "Timetable", icon: CalendarCheck, roles: ["PARENT"] },
-  { href: "/attendance/my",           label: "Child Attendance",    icon: CalendarCheck,   roles: ["PARENT"] },
-  { href: "/fees",                    label: "Fees",                icon: CreditCard,      roles: ["PARENT"] },
+  { href: "/attendance/my",           label: "Child Attendance",  icon: CalendarCheck,   roles: ["PARENT"] },
+  { href: "/fees",                    label: "Fees",              icon: CreditCard,      roles: ["PARENT"] },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {

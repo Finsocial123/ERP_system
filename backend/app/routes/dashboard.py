@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.dependencies.auth import current_school_id, get_current_user
 from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject
 from app.models.homework import HomeworkAssignment, HomeworkSubmission
+from app.models.attendance import AttendanceStatus, StudentAttendance
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.school import School
 from app.models.timetable import TimetableEntry
@@ -165,7 +166,7 @@ def _optional_table_count(
 def _today_attendance_count(db: Session, school_id: int) -> int:
     return _optional_table_count(
         db,
-        table_names=["student_attendance", "student_attendances", "attendance", "attendance_records"],
+        table_names=["student_attendance"],
         school_id=school_id,
         date_columns=["attendance_date", "date", "marked_date"],
         date_value=date.today(),
@@ -426,6 +427,32 @@ def _admin_charts(db: Session, school_id: int, counts: dict[str, int]) -> list[d
     ]
 
 
+def _student_attendance_percentage(db: Session, school_id: int, student: Student | None, session: AcademicSession | None) -> str:
+    """Return attendance % string for the student card. Returns '—' if no data yet."""
+    if not student or not session:
+        return "—"
+
+    records = (
+        db.query(StudentAttendance)
+        .filter(
+            StudentAttendance.school_id == school_id,
+            StudentAttendance.student_id == student.id,
+            StudentAttendance.session_id == session.id,
+        )
+        .all()
+    )
+
+    total = len(records)
+    if total == 0:
+        return "—"
+
+    present  = sum(1 for r in records if r.status == AttendanceStatus.PRESENT.value)
+    half_day = sum(1 for r in records if r.status == AttendanceStatus.HALF_DAY.value)
+    effective = present + half_day * 0.5
+    pct = round(effective / total * 100, 1)
+    return f"{pct}%"
+
+
 def _card(key: str, label: str, value: int | str, helper: str = "", tone: str = "default") -> dict[str, Any]:
     return {"key": key, "label": label, "value": value, "helper": helper, "tone": tone}
 
@@ -515,12 +542,14 @@ def _teacher_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
                 ],
             }
         ],
-        "next_steps": ["Create homework", "Check submissions", "Mark attendance", "View timetable"],
+        "next_steps": ["Create homework", "Check submissions", "View timetable"],
     }
 
 
 def _student_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]:
     student = _student_for_user(db, school_id, user)
+    session = _current_session(db, school_id)
+
     class_label = "Not assigned"
     if student and student.school_class:
         class_label = student.school_class.name
@@ -530,9 +559,24 @@ def _student_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
     pending_homework = _pending_homework_for_student(db, school_id, student)
     timetable_slots = _student_timetable_slots(db, school_id, student)
 
+    att_pct = _student_attendance_percentage(db, school_id, student, session)
+    # tone: warning if below 75%, success if >= 90%, else info
+    att_tone = "info"
+    if att_pct != "—":
+        raw = float(att_pct.replace("%", ""))
+        att_tone = "warning" if raw < 75 else ("success" if raw >= 90 else "info")
+
+    attendance_chart_value = 0
+
+    if att_pct != "—":
+        attendance_chart_value = round(
+            float(att_pct.replace("%", "")),
+            1,
+        )
+
     cards = [
-        _card("homework", "Pending Homework", pending_homework, "Assignments waiting for your submission", "warning"),
-        _card("attendance_percent", "Attendance %", 0, "Attendance module comes in Phase 4", "info"),
+         _card("homework", "Pending Homework", pending_homework, "Assignments waiting for your submission", "warning"),
+        _card("attendance_percent", "Attendance %", att_pct, f"Current session attendance ({session.name if session else 'N/A'})", att_tone),
         _card("pending_fees", "Pending Fees", _pending_fees_count(db, school_id), "Fee module comes in Phase 6", "warning"),
         _card("notices", "Notices", 0, "Communication module comes in Phase 9"),
         _card("timetable_slots", "Timetable Slots", timetable_slots, "Weekly class timetable slots", "info"),
@@ -553,13 +597,13 @@ def _student_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
                 "type": "bar",
                 "items": [
                     {"label": "Homework", "value": pending_homework},
-                    {"label": "Attendance", "value": 0},
+                    # {"label": "Attendance", "value": attendance_chart_value},
                     {"label": "Notices", "value": 0},
                     {"label": "Timetable", "value": timetable_slots},
                 ],
             }
         ],
-        "next_steps": ["View homework", "Track attendance", "View fees", "Check notices"],
+        "next_steps": ["View homework", "View fees", "Check notices"],
     }
 
 
@@ -567,13 +611,28 @@ def _parent_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]
     children = _children_for_parent(db, school_id, user)
     pending_homework = _pending_homework_for_children(db, school_id, children)
     timetable_slots = sum(_student_timetable_slots(db, school_id, child) for child in children)
+    session = _current_session(db, school_id)
+
+    # count how many children have attendance below 75%
+    low_att_count = 0
+    for child in children:
+        pct_str = _student_attendance_percentage(db, school_id, child, session)
+        if pct_str != "—" and float(pct_str.replace("%", "")) < 75:
+            low_att_count += 1
+
+    att_alert_helper = (
+        f"{low_att_count} child{'ren' if low_att_count != 1 else ''} below 75%"
+        if low_att_count > 0
+        else "All children above 75% attendance"
+    )
+
     cards = [
         _card("children", "Children", len(children), "Linked active student profiles"),
         _card("pending_homework", "Pending Homework", pending_homework, "Homework pending for linked children", "warning"),
         _card("pending_fees", "Pending Fees", _pending_fees_count(db, school_id), "Fee module comes in Phase 6", "warning"),
         _card("notices", "Notices", 0, "Communication module comes in Phase 9"),
         _card("timetable_slots", "Timetable Slots", timetable_slots, "Weekly slots for linked children", "info"),
-        _card("attendance_alerts", "Attendance Alerts", 0, "Low attendance warnings come in Phase 4", "info"),
+        _card("attendance_alerts", "Attendance Alerts", low_att_count, att_alert_helper, "warning" if low_att_count > 0 else "success"),
     ]
 
     return {

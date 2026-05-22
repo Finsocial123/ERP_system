@@ -151,6 +151,32 @@ export type ClassTeacherAssignment = {
 };
 
 
+export type AttendanceRecord = {
+  id: number;
+  student_id: number;
+  class_id: number;
+  section_id?: number | null;
+  session_id: number;
+  date: string;
+  status: string;
+  note?: string | null;
+  marked_by?: number | null;
+};
+
+export type AttendanceSummary = {
+  student_id: number;
+  student_name: string;
+  admission_no: string;
+  total_days: number;
+  present: number;
+  absent: number;
+  leave: number;
+  half_day: number;
+  percentage: number;
+  low_attendance: boolean;
+};
+
+
 export type HomeworkMetaItem = {
   id: number;
   name: string;

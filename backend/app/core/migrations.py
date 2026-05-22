@@ -66,3 +66,9 @@ def run_startup_migrations(engine) -> None:
         db.commit()
     finally:
         db.close()
+
+def run_phase4_migrations(engine) -> None:
+    """Ensure student_attendance table exists with all required columns."""
+    # The table is created by Base.metadata.create_all, but we guard
+    # any future column additions here for existing deployments.
+    _add_column(engine, "student_attendance", "note", "note TEXT")

@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -25,12 +25,11 @@ from app.schemas.exam import (
     ExamSubjectCreate,
     ExamSubjectRead,
     ExamSubjectResultRead,
+    ExamTimetableItem,
     ExamSubjectUpdate,
-    ExamTimetableSubject,
     ExamUpdate,
     ParentReportCard,
     ReportCardSubject,
-    StudentExamTimetable,
     StudentReportCard,
 )
 
@@ -204,6 +203,46 @@ def _validate_exam_subject_scope(db: Session, school_id: int, exam: Exam, subjec
         raise HTTPException(status_code=400, detail="Pass marks cannot be greater than max marks")
 
 
+def _validate_subject_schedule(exam: Exam, exam_date: date | None, start_time: time | None, end_time: time | None) -> None:
+    if exam_date and exam.start_date and exam_date < exam.start_date:
+        raise HTTPException(status_code=400, detail="Subject exam date cannot be before exam start date")
+    if exam_date and exam.end_date and exam_date > exam.end_date:
+        raise HTTPException(status_code=400, detail="Subject exam date cannot be after exam end date")
+    if start_time and end_time and end_time <= start_time:
+        raise HTTPException(status_code=400, detail="End time must be after start time")
+
+
+def _ensure_teacher_not_double_booked(
+    db: Session,
+    school_id: int,
+    teacher_id: int | None,
+    exam_date: date | None,
+    start_time: time | None,
+    end_time: time | None,
+    exclude_exam_subject_id: int | None = None,
+) -> None:
+    if not teacher_id or not exam_date or not start_time or not end_time:
+        return
+    query = db.query(ExamSubject).filter(
+        ExamSubject.school_id == school_id,
+        ExamSubject.teacher_id == teacher_id,
+        ExamSubject.exam_date == exam_date,
+        ExamSubject.is_active.is_(True),
+        ExamSubject.start_time.isnot(None),
+        ExamSubject.end_time.isnot(None),
+        ExamSubject.start_time < end_time,
+        ExamSubject.end_time > start_time,
+    )
+    if exclude_exam_subject_id is not None:
+        query = query.filter(ExamSubject.id != exclude_exam_subject_id)
+    if query.first():
+        raise HTTPException(status_code=400, detail="This teacher is already assigned to another exam at the same time")
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    return (value or "").strip() or None
+
+
 def _exam_or_404(db: Session, school_id: int, exam_id: int) -> Exam:
     exam = db.query(Exam).filter(Exam.school_id == school_id, Exam.id == exam_id, Exam.is_active.is_(True)).first()
     if not exam:
@@ -274,6 +313,10 @@ def _exam_subject_payload(db: Session, item: ExamSubject) -> ExamSubjectRead:
         max_marks=item.max_marks,
         pass_marks=item.pass_marks,
         exam_date=item.exam_date,
+        start_time=item.start_time,
+        end_time=item.end_time,
+        room=item.room,
+        timetable_note=item.timetable_note,
         is_active=item.is_active,
         marks_entered_count=_count(db, db.query(ExamMark).filter(ExamMark.school_id == item.school_id, ExamMark.exam_subject_id == item.id)),
         created_at=item.created_at,
@@ -309,6 +352,57 @@ def _student_read(student: Student) -> ExamStudentRead:
         class_name=student.school_class.name if student.school_class else None,
         section_name=student.section.name if student.section else None,
     )
+
+
+def _effective_subject_date(exam: Exam, subject_index: int, exam_subject: ExamSubject) -> tuple[date | None, str]:
+    if exam_subject.exam_date:
+        return exam_subject.exam_date, "MANUAL"
+    if exam.start_date:
+        return exam.start_date + timedelta(days=subject_index), "AUTO_FROM_EXAM_START"
+    return None, "NOT_SET"
+
+
+def _timetable_item(exam: Exam, exam_subject: ExamSubject, subject_index: int, student: Student | None = None) -> ExamTimetableItem:
+    effective_date, schedule_source = _effective_subject_date(exam, subject_index, exam_subject)
+    return ExamTimetableItem(
+        exam_id=exam.id,
+        exam_name=exam.name,
+        exam_type=exam.exam_type,
+        result_status=exam.result_status,
+        class_id=exam.class_id,
+        section_id=exam.section_id,
+        class_name=exam.school_class.name if exam.school_class else None,
+        section_name=exam.section.name if exam.section else None,
+        start_date=exam.start_date,
+        end_date=exam.end_date,
+        exam_subject_id=exam_subject.id,
+        subject_id=exam_subject.subject_id,
+        subject_name=exam_subject.subject.name if exam_subject.subject else None,
+        teacher_id=exam_subject.teacher_id,
+        teacher_name=exam_subject.teacher.full_name if exam_subject.teacher else None,
+        max_marks=exam_subject.max_marks,
+        pass_marks=exam_subject.pass_marks,
+        exam_date=effective_date,
+        start_time=exam_subject.start_time,
+        end_time=exam_subject.end_time,
+        room=exam_subject.room,
+        timetable_note=exam_subject.timetable_note,
+        schedule_source=schedule_source,
+        student_id=student.id if student else None,
+        student_name=_full_student_name(student) if student else None,
+        admission_no=student.admission_no if student else None,
+        roll_number=student.roll_number if student else None,
+    )
+
+
+def _exam_timetable_items_for_exam(db: Session, exam: Exam, student: Student | None = None) -> list[ExamTimetableItem]:
+    subjects = (
+        db.query(ExamSubject)
+        .filter(ExamSubject.school_id == exam.school_id, ExamSubject.exam_id == exam.id, ExamSubject.is_active.is_(True))
+        .order_by(ExamSubject.exam_date.asc().nullslast(), ExamSubject.start_time.asc().nullslast(), ExamSubject.id.asc())
+        .all()
+    )
+    return [_timetable_item(exam, exam_subject, index, student) for index, exam_subject in enumerate(subjects)]
 
 
 def _report_card_for_student(db: Session, exam: Exam, student: Student) -> StudentReportCard:
@@ -390,57 +484,6 @@ def _exam_query_for_student(db: Session, school_id: int, student: Student):
             or_(Exam.section_id.is_(None), Exam.section_id == student.section_id),
         )
         .order_by(Exam.start_date.desc().nullslast(), Exam.id.desc())
-    )
-
-
-def _exam_timetable_query_for_student(db: Session, school_id: int, student: Student):
-    return (
-        db.query(Exam)
-        .filter(
-            Exam.school_id == school_id,
-            Exam.class_id == student.class_id,
-            Exam.is_active.is_(True),
-            or_(Exam.section_id.is_(None), Exam.section_id == student.section_id),
-        )
-        .order_by(Exam.start_date.asc().nullslast(), Exam.id.desc())
-    )
-
-
-def _exam_timetable_payload(db: Session, exam: Exam) -> StudentExamTimetable:
-    subjects = (
-        db.query(ExamSubject)
-        .filter(
-            ExamSubject.school_id == exam.school_id,
-            ExamSubject.exam_id == exam.id,
-            ExamSubject.is_active.is_(True),
-        )
-        .order_by(ExamSubject.exam_date.asc().nullslast(), ExamSubject.id.asc())
-        .all()
-    )
-    return StudentExamTimetable(
-        exam_id=exam.id,
-        exam_name=exam.name,
-        exam_type=exam.exam_type,
-        description=exam.description,
-        result_status=exam.result_status,
-        class_name=exam.school_class.name if exam.school_class else None,
-        section_name=exam.section.name if exam.section else None,
-        academic_session_name=exam.academic_session.name if exam.academic_session else None,
-        start_date=exam.start_date,
-        end_date=exam.end_date,
-        subjects=[
-            ExamTimetableSubject(
-                exam_subject_id=item.id,
-                subject_id=item.subject_id,
-                subject_name=item.subject.name if item.subject else "Subject",
-                teacher_id=item.teacher_id,
-                teacher_name=item.teacher.full_name if item.teacher else None,
-                exam_date=item.exam_date,
-                max_marks=item.max_marks,
-                pass_marks=item.pass_marks,
-            )
-            for item in subjects
-        ],
     )
 
 
@@ -620,6 +663,72 @@ def list_exam_subjects(
     return [_exam_subject_payload(db, item) for item in rows]
 
 
+@router.get("/{exam_id}/timetable", response_model=list[ExamTimetableItem])
+def exam_timetable(
+    exam_id: int,
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    exam = _exam_or_404(db, school_id, exam_id)
+    return _exam_timetable_items_for_exam(db, exam)
+
+
+@router.post("/{exam_id}/auto-schedule-timetable", response_model=list[ExamSubjectRead])
+def auto_schedule_exam_timetable(
+    exam_id: int,
+    start_time: time = Query(default=time(9, 0)),
+    end_time: time = Query(default=time(12, 0)),
+    override_existing: bool = False,
+    room: str | None = None,
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    exam = _exam_or_404(db, school_id, exam_id)
+    if not exam.start_date:
+        raise HTTPException(status_code=400, detail="Set exam start date before using auto schedule")
+    if end_time <= start_time:
+        raise HTTPException(status_code=400, detail="End time must be after start time")
+
+    subjects = (
+        db.query(ExamSubject)
+        .filter(ExamSubject.school_id == school_id, ExamSubject.exam_id == exam.id, ExamSubject.is_active.is_(True))
+        .order_by(ExamSubject.id.asc())
+        .all()
+    )
+    if not subjects:
+        raise HTTPException(status_code=400, detail="Add exam subjects before creating the timetable")
+
+    last_auto_date = exam.start_date + timedelta(days=len(subjects) - 1)
+    if exam.end_date and last_auto_date > exam.end_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Exam date range is shorter than the number of subjects. Increase end date or set subject dates manually.",
+        )
+
+    room_value = _clean_optional_text(room)
+    for index, subject in enumerate(subjects):
+        scheduled_date = exam.start_date + timedelta(days=index)
+        should_update_date = override_existing or subject.exam_date is None
+        should_update_time = override_existing or subject.start_time is None or subject.end_time is None
+        new_date = scheduled_date if should_update_date else subject.exam_date
+        new_start = start_time if should_update_time else subject.start_time
+        new_end = end_time if should_update_time else subject.end_time
+        _validate_subject_schedule(exam, new_date, new_start, new_end)
+        _ensure_teacher_not_double_booked(db, school_id, subject.teacher_id, new_date, new_start, new_end, exclude_exam_subject_id=subject.id)
+        subject.exam_date = new_date
+        subject.start_time = new_start
+        subject.end_time = new_end
+        if room_value and (override_existing or not subject.room):
+            subject.room = room_value
+
+    db.commit()
+    for subject in subjects:
+        db.refresh(subject)
+    return [_exam_subject_payload(db, item) for item in subjects]
+
+
 @router.post("/{exam_id}/subjects", response_model=ExamSubjectRead, status_code=status.HTTP_201_CREATED)
 def create_exam_subject(
     exam_id: int,
@@ -630,6 +739,8 @@ def create_exam_subject(
 ):
     exam = _exam_or_404(db, school_id, exam_id)
     _validate_exam_subject_scope(db, school_id, exam, payload.subject_id, payload.teacher_id, payload.max_marks, payload.pass_marks)
+    _validate_subject_schedule(exam, payload.exam_date, payload.start_time, payload.end_time)
+    _ensure_teacher_not_double_booked(db, school_id, payload.teacher_id, payload.exam_date, payload.start_time, payload.end_time)
     item = ExamSubject(
         school_id=school_id,
         exam_id=exam.id,
@@ -638,6 +749,10 @@ def create_exam_subject(
         max_marks=payload.max_marks,
         pass_marks=payload.pass_marks,
         exam_date=payload.exam_date,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        room=_clean_optional_text(payload.room),
+        timetable_note=_clean_optional_text(payload.timetable_note),
     )
     db.add(item)
     try:
@@ -666,10 +781,19 @@ def update_exam_subject(
     max_marks = data.get("max_marks", item.max_marks)
     pass_marks = data.get("pass_marks", item.pass_marks)
     _validate_exam_subject_scope(db, school_id, exam, subject_id, teacher_id, max_marks, pass_marks)
+    exam_date = data.get("exam_date", item.exam_date)
+    start_time = data.get("start_time", item.start_time)
+    end_time = data.get("end_time", item.end_time)
+    _validate_subject_schedule(exam, exam_date, start_time, end_time)
+    _ensure_teacher_not_double_booked(db, school_id, teacher_id, exam_date, start_time, end_time, exclude_exam_subject_id=item.id)
 
-    for key in ["subject_id", "teacher_id", "max_marks", "pass_marks", "exam_date", "is_active"]:
+    for key in ["subject_id", "teacher_id", "max_marks", "pass_marks", "exam_date", "start_time", "end_time", "is_active"]:
         if key in data:
             setattr(item, key, data[key])
+    if "room" in data:
+        item.room = _clean_optional_text(data["room"])
+    if "timetable_note" in data:
+        item.timetable_note = _clean_optional_text(data["timetable_note"])
     db.commit()
     db.refresh(item)
     return _exam_subject_payload(db, item)
@@ -811,7 +935,7 @@ def subject_result(
     )
 
 
-@router.get("/my-timetable", response_model=list[StudentExamTimetable])
+@router.get("/my-timetable", response_model=list[ExamTimetableItem])
 def my_exam_timetable(
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(UserRole.STUDENT.value)),
@@ -820,8 +944,45 @@ def my_exam_timetable(
     student = _student_for_user(db, school_id, current_user)
     if not student:
         return []
-    exams = _exam_timetable_query_for_student(db, school_id, student).all()
-    return [_exam_timetable_payload(db, exam) for exam in exams]
+    exams = (
+        db.query(Exam)
+        .filter(
+            Exam.school_id == school_id,
+            Exam.class_id == student.class_id,
+            Exam.is_active.is_(True),
+            or_(Exam.section_id.is_(None), Exam.section_id == student.section_id),
+        )
+        .order_by(Exam.start_date.asc().nullslast(), Exam.id.asc())
+        .all()
+    )
+    items: list[ExamTimetableItem] = []
+    for exam in exams:
+        items.extend(_exam_timetable_items_for_exam(db, exam, student))
+    return items
+
+
+@router.get("/my-children-timetable", response_model=list[ExamTimetableItem])
+def my_children_exam_timetable(
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(UserRole.PARENT.value)),
+    db: Session = Depends(get_db),
+):
+    items: list[ExamTimetableItem] = []
+    for child in _children_for_parent(db, school_id, current_user):
+        exams = (
+            db.query(Exam)
+            .filter(
+                Exam.school_id == school_id,
+                Exam.class_id == child.class_id,
+                Exam.is_active.is_(True),
+                or_(Exam.section_id.is_(None), Exam.section_id == child.section_id),
+            )
+            .order_by(Exam.start_date.asc().nullslast(), Exam.id.asc())
+            .all()
+        )
+        for exam in exams:
+            items.extend(_exam_timetable_items_for_exam(db, exam, child))
+    return items
 
 
 @router.get("/my-report-cards", response_model=list[StudentReportCard])

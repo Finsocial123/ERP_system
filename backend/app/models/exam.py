@@ -1,6 +1,6 @@
-from datetime import date, datetime
+from datetime import date, datetime, time
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, String, Text, Time, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -47,6 +47,10 @@ class ExamSubject(Base):
     max_marks: Mapped[float] = mapped_column(Float, default=100)
     pass_marks: Mapped[float] = mapped_column(Float, default=33)
     exam_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    room: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    timetable_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

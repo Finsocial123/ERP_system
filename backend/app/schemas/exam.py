@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -76,11 +76,17 @@ class ExamSubjectCreate(BaseModel):
     max_marks: float = Field(default=100, gt=0)
     pass_marks: float = Field(default=33, ge=0)
     exam_date: date | None = None
+    start_time: time | None = None
+    end_time: time | None = None
+    room: str | None = Field(default=None, max_length=120)
+    timetable_note: str | None = Field(default=None, max_length=1000)
 
     @model_validator(mode="after")
-    def check_marks(self):
+    def check_marks_and_time(self):
         if self.pass_marks > self.max_marks:
             raise ValueError("Pass marks cannot be greater than max marks")
+        if self.start_time and self.end_time and self.end_time <= self.start_time:
+            raise ValueError("End time must be after start time")
         return self
 
 
@@ -90,7 +96,17 @@ class ExamSubjectUpdate(BaseModel):
     max_marks: float | None = Field(default=None, gt=0)
     pass_marks: float | None = Field(default=None, ge=0)
     exam_date: date | None = None
+    start_time: time | None = None
+    end_time: time | None = None
+    room: str | None = Field(default=None, max_length=120)
+    timetable_note: str | None = Field(default=None, max_length=1000)
     is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def check_time(self):
+        if self.start_time and self.end_time and self.end_time <= self.start_time:
+            raise ValueError("End time must be after start time")
+        return self
 
 
 class ExamSubjectRead(BaseModel):
@@ -103,35 +119,44 @@ class ExamSubjectRead(BaseModel):
     max_marks: float
     pass_marks: float
     exam_date: date | None = None
+    start_time: time | None = None
+    end_time: time | None = None
+    room: str | None = None
+    timetable_note: str | None = None
     is_active: bool
     marks_entered_count: int
     created_at: datetime
     updated_at: datetime
 
 
-class ExamTimetableSubject(BaseModel):
-    exam_subject_id: int
-    subject_id: int
-    subject_name: str
-    teacher_id: int | None = None
-    teacher_name: str | None = None
-    exam_date: date | None = None
-    max_marks: float
-    pass_marks: float
-
-
-class StudentExamTimetable(BaseModel):
+class ExamTimetableItem(BaseModel):
     exam_id: int
     exam_name: str
     exam_type: str | None = None
-    description: str | None = None
     result_status: str
+    class_id: int
+    section_id: int | None = None
     class_name: str | None = None
     section_name: str | None = None
-    academic_session_name: str | None = None
     start_date: date | None = None
     end_date: date | None = None
-    subjects: list[ExamTimetableSubject]
+    exam_subject_id: int
+    subject_id: int
+    subject_name: str | None = None
+    teacher_id: int | None = None
+    teacher_name: str | None = None
+    max_marks: float
+    pass_marks: float
+    exam_date: date | None = None
+    start_time: time | None = None
+    end_time: time | None = None
+    room: str | None = None
+    timetable_note: str | None = None
+    schedule_source: str = "MANUAL"
+    student_id: int | None = None
+    student_name: str | None = None
+    admission_no: str | None = None
+    roll_number: str | None = None
 
 
 class ExamStudentRead(BaseModel):

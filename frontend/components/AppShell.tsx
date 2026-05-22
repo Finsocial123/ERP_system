@@ -40,6 +40,7 @@ const navItems: NavItem[] = [
   { href: "/teachers",                label: "Teachers",          icon: UserRound,       roles: ADMIN_ROLES },
   { href: "/homework", label: "Homework", icon: ClipboardList, roles: ADMIN_ROLES },
   { href: "/timetable", label: "Timetable", icon: CalendarCheck, roles: ADMIN_ROLES },
+  { href: "/exams", label: "Exams & Results", icon: GraduationCap, roles: ADMIN_ROLES },
   { href: "/attendance",              label: "Attendance",        icon: CalendarCheck,   roles: ADMIN_ROLES },
   { href: "/library",                 label: "Library",           icon: Library,         roles: ADMIN_ROLES },
   { href: "/settings/school",         label: "School Profile",    icon: School,          roles: ADMIN_ROLES },
@@ -54,6 +55,7 @@ const navItems: NavItem[] = [
   { href: "/attendance",              label: "Attendance",        icon: CalendarCheck,   roles: ["TEACHER"] },
   { href: "/teacher-homework", label: "Homework", icon: ClipboardList, roles: ["TEACHER"] },
   { href: "/teacher-timetable", label: "Timetable", icon: CalendarCheck, roles: ["TEACHER"] },
+  { href: "/teacher-exams", label: "Exams & Marks", icon: GraduationCap, roles: ["TEACHER"] },
   { href: "/homework",                label: "Homework",          icon: ClipboardList,   roles: ["TEACHER"] },
   { href: "/library",                 label: "Library",           icon: Library,         roles: ["TEACHER"] },
 
@@ -62,6 +64,7 @@ const navItems: NavItem[] = [
   { href: "/attendance/my",           label: "My Attendance",     icon: CalendarCheck,   roles: ["STUDENT"] },
   { href: "/student-homework", label: "Homework", icon: ClipboardList, roles: ["STUDENT"] },
   { href: "/student-timetable", label: "Timetable", icon: CalendarCheck, roles: ["STUDENT"] },
+  { href: "/student-exams", label: "Report Cards", icon: GraduationCap, roles: ["STUDENT"] },
   { href: "/fees",                    label: "Fees",              icon: CreditCard,      roles: ["STUDENT"] },
   { href: "/library",                 label: "Library",           icon: Library,         roles: ["STUDENT"] },
 
@@ -69,6 +72,7 @@ const navItems: NavItem[] = [
   { href: "/parent-dashboard",        label: "Dashboard",         icon: LayoutDashboard, roles: ["PARENT"] },
   { href: "/parent-homework", label: "Homework", icon: ClipboardList, roles: ["PARENT"] },
   { href: "/parent-timetable", label: "Timetable", icon: CalendarCheck, roles: ["PARENT"] },
+  { href: "/parent-exams", label: "Child Results", icon: GraduationCap, roles: ["PARENT"] },
   { href: "/attendance/my",           label: "Child Attendance",  icon: CalendarCheck,   roles: ["PARENT"] },
   { href: "/fees",                    label: "Fees",              icon: CreditCard,      roles: ["PARENT"] },
 ];

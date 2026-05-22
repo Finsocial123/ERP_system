@@ -327,3 +327,128 @@ export type TimetableGrid = {
   periods: TimetablePeriod[];
   days: TimetableDay[];
 };
+
+export type ExamMetaItem = {
+  id: number;
+  name: string;
+  extra?: string | null;
+};
+
+export type ExamMeta = {
+  classes: ExamMetaItem[];
+  sections: ExamMetaItem[];
+  subjects: ExamMetaItem[];
+  teachers: ExamMetaItem[];
+  academic_sessions: ExamMetaItem[];
+  current_academic_session_id?: number | null;
+};
+
+export type Exam = {
+  id: number;
+  name: string;
+  exam_type?: string | null;
+  description?: string | null;
+  class_id: number;
+  section_id?: number | null;
+  academic_session_id?: number | null;
+  class_name?: string | null;
+  section_name?: string | null;
+  academic_session_name?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  result_status: "DRAFT" | "PUBLISHED" | string;
+  is_active: boolean;
+  subjects_count: number;
+  marks_entered_count: number;
+  created_at: string;
+  updated_at: string;
+  published_at?: string | null;
+};
+
+export type ExamSubject = {
+  id: number;
+  exam_id: number;
+  subject_id: number;
+  teacher_id?: number | null;
+  subject_name?: string | null;
+  teacher_name?: string | null;
+  max_marks: number;
+  pass_marks: number;
+  exam_date?: string | null;
+  is_active: boolean;
+  marks_entered_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ExamStudent = {
+  id: number;
+  admission_no: string;
+  roll_number?: string | null;
+  student_name: string;
+  class_name?: string | null;
+  section_name?: string | null;
+};
+
+export type ExamMark = {
+  id?: number | null;
+  exam_subject_id: number;
+  student_id: number;
+  student_name: string;
+  admission_no: string;
+  roll_number?: string | null;
+  marks_obtained?: number | null;
+  max_marks: number;
+  pass_marks: number;
+  grade?: string | null;
+  is_absent: boolean;
+  pass_status: "PENDING" | "PASS" | "FAIL" | "ABSENT" | string;
+  remarks?: string | null;
+  updated_at?: string | null;
+};
+
+export type ReportCardSubject = {
+  exam_subject_id: number;
+  subject_id: number;
+  subject_name: string;
+  max_marks: number;
+  pass_marks: number;
+  marks_obtained?: number | null;
+  grade?: string | null;
+  is_absent: boolean;
+  pass_status: string;
+  remarks?: string | null;
+};
+
+export type StudentReportCard = {
+  exam_id: number;
+  exam_name: string;
+  exam_type?: string | null;
+  result_status: string;
+  student_id: number;
+  student_name: string;
+  admission_no: string;
+  roll_number?: string | null;
+  class_name?: string | null;
+  section_name?: string | null;
+  subjects: ReportCardSubject[];
+  total_marks: number;
+  marks_obtained: number;
+  percentage: number;
+  grade: string;
+  pass_status: string;
+  published_at?: string | null;
+};
+
+export type ClassResult = {
+  exam: Exam;
+  results: StudentReportCard[];
+  summary: Record<string, number | string>;
+};
+
+export type SubjectResult = {
+  exam: Exam;
+  exam_subject: ExamSubject;
+  results: ExamMark[];
+  summary: Record<string, number | string>;
+};

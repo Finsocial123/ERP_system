@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Edit2, Eye, Plus, RefreshCcw, Save, Search, Trash2, X } from "lucide-react";
+import { CalendarDays, CheckCircle2, Clock, Edit2, Eye, MapPin, Plus, RefreshCcw, Save, Search, Trash2 } from "lucide-react";
 
 import { AppSection } from "@/components/CrudManager";
 import { Button, Card, Input, Label, Textarea } from "@/components/ui";
 import { apiFetch } from "@/lib/api";
-import type { ClassResult, Exam, ExamMark, ExamMeta, ExamSubject, SubjectResult } from "@/types";
+import type { ClassResult, Exam, ExamMark, ExamMeta, ExamSubject, ExamTimetableItem, SubjectResult } from "@/types";
 
 type ExamForm = {
   name: string;
@@ -25,6 +25,10 @@ type SubjectForm = {
   max_marks: string;
   pass_marks: string;
   exam_date: string;
+  start_time: string;
+  end_time: string;
+  room: string;
+  timetable_note: string;
 };
 
 type MarkDraft = {
@@ -51,6 +55,10 @@ const emptySubject: SubjectForm = {
   max_marks: "100",
   pass_marks: "33",
   exam_date: "",
+  start_time: "09:00",
+  end_time: "12:00",
+  room: "",
+  timetable_note: "",
 };
 
 function SelectBox({ value, onChange, children, required = false }: { value: string; onChange: (value: string) => void; children: React.ReactNode; required?: boolean }) {
@@ -67,8 +75,9 @@ function SelectBox({ value, onChange, children, required = false }: { value: str
 }
 
 function statusClass(status: string) {
-  if (status === "PASS" || status === "PUBLISHED") return "bg-emerald-50 text-emerald-700";
+  if (status === "PASS" || status === "PUBLISHED" || status === "MANUAL") return "bg-emerald-50 text-emerald-700";
   if (status === "FAIL" || status === "ABSENT") return "bg-red-50 text-red-700";
+  if (status === "AUTO_FROM_EXAM_START") return "bg-sky-50 text-sky-700";
   return "bg-amber-50 text-amber-700";
 }
 
@@ -77,17 +86,23 @@ function displayDate(value?: string | null) {
   return value.slice(0, 10);
 }
 
+function displayTime(value?: string | null) {
+  if (!value) return "-";
+  return value.slice(0, 5);
+}
+
 function numberOrNull(value: string) {
   if (value.trim() === "") return null;
   return Number(value);
 }
 
 export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teacher" }) {
-  const [tab, setTab] = useState<"exams" | "subjects" | "marks" | "reports">("exams");
+  const [tab, setTab] = useState<"exams" | "subjects" | "timetable" | "marks" | "reports">("exams");
   const [meta, setMeta] = useState<ExamMeta | null>(null);
   const [exams, setExams] = useState<Exam[]>([]);
   const [selectedExamId, setSelectedExamId] = useState("");
   const [examSubjects, setExamSubjects] = useState<ExamSubject[]>([]);
+  const [examTimetable, setExamTimetable] = useState<ExamTimetableItem[]>([]);
   const [selectedSubjectId, setSelectedSubjectId] = useState("");
   const [marks, setMarks] = useState<ExamMark[]>([]);
   const [markDrafts, setMarkDrafts] = useState<Record<number, MarkDraft>>({});
@@ -99,6 +114,10 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
   const [editingSubject, setEditingSubject] = useState<ExamSubject | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [autoStartTime, setAutoStartTime] = useState("09:00");
+  const [autoEndTime, setAutoEndTime] = useState("12:00");
+  const [autoRoom, setAutoRoom] = useState("");
+  const [autoOverride, setAutoOverride] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -145,15 +164,29 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
   const loadSubjects = async (examId: string) => {
     if (!examId) {
       setExamSubjects([]);
+      setExamTimetable([]);
       setSelectedSubjectId("");
       return;
     }
     try {
       const data = await apiFetch<ExamSubject[]>(`/exams/${examId}/subjects`);
       setExamSubjects(data);
-      if (!selectedSubjectId && data.length) setSelectedSubjectId(String(data[0].id));
+      setSelectedSubjectId((prev) => (prev && data.some((item) => String(item.id) === prev) ? prev : data.length ? String(data[0].id) : ""));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load exam subjects");
+    }
+  };
+
+  const loadTimetable = async () => {
+    if (!selectedExamId) {
+      setExamTimetable([]);
+      return;
+    }
+    try {
+      const data = await apiFetch<ExamTimetableItem[]>(`/exams/${selectedExamId}/timetable`);
+      setExamTimetable(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load exam timetable");
     }
   };
 
@@ -212,6 +245,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
   }, [selectedExamId]);
 
   useEffect(() => {
+    if (tab === "timetable") loadTimetable();
     if (tab === "marks") loadMarks();
     if (tab === "reports") loadReports();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -315,6 +349,10 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
       max_marks: Number(subjectForm.max_marks),
       pass_marks: Number(subjectForm.pass_marks),
       exam_date: subjectForm.exam_date || null,
+      start_time: subjectForm.start_time || null,
+      end_time: subjectForm.end_time || null,
+      room: subjectForm.room.trim() || null,
+      timetable_note: subjectForm.timetable_note.trim() || null,
     };
     try {
       const saved = await apiFetch<ExamSubject>(editingSubject ? `/exams/${selectedExamId}/subjects/${editingSubject.id}` : `/exams/${selectedExamId}/subjects`, {
@@ -322,9 +360,10 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
         body: JSON.stringify(payload),
       });
       setSelectedSubjectId(String(saved.id));
-      setSuccess(editingSubject ? "Exam subject updated successfully" : "Exam subject added successfully");
+      setSuccess(editingSubject ? "Exam subject and timetable updated successfully" : "Exam subject added to timetable successfully");
       resetSubject();
       await loadSubjects(selectedExamId);
+      await loadTimetable();
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save exam subject");
@@ -341,6 +380,10 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
       max_marks: String(subject.max_marks),
       pass_marks: String(subject.pass_marks),
       exam_date: subject.exam_date || "",
+      start_time: subject.start_time ? subject.start_time.slice(0, 5) : "09:00",
+      end_time: subject.end_time ? subject.end_time.slice(0, 5) : "12:00",
+      room: subject.room || "",
+      timetable_note: subject.timetable_note || "",
     });
     setTab("subjects");
   };
@@ -354,9 +397,36 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
       if (selectedSubjectId === String(subject.id)) setSelectedSubjectId("");
       setSuccess("Exam subject removed successfully");
       await loadSubjects(selectedExamId);
+      await loadTimetable();
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to remove subject");
+    }
+  };
+
+  const autoScheduleTimetable = async () => {
+    if (!selectedExamId) {
+      setError("Select an exam first");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setSuccess("");
+    const params = new URLSearchParams({
+      start_time: autoStartTime,
+      end_time: autoEndTime,
+      override_existing: String(autoOverride),
+    });
+    if (autoRoom.trim()) params.set("room", autoRoom.trim());
+    try {
+      await apiFetch<ExamSubject[]>(`/exams/${selectedExamId}/auto-schedule-timetable?${params.toString()}`, { method: "POST" });
+      setSuccess("Exam timetable generated from exam dates successfully");
+      await loadSubjects(selectedExamId);
+      await loadTimetable();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to auto schedule timetable");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -402,13 +472,15 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
     await loadData();
   };
 
+  const selectedExamLabel = selectedExam ? `${selectedExam.name} · ${selectedExam.class_name || "Class"}${selectedExam.section_name ? ` - ${selectedExam.section_name}` : ""}` : "Select an exam";
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
         <div>
           <p className="text-sm font-semibold uppercase tracking-wide text-slate-400">Phase 8</p>
           <h1 className="text-2xl font-bold text-slate-900">Exam and Result Management</h1>
-          <p className="text-sm text-slate-500">Create exams, add subjects, enter marks, publish results and view class/subject reports.</p>
+          <p className="text-sm text-slate-500">Create exams, prepare exam timetable, enter marks, publish results and view reports.</p>
         </div>
         <Button onClick={loadData} disabled={loading} className="flex items-center gap-2">
           <RefreshCcw size={16} /> Refresh
@@ -422,6 +494,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
         {[
           ["exams", "Create Exam"],
           ["subjects", "Exam Subjects"],
+          ["timetable", "Exam Timetable"],
           ["marks", "Marks Entry"],
           ["reports", "Reports"],
         ].map(([value, label]) => (
@@ -440,7 +513,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
 
       {!loading && tab === "exams" && (
         <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
-          <AppSection title={editingExam ? "Edit exam" : "Create exam"} description="Choose class, optional section, dates and academic session.">
+          <AppSection title={editingExam ? "Edit exam" : "Create exam"} description="Choose class, optional section, exam date range and academic session.">
             <form onSubmit={saveExam} className="space-y-4">
               <div>
                 <Label>Exam Name</Label>
@@ -496,11 +569,11 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
             </form>
           </AppSection>
 
-          <AppSection title="Exam list" description="Search, select, edit, publish or delete exams.">
+          <AppSection title="Exam list" description="Select an exam to manage timetable, subjects, marks and reports.">
             <form onSubmit={applySearch} className="mb-4 grid gap-3 md:grid-cols-[1fr_180px_auto]">
               <div className="relative">
                 <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
-                <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search exam name/type" className="pl-9" />
+                <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search exams" className="pl-9" />
               </div>
               <SelectBox value={statusFilter} onChange={setStatusFilter}>
                 <option value="">All status</option>
@@ -534,6 +607,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-2">
                           <button type="button" onClick={() => editExam(exam)} className="rounded-lg border border-slate-200 p-2 text-slate-600"><Edit2 size={14} /></button>
+                          <button type="button" onClick={() => { setSelectedExamId(String(exam.id)); setTab("timetable"); }} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700">Timetable</button>
                           <button type="button" onClick={() => publishToggle(exam)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700">{exam.result_status === "PUBLISHED" ? "Unpublish" : "Publish"}</button>
                           <button type="button" onClick={() => deleteExam(exam)} className="rounded-lg border border-red-100 p-2 text-red-600"><Trash2 size={14} /></button>
                         </div>
@@ -550,7 +624,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
 
       {!loading && tab === "subjects" && (
         <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
-          <AppSection title="Add exam subject" description="Attach subjects to the selected exam with max and pass marks.">
+          <AppSection title={editingSubject ? "Edit exam subject" : "Add exam subject"} description="Adding a subject also creates its timetable row. You can set date/time now or auto-generate later.">
             <div className="mb-4">
               <Label>Selected Exam</Label>
               <SelectBox value={selectedExamId} onChange={setSelectedExamId} required>
@@ -583,9 +657,27 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                   <Input type="number" min="0" value={subjectForm.pass_marks} onChange={(event) => setSubjectForm({ ...subjectForm, pass_marks: event.target.value })} required />
                 </div>
               </div>
+              <div className="grid gap-4 md:grid-cols-3">
+                <div>
+                  <Label>Exam Date</Label>
+                  <Input type="date" value={subjectForm.exam_date} onChange={(event) => setSubjectForm({ ...subjectForm, exam_date: event.target.value })} />
+                </div>
+                <div>
+                  <Label>Start Time</Label>
+                  <Input type="time" value={subjectForm.start_time} onChange={(event) => setSubjectForm({ ...subjectForm, start_time: event.target.value })} />
+                </div>
+                <div>
+                  <Label>End Time</Label>
+                  <Input type="time" value={subjectForm.end_time} onChange={(event) => setSubjectForm({ ...subjectForm, end_time: event.target.value })} />
+                </div>
+              </div>
               <div>
-                <Label>Exam Date</Label>
-                <Input type="date" value={subjectForm.exam_date} onChange={(event) => setSubjectForm({ ...subjectForm, exam_date: event.target.value })} />
+                <Label>Room / Hall</Label>
+                <Input value={subjectForm.room} onChange={(event) => setSubjectForm({ ...subjectForm, room: event.target.value })} placeholder="Room 101 / Main Hall" />
+              </div>
+              <div>
+                <Label>Timetable Instructions</Label>
+                <Textarea value={subjectForm.timetable_note} onChange={(event) => setSubjectForm({ ...subjectForm, timetable_note: event.target.value })} placeholder="Bring admit card, calculator allowed, etc." />
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button disabled={saving || !selectedExamId} className="flex items-center gap-2"><Plus size={16} /> {editingSubject ? "Update Subject" : "Add Subject"}</Button>
@@ -602,7 +694,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                     <th className="px-4 py-3">Subject</th>
                     <th className="px-4 py-3">Teacher</th>
                     <th className="px-4 py-3">Marks</th>
-                    <th className="px-4 py-3">Date</th>
+                    <th className="px-4 py-3">Schedule</th>
                     <th className="px-4 py-3">Actions</th>
                   </tr>
                 </thead>
@@ -612,7 +704,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                       <td className="px-4 py-3"><button type="button" onClick={() => setSelectedSubjectId(String(subject.id))} className="font-semibold text-slate-900 hover:underline">{subject.subject_name}</button><p className="text-xs text-slate-500">{subject.marks_entered_count} marks entered</p></td>
                       <td className="px-4 py-3 text-slate-600">{subject.teacher_name || "-"}</td>
                       <td className="px-4 py-3 text-slate-600">Max {subject.max_marks} · Pass {subject.pass_marks}</td>
-                      <td className="px-4 py-3 text-slate-600">{displayDate(subject.exam_date)}</td>
+                      <td className="px-4 py-3 text-slate-600">{displayDate(subject.exam_date)} · {displayTime(subject.start_time)} - {displayTime(subject.end_time)}<p className="text-xs text-slate-400">{subject.room || "No room set"}</p></td>
                       <td className="px-4 py-3">
                         <div className="flex gap-2">
                           <button type="button" onClick={() => editSubject(subject)} className="rounded-lg border border-slate-200 p-2 text-slate-600"><Edit2 size={14} /></button>
@@ -622,6 +714,86 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                     </tr>
                   ))}
                   {examSubjects.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-500">No subjects added for this exam.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </AppSection>
+        </div>
+      )}
+
+      {!loading && tab === "timetable" && (
+        <div className="space-y-6">
+          <AppSection title="Build exam timetable" description="Students can see this timetable from their Exam page even before results are published.">
+            <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+              <div>
+                <Label>Selected Exam</Label>
+                <SelectBox value={selectedExamId} onChange={setSelectedExamId} required>
+                  <option value="">Select exam</option>
+                  {exams.map((exam) => <option key={exam.id} value={exam.id}>{exam.name} · {exam.class_name}</option>)}
+                </SelectBox>
+              </div>
+              <div className="flex items-end gap-2">
+                <Button type="button" onClick={loadTimetable} disabled={!selectedExamId} className="flex items-center gap-2"><Eye size={16} /> View</Button>
+                <button type="button" onClick={() => setTab("subjects")} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700">Add / Edit Subjects</button>
+              </div>
+            </div>
+          </AppSection>
+
+          <AppSection title="Automatic timetable generator" description="Uses the exam start date and assigns one subject per day in subject order. Manual subject dates are kept unless override is enabled.">
+            <div className="grid gap-4 md:grid-cols-5">
+              <div>
+                <Label>Start Time</Label>
+                <Input type="time" value={autoStartTime} onChange={(event) => setAutoStartTime(event.target.value)} />
+              </div>
+              <div>
+                <Label>End Time</Label>
+                <Input type="time" value={autoEndTime} onChange={(event) => setAutoEndTime(event.target.value)} />
+              </div>
+              <div>
+                <Label>Room</Label>
+                <Input value={autoRoom} onChange={(event) => setAutoRoom(event.target.value)} placeholder="Optional" />
+              </div>
+              <label className="flex items-end gap-2 pb-2 text-sm font-semibold text-slate-700">
+                <input type="checkbox" checked={autoOverride} onChange={(event) => setAutoOverride(event.target.checked)} /> Override existing
+              </label>
+              <div className="flex items-end">
+                <Button type="button" onClick={autoScheduleTimetable} disabled={saving || !selectedExamId} className="flex items-center gap-2"><CalendarDays size={16} /> Auto Schedule</Button>
+              </div>
+            </div>
+          </AppSection>
+
+          <AppSection title="Exam timetable preview" description={selectedExamLabel}>
+            <div className="mb-4 grid gap-3 md:grid-cols-3">
+              <Card className="flex items-center gap-3"><CalendarDays className="text-slate-400" size={20} /><div><p className="text-xs text-slate-500">Exam Dates</p><p className="font-semibold text-slate-900">{displayDate(selectedExam?.start_date)} - {displayDate(selectedExam?.end_date)}</p></div></Card>
+              <Card className="flex items-center gap-3"><CheckCircle2 className="text-slate-400" size={20} /><div><p className="text-xs text-slate-500">Subjects</p><p className="font-semibold text-slate-900">{examSubjects.length}</p></div></Card>
+              <Card className="flex items-center gap-3"><Clock className="text-slate-400" size={20} /><div><p className="text-xs text-slate-500">Default Auto Time</p><p className="font-semibold text-slate-900">{autoStartTime} - {autoEndTime}</p></div></Card>
+            </div>
+            <div className="overflow-x-auto rounded-2xl border border-slate-200">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50 text-left text-slate-600">
+                  <tr>
+                    <th className="px-4 py-3">Date</th>
+                    <th className="px-4 py-3">Time</th>
+                    <th className="px-4 py-3">Subject</th>
+                    <th className="px-4 py-3">Teacher</th>
+                    <th className="px-4 py-3">Room</th>
+                    <th className="px-4 py-3">Source</th>
+                    <th className="px-4 py-3">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {examTimetable.map((item) => (
+                    <tr key={item.exam_subject_id}>
+                      <td className="px-4 py-3 font-semibold text-slate-900">{displayDate(item.exam_date)}</td>
+                      <td className="px-4 py-3 text-slate-600">{displayTime(item.start_time)} - {displayTime(item.end_time)}</td>
+                      <td className="px-4 py-3"><p className="font-semibold text-slate-900">{item.subject_name}</p><p className="text-xs text-slate-500">Max {item.max_marks} · Pass {item.pass_marks}</p>{item.timetable_note && <p className="mt-1 text-xs text-slate-500">{item.timetable_note}</p>}</td>
+                      <td className="px-4 py-3 text-slate-600">{item.teacher_name || "-"}</td>
+                      <td className="px-4 py-3 text-slate-600">{item.room || "-"}</td>
+                      <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(item.schedule_source)}`}>{item.schedule_source === "AUTO_FROM_EXAM_START" ? "AUTO" : item.schedule_source}</span></td>
+                      <td className="px-4 py-3"><button type="button" onClick={() => { const subject = examSubjects.find((row) => row.id === item.exam_subject_id); if (subject) editSubject(subject); else setTab("subjects"); }} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700">Edit</button></td>
+                    </tr>
+                  ))}
+                  {examTimetable.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-500">No timetable rows yet. Add subjects or use auto schedule.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -648,7 +820,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
             </div>
           </div>
 
-          {selectedSubject && <p className="mb-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">Selected subject: <b>{selectedSubject.subject_name}</b> · Max marks: {selectedSubject.max_marks} · Pass marks: {selectedSubject.pass_marks}</p>}
+          {selectedSubject && <p className="mb-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">Selected subject: <b>{selectedSubject.subject_name}</b> · Exam: {displayDate(selectedSubject.exam_date)} · {displayTime(selectedSubject.start_time)} - {displayTime(selectedSubject.end_time)} · Max marks: {selectedSubject.max_marks} · Pass marks: {selectedSubject.pass_marks}</p>}
 
           <div className="overflow-x-auto rounded-2xl border border-slate-200">
             <table className="min-w-full divide-y divide-slate-200 text-sm">

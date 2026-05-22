@@ -375,10 +375,45 @@ export type ExamSubject = {
   max_marks: number;
   pass_marks: number;
   exam_date?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  room?: string | null;
+  timetable_note?: string | null;
   is_active: boolean;
   marks_entered_count: number;
   created_at: string;
   updated_at: string;
+};
+
+
+export type ExamTimetableItem = {
+  exam_id: number;
+  exam_name: string;
+  exam_type?: string | null;
+  result_status: string;
+  class_id: number;
+  section_id?: number | null;
+  class_name?: string | null;
+  section_name?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  exam_subject_id: number;
+  subject_id: number;
+  subject_name?: string | null;
+  teacher_id?: number | null;
+  teacher_name?: string | null;
+  max_marks: number;
+  pass_marks: number;
+  exam_date?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  room?: string | null;
+  timetable_note?: string | null;
+  schedule_source: string;
+  student_id?: number | null;
+  student_name?: string | null;
+  admission_no?: string | null;
+  roll_number?: string | null;
 };
 
 export type ExamStudent = {

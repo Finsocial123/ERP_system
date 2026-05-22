@@ -95,6 +95,7 @@ const cardIcons: Record<string, LucideIcon> = {
   children: Users,
   attendance_alerts: CalendarCheck,
   current_class: GraduationCap,
+  timetable_slots: CalendarCheck,
 };
 
 const toneClass: Record<string, string> = {

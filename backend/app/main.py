@@ -13,6 +13,9 @@ from app.models import (  # noqa: F401
     Department,
     HomeworkAssignment,
     HomeworkSubmission,
+    TimetableDay,
+    TimetableEntry,
+    TimetablePeriod,
     ParentGuardian,
     School,
     SchoolClass,
@@ -23,12 +26,12 @@ from app.models import (  # noqa: F401
     TeacherSubject,
     User,
 )
-from app.routes import academic, auth, dashboard, homework, people, schools
+from app.routes import academic, auth, dashboard, homework, people, schools, timetable
 
 Base.metadata.create_all(bind=engine)
 run_startup_migrations(engine)
 
-app = FastAPI(title="School ERP Phase 5 API", version="5.0.0")
+app = FastAPI(title="School ERP Phase 7 API", version="7.0.0")
 
 UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -45,7 +48,7 @@ app.add_middleware(
 
 @app.get("/")
 def root():
-    return {"message": "School ERP Phase 5 API is running"}
+    return {"message": "School ERP Phase 7 API is running"}
 
 
 @app.get("/health")
@@ -59,3 +62,4 @@ app.include_router(academic.router)
 app.include_router(people.router)
 app.include_router(dashboard.router)
 app.include_router(homework.router)
+app.include_router(timetable.router)

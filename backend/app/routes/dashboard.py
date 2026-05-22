@@ -11,6 +11,7 @@ from app.models.academic import AcademicSession, Department, SchoolClass, Sectio
 from app.models.homework import HomeworkAssignment, HomeworkSubmission
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.school import School
+from app.models.timetable import TimetableEntry
 from app.models.user import User, UserRole
 
 router = APIRouter(prefix="/dashboard", tags=["Phase 3 - Dashboard and Quick Analytics"])
@@ -86,6 +87,7 @@ def _admin_counts(db: Session, school_id: int) -> dict[str, int]:
         "students": _count(db, db.query(Student).filter(Student.school_id == school_id, Student.is_active.is_(True))),
         "teachers": _count(db, db.query(Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True))),
         "homework": _count(db, db.query(HomeworkAssignment).filter(HomeworkAssignment.school_id == school_id, HomeworkAssignment.is_active.is_(True))),
+        "timetable_slots": _count(db, db.query(TimetableEntry).filter(TimetableEntry.school_id == school_id, TimetableEntry.is_active.is_(True))),
     }
 
 
@@ -329,6 +331,22 @@ def _teacher_homework_counts(db: Session, school_id: int, user: User) -> dict[st
     return {"homework_created": homework_created, "submissions_to_check": submissions_to_check}
 
 
+def _teacher_timetable_slots(db: Session, school_id: int, user: User) -> int:
+    teacher = _teacher_for_user(db, school_id, user)
+    if not teacher:
+        return 0
+    return _count(db, db.query(TimetableEntry).filter(TimetableEntry.school_id == school_id, TimetableEntry.teacher_id == teacher.id, TimetableEntry.is_active.is_(True)))
+
+
+def _student_timetable_slots(db: Session, school_id: int, student: Student | None) -> int:
+    if not student or not student.class_id:
+        return 0
+    query = db.query(TimetableEntry).filter(TimetableEntry.school_id == school_id, TimetableEntry.class_id == student.class_id, TimetableEntry.is_active.is_(True))
+    if student.section_id is not None:
+        query = query.filter(or_(TimetableEntry.section_id.is_(None), TimetableEntry.section_id == student.section_id))
+    return _count(db, query)
+
+
 def _pending_homework_for_children(db: Session, school_id: int, children: list[Student]) -> int:
     return sum(_pending_homework_for_student(db, school_id, child) for child in children)
 
@@ -427,6 +445,7 @@ def _admin_dashboard(db: Session, school_id: int) -> dict[str, Any]:
         _card("new_admissions", "New Admissions", new_admissions, "Admissions in the last 30 days", "success"),
         _card("current_session", "Current Academic Session", session.name if session else "Not set", "Active/latest session"),
         _card("homework", "Homework Assigned", counts["homework"], "Total active homework assignments", "success"),
+        _card("timetable_slots", "Timetable Slots", counts["timetable_slots"], "Active class timetable entries", "info"),
     ]
 
     counts.update(
@@ -446,7 +465,7 @@ def _admin_dashboard(db: Session, school_id: int) -> dict[str, Any]:
         "current_academic_session": _session_payload(session),
         "recent_activities": _recent_activities(db, school_id, UserRole.SCHOOL_ADMIN.value),
         "charts": _admin_charts(db, school_id, counts),
-        "next_steps": ["Attendance Management", "Homework", "Fees", "Timetable", "Exams"],
+        "next_steps": ["Attendance Management", "Fees", "Exams", "Communication", "Reports"],
     }
 
 
@@ -462,6 +481,7 @@ def _teacher_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
         total_students = _teacher_student_count(db, school_id, teacher)
 
     homework_counts = _teacher_homework_counts(db, school_id, user)
+    timetable_slots = _teacher_timetable_slots(db, school_id, user)
 
     cards = [
         _card("my_subjects", "My Subjects", my_subjects, "Assigned subject scopes"),
@@ -470,6 +490,7 @@ def _teacher_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
         _card("today_attendance", "Today Attendance", _today_attendance_count(db, school_id), "Phase 4 attendance data", "info"),
         _card("homework_created", "Homework Created", homework_counts["homework_created"], "Active homework assignments", "success"),
         _card("submissions_to_check", "Submissions To Check", homework_counts["submissions_to_check"], "Submitted homework waiting for checking", "warning"),
+        _card("timetable_slots", "Timetable Slots", timetable_slots, "Assigned weekly teaching slots", "info"),
     ]
 
     return {
@@ -490,6 +511,7 @@ def _teacher_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
                     {"label": "Students", "value": total_students},
                     {"label": "Homework", "value": homework_counts["homework_created"]},
                     {"label": "To Check", "value": homework_counts["submissions_to_check"]},
+                    {"label": "Timetable", "value": timetable_slots},
                 ],
             }
         ],
@@ -506,12 +528,14 @@ def _student_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
             class_label += f" - {student.section.name}"
 
     pending_homework = _pending_homework_for_student(db, school_id, student)
+    timetable_slots = _student_timetable_slots(db, school_id, student)
 
     cards = [
         _card("homework", "Pending Homework", pending_homework, "Assignments waiting for your submission", "warning"),
         _card("attendance_percent", "Attendance %", 0, "Attendance module comes in Phase 4", "info"),
         _card("pending_fees", "Pending Fees", _pending_fees_count(db, school_id), "Fee module comes in Phase 6", "warning"),
         _card("notices", "Notices", 0, "Communication module comes in Phase 9"),
+        _card("timetable_slots", "Timetable Slots", timetable_slots, "Weekly class timetable slots", "info"),
         _card("current_class", "Current Class", class_label, "Student class and section"),
     ]
 
@@ -531,6 +555,7 @@ def _student_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
                     {"label": "Homework", "value": pending_homework},
                     {"label": "Attendance", "value": 0},
                     {"label": "Notices", "value": 0},
+                    {"label": "Timetable", "value": timetable_slots},
                 ],
             }
         ],
@@ -541,11 +566,13 @@ def _student_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
 def _parent_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]:
     children = _children_for_parent(db, school_id, user)
     pending_homework = _pending_homework_for_children(db, school_id, children)
+    timetable_slots = sum(_student_timetable_slots(db, school_id, child) for child in children)
     cards = [
         _card("children", "Children", len(children), "Linked active student profiles"),
         _card("pending_homework", "Pending Homework", pending_homework, "Homework pending for linked children", "warning"),
         _card("pending_fees", "Pending Fees", _pending_fees_count(db, school_id), "Fee module comes in Phase 6", "warning"),
         _card("notices", "Notices", 0, "Communication module comes in Phase 9"),
+        _card("timetable_slots", "Timetable Slots", timetable_slots, "Weekly slots for linked children", "info"),
         _card("attendance_alerts", "Attendance Alerts", 0, "Low attendance warnings come in Phase 4", "info"),
     ]
 
@@ -566,6 +593,7 @@ def _parent_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]
                     {"label": "Homework", "value": pending_homework},
                     {"label": "Fees", "value": 0},
                     {"label": "Alerts", "value": 0},
+                    {"label": "Timetable", "value": timetable_slots},
                 ],
             }
         ],

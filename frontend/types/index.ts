@@ -226,3 +226,78 @@ export type HomeworkSubmission = {
   submitted_at?: string | null;
   checked_at?: string | null;
 };
+
+export type TimetablePeriod = {
+  id: number;
+  period_number: number;
+  name: string;
+  start_time?: string | null;
+  end_time?: string | null;
+  is_break: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TimetableDay = {
+  id: number;
+  day_of_week: string;
+  display_name: string;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TimetableMetaItem = {
+  id: number;
+  name: string;
+  extra?: string | null;
+};
+
+export type TimetableMeta = {
+  classes: TimetableMetaItem[];
+  sections: TimetableMetaItem[];
+  subjects: TimetableMetaItem[];
+  teachers: TimetableMetaItem[];
+  periods: TimetablePeriod[];
+  days: TimetableDay[];
+  academic_sessions: TimetableMetaItem[];
+  current_academic_session_id?: number | null;
+};
+
+export type TimetableEntry = {
+  id: number;
+  class_id: number;
+  section_id?: number | null;
+  day_id: number;
+  period_id: number;
+  subject_id?: number | null;
+  teacher_id?: number | null;
+  room?: string | null;
+  note?: string | null;
+  academic_session_id?: number | null;
+  is_active: boolean;
+  class_name?: string | null;
+  section_name?: string | null;
+  day_name?: string | null;
+  day_of_week?: string | null;
+  day_sort_order?: number | null;
+  period_name?: string | null;
+  period_number?: number | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  subject_name?: string | null;
+  teacher_name?: string | null;
+  academic_session_name?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TimetableGrid = {
+  mode: string;
+  title: string;
+  entries: TimetableEntry[];
+  periods: TimetablePeriod[];
+  days: TimetableDay[];
+};

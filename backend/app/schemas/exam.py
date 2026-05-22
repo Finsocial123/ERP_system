@@ -109,6 +109,31 @@ class ExamSubjectRead(BaseModel):
     updated_at: datetime
 
 
+class ExamTimetableSubject(BaseModel):
+    exam_subject_id: int
+    subject_id: int
+    subject_name: str
+    teacher_id: int | None = None
+    teacher_name: str | None = None
+    exam_date: date | None = None
+    max_marks: float
+    pass_marks: float
+
+
+class StudentExamTimetable(BaseModel):
+    exam_id: int
+    exam_name: str
+    exam_type: str | None = None
+    description: str | None = None
+    result_status: str
+    class_name: str | None = None
+    section_name: str | None = None
+    academic_session_name: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    subjects: list[ExamTimetableSubject]
+
+
 class ExamStudentRead(BaseModel):
     id: int
     admission_no: str

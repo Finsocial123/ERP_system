@@ -26,9 +26,11 @@ from app.schemas.exam import (
     ExamSubjectRead,
     ExamSubjectResultRead,
     ExamSubjectUpdate,
+    ExamTimetableSubject,
     ExamUpdate,
     ParentReportCard,
     ReportCardSubject,
+    StudentExamTimetable,
     StudentReportCard,
 )
 
@@ -388,6 +390,57 @@ def _exam_query_for_student(db: Session, school_id: int, student: Student):
             or_(Exam.section_id.is_(None), Exam.section_id == student.section_id),
         )
         .order_by(Exam.start_date.desc().nullslast(), Exam.id.desc())
+    )
+
+
+def _exam_timetable_query_for_student(db: Session, school_id: int, student: Student):
+    return (
+        db.query(Exam)
+        .filter(
+            Exam.school_id == school_id,
+            Exam.class_id == student.class_id,
+            Exam.is_active.is_(True),
+            or_(Exam.section_id.is_(None), Exam.section_id == student.section_id),
+        )
+        .order_by(Exam.start_date.asc().nullslast(), Exam.id.desc())
+    )
+
+
+def _exam_timetable_payload(db: Session, exam: Exam) -> StudentExamTimetable:
+    subjects = (
+        db.query(ExamSubject)
+        .filter(
+            ExamSubject.school_id == exam.school_id,
+            ExamSubject.exam_id == exam.id,
+            ExamSubject.is_active.is_(True),
+        )
+        .order_by(ExamSubject.exam_date.asc().nullslast(), ExamSubject.id.asc())
+        .all()
+    )
+    return StudentExamTimetable(
+        exam_id=exam.id,
+        exam_name=exam.name,
+        exam_type=exam.exam_type,
+        description=exam.description,
+        result_status=exam.result_status,
+        class_name=exam.school_class.name if exam.school_class else None,
+        section_name=exam.section.name if exam.section else None,
+        academic_session_name=exam.academic_session.name if exam.academic_session else None,
+        start_date=exam.start_date,
+        end_date=exam.end_date,
+        subjects=[
+            ExamTimetableSubject(
+                exam_subject_id=item.id,
+                subject_id=item.subject_id,
+                subject_name=item.subject.name if item.subject else "Subject",
+                teacher_id=item.teacher_id,
+                teacher_name=item.teacher.full_name if item.teacher else None,
+                exam_date=item.exam_date,
+                max_marks=item.max_marks,
+                pass_marks=item.pass_marks,
+            )
+            for item in subjects
+        ],
     )
 
 
@@ -756,6 +809,19 @@ def subject_result(
         results=results,
         summary={"total_students": total, "passed": passed, "failed": failed, "pending": pending, "average_marks": avg_marks},
     )
+
+
+@router.get("/my-timetable", response_model=list[StudentExamTimetable])
+def my_exam_timetable(
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(UserRole.STUDENT.value)),
+    db: Session = Depends(get_db),
+):
+    student = _student_for_user(db, school_id, current_user)
+    if not student:
+        return []
+    exams = _exam_timetable_query_for_student(db, school_id, student).all()
+    return [_exam_timetable_payload(db, exam) for exam in exams]
 
 
 @router.get("/my-report-cards", response_model=list[StudentReportCard])

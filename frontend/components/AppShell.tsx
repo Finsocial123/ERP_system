@@ -49,12 +49,12 @@ const navItems: NavItem[] = [
 
   { href: "/teacher-dashboard", label: "Teacher Dashboard", icon: LayoutDashboard, roles: ["TEACHER"] },
   { href: "/teacher-dashboard", label: "My Classes", icon: Home, roles: ["TEACHER"] },
-  { href: "/teacher-dashboard", label: "Attendance", icon: CalendarCheck, roles: ["TEACHER"] },
+  { href: "/attendance", label: "Attendance", icon: CalendarCheck, roles: ["TEACHER"] },
   { href: "/teacher-homework", label: "Homework", icon: ClipboardList, roles: ["TEACHER"] },
 
   { href: "/student-dashboard", label: "Student Dashboard", icon: LayoutDashboard, roles: ["STUDENT"] },
   { href: "/student-homework", label: "Homework", icon: ClipboardList, roles: ["STUDENT"] },
-  { href: "/student-dashboard", label: "Attendance", icon: CalendarCheck, roles: ["STUDENT"] },
+  { href: "/attendance/my", label: "Attendance", icon: CalendarCheck, roles: ["STUDENT"] },
   { href: "/student-dashboard", label: "Fees", icon: CreditCard, roles: ["STUDENT"] },
 
   // ── Parent ─────────────────────────────────────────────────────────────────

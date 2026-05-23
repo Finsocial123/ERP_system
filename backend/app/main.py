@@ -35,7 +35,8 @@ from app.models import (  # noqa: F401
     TeacherSubject,
     User,
 )
-from app.routes import academic, attendance, reports,auth, dashboard, exams,fees, homework, people, schools, library, timetable
+
+from app.routes import academic, attendance, reports,auth, dashboard, exams,fees, homework, people, schools, library, timetable, notice
 
 Base.metadata.create_all(bind=engine)
 run_startup_migrations(engine)
@@ -70,6 +71,7 @@ app.include_router(schools.router)
 app.include_router(academic.router)
 app.include_router(people.router)
 app.include_router(dashboard.router)
+app.include_router(notice.router)
 app.include_router(attendance.router)
 app.include_router(homework.router)
 app.include_router(timetable.router)

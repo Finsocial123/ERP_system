@@ -258,7 +258,10 @@ def return_book(
     db: Session = Depends(get_db),
 ):
     issue = _get_issue_or_404(db, issue_id, school_id)
-    if issue.status != IssueStatus.ISSUED.value:
+    if issue.status not in {
+         IssueStatus.ISSUED.value,
+         IssueStatus.OVERDUE.value,
+    }:
         raise HTTPException(status_code=400, detail="This book is not currently issued")
 
     issue.return_date = payload.return_date

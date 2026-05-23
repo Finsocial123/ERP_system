@@ -11,6 +11,7 @@ import AppShell from "@/components/AppShell";
 import { Button, Card, Input, Label } from "@/components/ui";
 import { apiFetch } from "@/lib/api";
 import { getSavedAuth } from "@/lib/api";
+import React from "react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Book = {
@@ -498,8 +499,8 @@ function IssueTable({ issues, loading, expanded, onExpand, onReturn, onPayFine, 
               const meta = STATUS_META[issue.status] ?? STATUS_META["ISSUED"];
               const isExp = expanded === issue.id;
               return (
-                <>
-                  <tr key={issue.id} className="hover:bg-slate-50 transition cursor-pointer"
+                <React.Fragment  key={issue.id}>
+                  <tr  className="hover:bg-slate-50 transition cursor-pointer"
                     onClick={() => onExpand(isExp ? null : issue.id)}>
                     <td className="px-4 py-3">
                       <p className="font-medium text-slate-900 max-w-37.5 truncate">{issue.book_title}</p>
@@ -553,7 +554,7 @@ function IssueTable({ issues, loading, expanded, onExpand, onReturn, onPayFine, 
                       </td>
                     </tr>
                   )}
-                </>
+                </React.Fragment>
               );
             })}
           </tbody>

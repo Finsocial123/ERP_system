@@ -7,7 +7,7 @@ from app.core.database import get_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
 from app.models.academic import AcademicSession, SchoolClass, Section
 from app.models.attendance import AttendanceStatus, StudentAttendance
-from app.models.people import Student
+from app.models.people import ClassTeacherAssignment, Student, Teacher, TeacherSubject
 from app.models.user import User, UserRole
 from app.schemas.attendance import (
     AttendanceRead,
@@ -20,10 +20,11 @@ from app.schemas.common import MessageResponse
 
 router = APIRouter(prefix="/attendance", tags=["Phase 4 - Attendance"])
 
-ALLOWED_ROLES = [
-    UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN, UserRole.TEACHER
-]
+ADMIN_ROLES = [UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN]
+ALLOWED_ROLES = [*ADMIN_ROLES, UserRole.TEACHER]
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _validate_session(db: Session, session_id: int, school_id: int) -> AcademicSession:
     sess = db.query(AcademicSession).filter(
@@ -47,7 +48,102 @@ def _student_full_name(s: Student) -> str:
     return f"{s.first_name} {s.last_name or ''}".strip()
 
 
-# ── Bulk mark attendance for a class on a date ──────────────────────────────
+def _get_teacher(db: Session, school_id: int, user: User) -> Teacher | None:
+    """Resolve the Teacher record for the current user."""
+    return db.query(Teacher).filter(
+        Teacher.user_id == user.id,
+        Teacher.school_id == school_id,
+    ).first()
+
+
+def _teacher_allowed_class_ids(db: Session, school_id: int, teacher: Teacher) -> set[int]:
+    """
+    Return the set of class_ids a teacher is allowed to manage attendance for.
+    Includes:
+      1. Classes where they are assigned as class teacher (ClassTeacherAssignment)
+      2. Classes where they are assigned as a subject teacher (TeacherSubject)
+    """
+    # class teacher assignments
+    class_teacher_ids = {
+        row.class_id
+        for row in db.query(ClassTeacherAssignment).filter(
+            ClassTeacherAssignment.teacher_id == teacher.id,
+            ClassTeacherAssignment.school_id == school_id,
+        ).all()
+    }
+
+    # subject teacher assignments (TeacherSubject has class_id)
+    subject_teacher_ids = {
+        row.class_id
+        for row in db.query(TeacherSubject).filter(
+            TeacherSubject.teacher_id == teacher.id,
+            TeacherSubject.school_id == school_id,
+            TeacherSubject.class_id.isnot(None),
+        ).all()
+    }
+
+    return class_teacher_ids | subject_teacher_ids
+
+
+def _assert_teacher_can_access_class(
+    db: Session, school_id: int, user: User, class_id: int
+) -> None:
+    """
+    If the current user is a TEACHER, verify they are assigned to the given class.
+    Admins/owners pass through unconditionally.
+    """
+    if user.role not in (UserRole.TEACHER, UserRole.TEACHER.value):
+        return  # admin — no restriction
+
+    teacher = _get_teacher(db, school_id, user)
+    if not teacher:
+        raise HTTPException(
+            status_code=403,
+            detail="Teacher profile not found for your account.",
+        )
+
+    allowed = _teacher_allowed_class_ids(db, school_id, teacher)
+    if class_id not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not assigned to this class. You can only take attendance for your assigned classes.",
+        )
+
+
+# ── New endpoint: get classes a teacher is allowed to take attendance for ────
+@router.get("/my-classes", response_model=list[dict])
+def teacher_allowed_classes(
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*ALLOWED_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """
+    For TEACHERS: returns only classes they are assigned to.
+    For ADMINS: returns all classes in the school.
+    Used by the frontend to populate the class dropdown.
+    """
+    if current_user.role in (UserRole.TEACHER, UserRole.TEACHER.value):
+        teacher = _get_teacher(db, school_id, current_user)
+        if not teacher:
+            return []
+        allowed_ids = _teacher_allowed_class_ids(db, school_id, teacher)
+        if not allowed_ids:
+            return []
+        classes = db.query(SchoolClass).filter(
+            SchoolClass.id.in_(allowed_ids),
+            SchoolClass.school_id == school_id,
+            SchoolClass.is_active.is_(True),
+        ).order_by(SchoolClass.name).all()
+    else:
+        classes = db.query(SchoolClass).filter(
+            SchoolClass.school_id == school_id,
+            SchoolClass.is_active.is_(True),
+        ).order_by(SchoolClass.name).all()
+
+    return [{"id": c.id, "name": c.name} for c in classes]
+
+
+# ── Bulk mark attendance ──────────────────────────────────────────────────────
 @router.post("/bulk", response_model=list[AttendanceRead], status_code=status.HTTP_201_CREATED)
 def bulk_mark_attendance(
     payload: BulkAttendanceCreate,
@@ -57,6 +153,7 @@ def bulk_mark_attendance(
 ):
     _validate_session(db, payload.session_id, school_id)
     _validate_class(db, payload.class_id, school_id)
+    _assert_teacher_can_access_class(db, school_id, current_user, payload.class_id)
 
     if payload.section_id:
         sec = db.query(Section).filter(
@@ -65,7 +162,6 @@ def bulk_mark_attendance(
         if not sec:
             raise HTTPException(status_code=404, detail="Section not found")
 
-    # Validate all student_ids belong to this school
     student_ids = [e.student_id for e in payload.entries]
     students = db.query(Student).filter(
         Student.id.in_(student_ids), Student.school_id == school_id
@@ -110,7 +206,7 @@ def bulk_mark_attendance(
     return results
 
 
-# ── Get attendance sheet for a class on a date (with student list) ───────────
+# ── Get attendance sheet ──────────────────────────────────────────────────────
 @router.get("/sheet", response_model=list[DayAttendanceRecord])
 def get_attendance_sheet(
     session_id: int = Query(...),
@@ -123,6 +219,7 @@ def get_attendance_sheet(
 ):
     _validate_session(db, session_id, school_id)
     _validate_class(db, class_id, school_id)
+    _assert_teacher_can_access_class(db, school_id, current_user, class_id)
 
     q = db.query(Student).filter(
         Student.school_id == school_id,
@@ -158,7 +255,7 @@ def get_attendance_sheet(
     return records
 
 
-# ── Update single attendance record ─────────────────────────────────────────
+# ── Update single attendance record ──────────────────────────────────────────
 @router.patch("/{attendance_id}", response_model=AttendanceRead)
 def update_attendance(
     attendance_id: int,
@@ -173,6 +270,10 @@ def update_attendance(
     ).first()
     if not record:
         raise HTTPException(status_code=404, detail="Attendance record not found")
+
+    # teacher can only edit records for their own classes
+    _assert_teacher_can_access_class(db, school_id, current_user, record.class_id)
+
     record.status = payload.status
     record.note = payload.note
     record.marked_by = current_user.id
@@ -181,7 +282,7 @@ def update_attendance(
     return record
 
 
-# ── Student attendance summary (percentage + low attendance flag) ────────────
+# ── Attendance summary ────────────────────────────────────────────────────────
 @router.get("/summary", response_model=list[StudentAttendanceSummary])
 def attendance_summary(
     session_id: int = Query(...),
@@ -193,6 +294,7 @@ def attendance_summary(
 ):
     _validate_session(db, session_id, school_id)
     _validate_class(db, class_id, school_id)
+    _assert_teacher_can_access_class(db, school_id, current_user, class_id)
 
     q = db.query(Student).filter(
         Student.school_id == school_id,
@@ -217,7 +319,6 @@ def attendance_summary(
         leave = sum(1 for r in records if r.status == AttendanceStatus.LEAVE.value)
         half_day = sum(1 for r in records if r.status == AttendanceStatus.HALF_DAY.value)
 
-        # present + half_day counts as 0.5 for percentage
         effective_present = present + (half_day * 0.5)
         percentage = round((effective_present / total * 100), 1) if total > 0 else 0.0
 
@@ -236,7 +337,7 @@ def attendance_summary(
     return summaries
 
 
-# ── Date-wise attendance list for a class ────────────────────────────────────
+# ── Date-wise attendance ──────────────────────────────────────────────────────
 @router.get("/by-date", response_model=list[AttendanceRead])
 def attendance_by_date(
     session_id: int = Query(...),
@@ -247,6 +348,8 @@ def attendance_by_date(
     current_user: User = Depends(require_roles(*ALLOWED_ROLES)),
     db: Session = Depends(get_db),
 ):
+    _assert_teacher_can_access_class(db, school_id, current_user, class_id)
+
     q = db.query(StudentAttendance).filter(
         StudentAttendance.school_id == school_id,
         StudentAttendance.class_id == class_id,
@@ -258,7 +361,7 @@ def attendance_by_date(
     return q.all()
 
 
-# ── Student's own attendance (for student/parent role) ──────────────────────
+# ── Student's own attendance ──────────────────────────────────────────────────
 @router.get("/my", response_model=list[AttendanceRead])
 def my_attendance(
     session_id: int = Query(...),

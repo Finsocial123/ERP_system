@@ -6,7 +6,9 @@ import { AlertTriangle, CheckCircle2, ChevronDown, Clock, RefreshCw, Save, XCirc
 import AppShell from "@/components/AppShell";
 import { Button, Card, Input, Label } from "@/components/ui";
 import { apiFetch } from "@/lib/api";
-import type { AcademicClass, AcademicSession, Section } from "@/types";
+import type { AcademicSession, Section } from "@/types";
+
+type AllowedClass = { id: number; name: string };
 
 type DayRecord = {
   student_id: number;
@@ -50,7 +52,7 @@ export default function AttendancePage() {
 
   // filter state
   const [sessions, setSessions] = useState<AcademicSession[]>([]);
-  const [classes, setClasses] = useState<AcademicClass[]>([]);
+  const [classes, setClasses] = useState<AllowedClass[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [sessionId, setSessionId] = useState("");
   const [classId, setClassId] = useState("");
@@ -75,7 +77,7 @@ export default function AttendancePage() {
   useEffect(() => {
     Promise.all([
       apiFetch<AcademicSession[]>("/academic-sessions"),
-      apiFetch<AcademicClass[]>("/classes"),
+      apiFetch<AllowedClass[]>("/attendance/my-classes"),
     ])
       .then(([s, c]) => {
         setSessions(s);

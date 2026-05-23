@@ -49,6 +49,14 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
     headers,
   });
 
+  // Handle 204 No Content responses (e.g., DELETE operations)
+  if (res.status === 204) {
+    if (!res.ok) {
+      throw new Error("Request failed");
+    }
+    return undefined as T;
+  }
+
   const contentType = res.headers.get("content-type") || "";
   const data = contentType.includes("application/json") ? await res.json() : await res.text();
 

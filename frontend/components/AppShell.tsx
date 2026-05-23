@@ -19,6 +19,7 @@ import {
   UserRound,
   Users,
   X,
+  NotebookIcon,
 } from "lucide-react";
 
 import { clearAuth, dashboardPathForRole, getSavedAuth } from "@/lib/api";
@@ -34,29 +35,148 @@ type NavItem = {
 const ADMIN_ROLES = ["SUPER_ADMIN", "SCHOOL_OWNER", "SCHOOL_ADMIN"];
 
 const navItems: NavItem[] = [
-  { href: "/dashboard", label: "Admin Dashboard", icon: LayoutDashboard, roles: ADMIN_ROLES },
+  {
+    href: "/dashboard",
+    label: "Admin Dashboard",
+    icon: LayoutDashboard,
+    roles: ADMIN_ROLES,
+  },
   { href: "/students", label: "Students", icon: Users, roles: ADMIN_ROLES },
   { href: "/teachers", label: "Teachers", icon: UserRound, roles: ADMIN_ROLES },
-  { href: "/settings/school", label: "School Profile", icon: School, roles: ADMIN_ROLES },
-  { href: "/setup/academic-sessions", label: "Academic Sessions", icon: GraduationCap, roles: ADMIN_ROLES },
-  { href: "/setup/departments", label: "Departments", icon: Building2, roles: ADMIN_ROLES },
-  { href: "/setup/classes", label: "Classes", icon: Settings, roles: ADMIN_ROLES },
-  { href: "/setup/sections", label: "Sections", icon: Settings, roles: ADMIN_ROLES },
-  { href: "/setup/subjects", label: "Subjects", icon: BookOpen, roles: ADMIN_ROLES },
+  {
+    href: "/settings/school",
+    label: "School Profile",
+    icon: School,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/academic-sessions",
+    label: "Academic Sessions",
+    icon: GraduationCap,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/departments",
+    label: "Departments",
+    icon: Building2,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/classes",
+    label: "Classes",
+    icon: Settings,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/sections",
+    label: "Sections",
+    icon: Settings,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/subjects",
+    label: "Subjects",
+    icon: BookOpen,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/notice",
+    label: "Notice",
+    icon: NotebookIcon,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/teacher-dashboard",
+    label: "Teacher Dashboard",
+    icon: LayoutDashboard,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teacher-dashboard",
+    label: "My Classes",
+    icon: Home,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teacher-dashboard",
+    label: "Attendance",
+    icon: CalendarCheck,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teacher-dashboard",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teachers/notice",
+    label: "Notices",
+    icon: NotebookIcon,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teachers/curricular",
+    label: "Curricular",
+    icon: NotebookIcon,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/student-dashboard",
+    label: "Student Dashboard",
+    icon: LayoutDashboard,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/student-dashboard",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/student-dashboard",
+    label: "Attendance",
+    icon: CalendarCheck,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/students/notice",
+    label: "Notices",
+    icon: NotebookIcon,
+    roles: ["STUDENT"],
+  },
 
-  { href: "/teacher-dashboard", label: "Teacher Dashboard", icon: LayoutDashboard, roles: ["TEACHER"] },
-  { href: "/teacher-dashboard", label: "My Classes", icon: Home, roles: ["TEACHER"] },
-  { href: "/teacher-dashboard", label: "Attendance", icon: CalendarCheck, roles: ["TEACHER"] },
-  { href: "/teacher-dashboard", label: "Homework", icon: ClipboardList, roles: ["TEACHER"] },
+  {
+    href: "/student-dashboard",
+    label: "Fees",
+    icon: CreditCard,
+    roles: ["STUDENT"],
+  },
 
-  { href: "/student-dashboard", label: "Student Dashboard", icon: LayoutDashboard, roles: ["STUDENT"] },
-  { href: "/student-dashboard", label: "Homework", icon: ClipboardList, roles: ["STUDENT"] },
-  { href: "/student-dashboard", label: "Attendance", icon: CalendarCheck, roles: ["STUDENT"] },
-  { href: "/student-dashboard", label: "Fees", icon: CreditCard, roles: ["STUDENT"] },
-
-  { href: "/parent-dashboard", label: "Parent Dashboard", icon: LayoutDashboard, roles: ["PARENT"] },
-  { href: "/parent-dashboard", label: "Child Attendance", icon: CalendarCheck, roles: ["PARENT"] },
-  { href: "/parent-dashboard", label: "Fees", icon: CreditCard, roles: ["PARENT"] },
+  {
+    href: "/parent-dashboard",
+    label: "Parent Dashboard",
+    icon: LayoutDashboard,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parents/notice",
+    label: "Notice",
+    icon: NotebookIcon,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parent-dashboard",
+    label: "Child Attendance",
+    icon: CalendarCheck,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parent-dashboard",
+    label: "Fees",
+    icon: CreditCard,
+    roles: ["PARENT"],
+  },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -77,9 +197,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     }
     const protectedPaths = new Set(navItems.map((item) => item.href));
     if (protectedPaths.has(pathname)) {
-      const canOpenPath = navItems.some((item) => item.href === pathname && item.roles.includes(saved.user.role));
+      const canOpenPath = navItems.some(
+        (item) =>
+          item.href === pathname && item.roles.includes(saved.user.role),
+      );
       if (!canOpenPath) {
-        router.replace(dashboardPathForRole(saved.user.role, Boolean(saved.user.must_change_password)));
+        router.replace(
+          dashboardPathForRole(
+            saved.user.role,
+            Boolean(saved.user.must_change_password),
+          ),
+        );
         return;
       }
     }
@@ -96,16 +224,31 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     router.replace("/login");
   };
 
-  if (!auth) return <div className="flex min-h-screen items-center justify-center text-slate-600">Loading...</div>;
+  if (!auth)
+    return (
+      <div className="flex min-h-screen items-center justify-center text-slate-600">
+        Loading...
+      </div>
+    );
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <aside className={`fixed inset-y-0 left-0 z-40 w-72 border-r border-slate-200 bg-white p-4 transition lg:translate-x-0 ${open ? "translate-x-0" : "-translate-x-full"}`}>
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-72 border-r border-slate-200 bg-white p-4 transition lg:translate-x-0 ${open ? "translate-x-0" : "-translate-x-full"}`}
+      >
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">ERP Portal</p>
-            <h1 className="text-lg font-bold text-slate-900">{auth.school?.name || "School ERP"}</h1>
-            {auth.school?.school_code && <p className="mt-1 text-xs text-slate-500">Code: {auth.school.school_code}</p>}
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              ERP Portal
+            </p>
+            <h1 className="text-lg font-bold text-slate-900">
+              {auth.school?.name || "School ERP"}
+            </h1>
+            {auth.school?.school_code && (
+              <p className="mt-1 text-xs text-slate-500">
+                Code: {auth.school.school_code}
+              </p>
+            )}
           </div>
           <button className="lg:hidden" onClick={() => setOpen(false)}>
             <X size={22} />
@@ -133,18 +276,35 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="lg:pl-72">
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur lg:px-8">
-          <button className="rounded-xl border border-slate-200 p-2 lg:hidden" onClick={() => setOpen(true)}>
+          <button
+            className="rounded-xl border border-slate-200 p-2 lg:hidden"
+            onClick={() => setOpen(true)}
+          >
             <Menu size={20} />
           </button>
           <button
             type="button"
-            onClick={() => router.replace(dashboardPathForRole(auth.user.role, Boolean(auth.user.must_change_password)))}
+            onClick={() =>
+              router.replace(
+                dashboardPathForRole(
+                  auth.user.role,
+                  Boolean(auth.user.must_change_password),
+                ),
+              )
+            }
             className="hidden text-left lg:block"
           >
-            <p className="text-sm font-semibold text-slate-900">{auth.user.full_name}</p>
-            <p className="text-xs text-slate-500">{auth.user.role} · {auth.user.login_id}</p>
+            <p className="text-sm font-semibold text-slate-900">
+              {auth.user.full_name}
+            </p>
+            <p className="text-xs text-slate-500">
+              {auth.user.role} · {auth.user.login_id}
+            </p>
           </button>
-          <button onClick={logout} className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100">
+          <button
+            onClick={logout}
+            className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+          >
             <LogOut size={16} /> Logout
           </button>
         </header>

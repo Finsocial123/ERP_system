@@ -2,14 +2,19 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import inspect, or_, text
+from sqlalchemy import func, inspect, or_, text
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import current_school_id, get_current_user
 from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject
+from app.models.homework import HomeworkAssignment, HomeworkSubmission
+from app.models.attendance import AttendanceStatus, StudentAttendance
+from app.models.exam import Exam, ExamMark, ExamSubject
+from app.models.fee import FeeExpense, FeePayment, StudentFeeRecord
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.school import School
+from app.models.timetable import TimetableEntry
 from app.models.user import User, UserRole
 
 router = APIRouter(prefix="/dashboard", tags=["Phase 3 - Dashboard and Quick Analytics"])
@@ -84,6 +89,12 @@ def _admin_counts(db: Session, school_id: int) -> dict[str, int]:
         "subjects": _count(db, db.query(Subject).filter(Subject.school_id == school_id, Subject.is_active.is_(True))),
         "students": _count(db, db.query(Student).filter(Student.school_id == school_id, Student.is_active.is_(True))),
         "teachers": _count(db, db.query(Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True))),
+        "homework": _count(db, db.query(HomeworkAssignment).filter(HomeworkAssignment.school_id == school_id, HomeworkAssignment.is_active.is_(True))),
+        "timetable_slots": _count(db, db.query(TimetableEntry).filter(TimetableEntry.school_id == school_id, TimetableEntry.is_active.is_(True))),
+        "exams": _count(db, db.query(Exam).filter(Exam.school_id == school_id, Exam.is_active.is_(True))),
+        "published_results": _count(db, db.query(Exam).filter(Exam.school_id == school_id, Exam.is_active.is_(True), Exam.result_status == "PUBLISHED")),
+        "fee_records": _count(db, db.query(StudentFeeRecord).filter(StudentFeeRecord.school_id == school_id)),
+        "pending_fee_records": _count(db, db.query(StudentFeeRecord).filter(StudentFeeRecord.school_id == school_id, StudentFeeRecord.status.in_(["PENDING", "PARTIAL", "OVERDUE"]))),
     }
 
 
@@ -161,7 +172,7 @@ def _optional_table_count(
 def _today_attendance_count(db: Session, school_id: int) -> int:
     return _optional_table_count(
         db,
-        table_names=["student_attendance", "student_attendances", "attendance", "attendance_records"],
+        table_names=["student_attendance"],
         school_id=school_id,
         date_columns=["attendance_date", "date", "marked_date"],
         date_value=date.today(),
@@ -169,12 +180,57 @@ def _today_attendance_count(db: Session, school_id: int) -> int:
 
 
 def _pending_fees_count(db: Session, school_id: int) -> int:
-    return _optional_table_count(
+    return _count(
         db,
-        table_names=["student_fee_records", "fee_records", "student_fees", "fees"],
-        school_id=school_id,
-        status_columns=["status", "payment_status"],
-        status_values=["PENDING", "PARTIAL", "DUE", "UNPAID"],
+        db.query(StudentFeeRecord).filter(
+            StudentFeeRecord.school_id == school_id,
+            StudentFeeRecord.status.in_(["PENDING", "PARTIAL", "OVERDUE"]),
+        ),
+    )
+
+
+def _pending_fee_amount_for_school(db: Session, school_id: int) -> float:
+    return round(
+        float(
+            db.query(StudentFeeRecord)
+            .filter(StudentFeeRecord.school_id == school_id, StudentFeeRecord.status.in_(["PENDING", "PARTIAL", "OVERDUE"]))
+            .with_entities(func.coalesce(func.sum(StudentFeeRecord.balance_amount), 0))
+            .scalar()
+            or 0
+        ),
+        2,
+    )
+
+
+def _today_fee_collection(db: Session, school_id: int) -> float:
+    return round(
+        float(
+            db.query(FeePayment)
+            .filter(FeePayment.school_id == school_id, FeePayment.payment_date == date.today())
+            .with_entities(func.coalesce(func.sum(FeePayment.amount), 0))
+            .scalar()
+            or 0
+        ),
+        2,
+    )
+
+
+def _pending_fee_amount_for_students(db: Session, school_id: int, student_ids: list[int]) -> float:
+    if not student_ids:
+        return 0.0
+    return round(
+        float(
+            db.query(StudentFeeRecord)
+            .filter(
+                StudentFeeRecord.school_id == school_id,
+                StudentFeeRecord.student_id.in_(student_ids),
+                StudentFeeRecord.status.in_(["PENDING", "PARTIAL", "OVERDUE"]),
+            )
+            .with_entities(func.coalesce(func.sum(StudentFeeRecord.balance_amount), 0))
+            .scalar()
+            or 0
+        ),
+        2,
     )
 
 
@@ -188,6 +244,8 @@ def _teacher_for_user(db: Session, school_id: int, user: User) -> Teacher | None
         conditions.append(Teacher.email == user.email)
     if user.phone:
         conditions.append(Teacher.phone == user.phone)
+    if user.login_id:
+        conditions.append(Teacher.employee_id == user.login_id)
     if not conditions:
         return None
 
@@ -269,6 +327,142 @@ def _teacher_student_count(db: Session, school_id: int, teacher: Teacher | None)
     return len(student_ids)
 
 
+def _homework_assignments_for_student_query(db: Session, school_id: int, student: Student):
+    return db.query(HomeworkAssignment).filter(
+        HomeworkAssignment.school_id == school_id,
+        HomeworkAssignment.class_id == student.class_id,
+        HomeworkAssignment.is_active.is_(True),
+        or_(HomeworkAssignment.section_id.is_(None), HomeworkAssignment.section_id == student.section_id),
+    )
+
+
+def _pending_homework_for_student(db: Session, school_id: int, student: Student | None) -> int:
+    if not student or not student.class_id:
+        return 0
+    assignments = _homework_assignments_for_student_query(db, school_id, student).all()
+    if not assignments:
+        return 0
+    assignment_ids = [item.id for item in assignments]
+    submitted_ids = {
+        row[0]
+        for row in db.query(HomeworkSubmission.homework_id)
+        .filter(
+            HomeworkSubmission.school_id == school_id,
+            HomeworkSubmission.student_id == student.id,
+            HomeworkSubmission.homework_id.in_(assignment_ids),
+        )
+        .all()
+    }
+    return len([item for item in assignments if item.id not in submitted_ids])
+
+
+def _teacher_homework_counts(db: Session, school_id: int, user: User) -> dict[str, int]:
+    teacher = _teacher_for_user(db, school_id, user)
+    if not teacher:
+        return {"homework_created": 0, "submissions_to_check": 0}
+
+    homework_created = _count(
+        db,
+        db.query(HomeworkAssignment).filter(
+            HomeworkAssignment.school_id == school_id,
+            HomeworkAssignment.teacher_id == teacher.id,
+            HomeworkAssignment.is_active.is_(True),
+        ),
+    )
+    submissions_to_check = (
+        db.query(HomeworkSubmission)
+        .join(HomeworkAssignment, HomeworkSubmission.homework_id == HomeworkAssignment.id)
+        .filter(
+            HomeworkSubmission.school_id == school_id,
+            HomeworkSubmission.status == "SUBMITTED",
+            HomeworkAssignment.teacher_id == teacher.id,
+            HomeworkAssignment.is_active.is_(True),
+        )
+        .count()
+    )
+    return {"homework_created": homework_created, "submissions_to_check": submissions_to_check}
+
+
+def _teacher_timetable_slots(db: Session, school_id: int, user: User) -> int:
+    teacher = _teacher_for_user(db, school_id, user)
+    if not teacher:
+        return 0
+    return _count(db, db.query(TimetableEntry).filter(TimetableEntry.school_id == school_id, TimetableEntry.teacher_id == teacher.id, TimetableEntry.is_active.is_(True)))
+
+
+def _student_timetable_slots(db: Session, school_id: int, student: Student | None) -> int:
+    if not student or not student.class_id:
+        return 0
+    query = db.query(TimetableEntry).filter(TimetableEntry.school_id == school_id, TimetableEntry.class_id == student.class_id, TimetableEntry.is_active.is_(True))
+    if student.section_id is not None:
+        query = query.filter(or_(TimetableEntry.section_id.is_(None), TimetableEntry.section_id == student.section_id))
+    return _count(db, query)
+
+
+def _pending_homework_for_children(db: Session, school_id: int, children: list[Student]) -> int:
+    return sum(_pending_homework_for_student(db, school_id, child) for child in children)
+
+
+def _teacher_exam_counts(db: Session, school_id: int, user: User) -> dict[str, int]:
+    teacher = _teacher_for_user(db, school_id, user)
+    if not teacher:
+        return {"exam_subjects": 0, "marks_entered": 0, "published_exams": 0}
+
+    exam_subject_ids = [
+        row.id
+        for row in db.query(ExamSubject.id)
+        .join(Exam, ExamSubject.exam_id == Exam.id)
+        .filter(
+            ExamSubject.school_id == school_id,
+            ExamSubject.teacher_id == teacher.id,
+            ExamSubject.is_active.is_(True),
+            Exam.is_active.is_(True),
+        )
+        .all()
+    ]
+    marks_entered = 0
+    if exam_subject_ids:
+        marks_entered = _count(
+            db,
+            db.query(ExamMark).filter(
+                ExamMark.school_id == school_id,
+                ExamMark.exam_subject_id.in_(exam_subject_ids),
+            ),
+        )
+    published_exams = _count(
+        db,
+        db.query(Exam)
+        .join(ExamSubject, ExamSubject.exam_id == Exam.id)
+        .filter(
+            Exam.school_id == school_id,
+            Exam.is_active.is_(True),
+            Exam.result_status == "PUBLISHED",
+            ExamSubject.teacher_id == teacher.id,
+            ExamSubject.is_active.is_(True),
+        )
+        .distinct(),
+    )
+    return {"exam_subjects": len(exam_subject_ids), "marks_entered": marks_entered, "published_exams": published_exams}
+
+
+def _published_exams_for_student(db: Session, school_id: int, student: Student | None) -> int:
+    if not student or not student.class_id:
+        return 0
+    query = db.query(Exam).filter(
+        Exam.school_id == school_id,
+        Exam.class_id == student.class_id,
+        Exam.is_active.is_(True),
+        Exam.result_status == "PUBLISHED",
+    )
+    if student.section_id is not None:
+        query = query.filter(or_(Exam.section_id.is_(None), Exam.section_id == student.section_id))
+    return _count(db, query)
+
+
+def _published_exams_for_children(db: Session, school_id: int, children: list[Student]) -> int:
+    return sum(_published_exams_for_student(db, school_id, child) for child in children)
+
+
 def _recent_activities(db: Session, school_id: int, role: str, limit: int = 8) -> list[dict[str, Any]]:
     activities: list[dict[str, Any]] = []
 
@@ -293,6 +487,13 @@ def _recent_activities(db: Session, school_id: int, role: str, limit: int = 8) -
     if role in ADMIN_ROLES:
         for teacher in db.query(Teacher).filter(Teacher.school_id == school_id).order_by(Teacher.created_at.desc()).limit(3).all():
             add("teacher", "Teacher added", f"{teacher.full_name} · Employee ID: {teacher.employee_id}", teacher.created_at)
+
+    for homework in db.query(HomeworkAssignment).filter(HomeworkAssignment.school_id == school_id, HomeworkAssignment.is_active.is_(True)).order_by(HomeworkAssignment.created_at.desc()).limit(4).all():
+        add("homework", "Homework assigned", homework.title, homework.created_at)
+
+    for exam in db.query(Exam).filter(Exam.school_id == school_id, Exam.is_active.is_(True)).order_by(Exam.created_at.desc()).limit(4).all():
+        status_label = "Result published" if exam.result_status == "PUBLISHED" else "Exam created"
+        add("exam", status_label, exam.name, exam.published_at or exam.created_at)
 
     for subject in db.query(Subject).filter(Subject.school_id == school_id).order_by(Subject.created_at.desc()).limit(3).all():
         add("subject", "Subject configured", subject.name, subject.created_at)
@@ -327,6 +528,8 @@ def _admin_charts(db: Session, school_id: int, counts: dict[str, int]) -> list[d
         {"label": "Sections", "value": counts["sections"]},
         {"label": "Subjects", "value": counts["subjects"]},
         {"label": "Departments", "value": counts["departments"]},
+        {"label": "Exams", "value": counts.get("exams", 0)},
+        {"label": "Fee Records", "value": counts.get("fee_records", 0)},
     ]
 
     people_summary = [
@@ -341,6 +544,32 @@ def _admin_charts(db: Session, school_id: int, counts: dict[str, int]) -> list[d
     ]
 
 
+def _student_attendance_percentage(db: Session, school_id: int, student: Student | None, session: AcademicSession | None) -> str:
+    """Return attendance % string for the student card. Returns '—' if no data yet."""
+    if not student or not session:
+        return "—"
+
+    records = (
+        db.query(StudentAttendance)
+        .filter(
+            StudentAttendance.school_id == school_id,
+            StudentAttendance.student_id == student.id,
+            StudentAttendance.session_id == session.id,
+        )
+        .all()
+    )
+
+    total = len(records)
+    if total == 0:
+        return "—"
+
+    present  = sum(1 for r in records if r.status == AttendanceStatus.PRESENT.value)
+    half_day = sum(1 for r in records if r.status == AttendanceStatus.HALF_DAY.value)
+    effective = present + half_day * 0.5
+    pct = round(effective / total * 100, 1)
+    return f"{pct}%"
+
+
 def _card(key: str, label: str, value: int | str, helper: str = "", tone: str = "default") -> dict[str, Any]:
     return {"key": key, "label": label, "value": value, "helper": helper, "tone": tone}
 
@@ -351,20 +580,30 @@ def _admin_dashboard(db: Session, school_id: int) -> dict[str, Any]:
     new_admissions = _new_admissions_count(db, school_id)
     today_attendance = _today_attendance_count(db, school_id)
     pending_fees = _pending_fees_count(db, school_id)
+    pending_fee_amount = _pending_fee_amount_for_school(db, school_id)
+    today_fee_collection = _today_fee_collection(db, school_id)
 
     cards = [
         _card("teachers", "Total Teachers", counts["teachers"], "Active teaching staff"),
         _card("students", "Total Students", counts["students"], "Active student records"),
         _card("today_attendance", "Today Attendance", today_attendance, "Marked records for today", "info"),
-        _card("pending_fees", "Pending Fees", pending_fees, "Pending fee records when fee module is added", "warning"),
+        _card("pending_fees", "Pending Fees", pending_fees, "Pending/partial/overdue student fee records", "warning"),
+        _card("pending_fee_amount", "Pending Fee Amount", f"₹{pending_fee_amount:,.2f}", "Total unpaid balance", "warning"),
+        _card("today_fee_collection", "Today Collection", f"₹{today_fee_collection:,.2f}", "Fee payments collected today", "success"),
         _card("new_admissions", "New Admissions", new_admissions, "Admissions in the last 30 days", "success"),
         _card("current_session", "Current Academic Session", session.name if session else "Not set", "Active/latest session"),
+        _card("homework", "Homework Assigned", counts["homework"], "Total active homework assignments", "success"),
+        _card("timetable_slots", "Timetable Slots", counts["timetable_slots"], "Active class timetable entries", "info"),
+        _card("exams", "Exams", counts["exams"], "Active exams created", "info"),
+        _card("published_results", "Published Results", counts["published_results"], "Exams visible to students and parents", "success"),
     ]
 
     counts.update(
         {
             "today_attendance": today_attendance,
             "pending_fees": pending_fees,
+            "pending_fee_amount": pending_fee_amount,
+            "today_fee_collection": today_fee_collection,
             "new_admissions": new_admissions,
         }
     )
@@ -378,7 +617,7 @@ def _admin_dashboard(db: Session, school_id: int) -> dict[str, Any]:
         "current_academic_session": _session_payload(session),
         "recent_activities": _recent_activities(db, school_id, UserRole.SCHOOL_ADMIN.value),
         "charts": _admin_charts(db, school_id, counts),
-        "next_steps": ["Attendance Management", "Homework", "Fees", "Timetable", "Exams"],
+        "next_steps": ["Attendance Management", "Fees", "Exams", "Communication", "Reports"],
     }
 
 
@@ -393,12 +632,20 @@ def _teacher_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
         my_classes = _count(db, db.query(ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id))
         total_students = _teacher_student_count(db, school_id, teacher)
 
+    homework_counts = _teacher_homework_counts(db, school_id, user)
+    timetable_slots = _teacher_timetable_slots(db, school_id, user)
+    exam_counts = _teacher_exam_counts(db, school_id, user)
+
     cards = [
         _card("my_subjects", "My Subjects", my_subjects, "Assigned subject scopes"),
         _card("my_classes", "My Classes", my_classes, "Class teacher assignments"),
         _card("total_students", "My Students", total_students, "Students in assigned classes"),
         _card("today_attendance", "Today Attendance", _today_attendance_count(db, school_id), "Phase 4 attendance data", "info"),
-        _card("pending_homework", "Pending Homework", 0, "Homework module comes in Phase 5", "warning"),
+        _card("homework_created", "Homework Created", homework_counts["homework_created"], "Active homework assignments", "success"),
+        _card("submissions_to_check", "Submissions To Check", homework_counts["submissions_to_check"], "Submitted homework waiting for checking", "warning"),
+        _card("timetable_slots", "Timetable Slots", timetable_slots, "Assigned weekly teaching slots", "info"),
+        _card("exam_subjects", "Exam Subjects", exam_counts["exam_subjects"], "Subjects assigned for marks entry", "info"),
+        _card("marks_entered", "Marks Entered", exam_counts["marks_entered"], "Student marks saved by exam subject", "success"),
     ]
 
     return {
@@ -417,26 +664,56 @@ def _teacher_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
                     {"label": "Subjects", "value": my_subjects},
                     {"label": "Classes", "value": my_classes},
                     {"label": "Students", "value": total_students},
+                    {"label": "Homework", "value": homework_counts["homework_created"]},
+                    {"label": "To Check", "value": homework_counts["submissions_to_check"]},
+                    {"label": "Timetable", "value": timetable_slots},
+                    {"label": "Exam Subjects", "value": exam_counts["exam_subjects"]},
+                    {"label": "Marks", "value": exam_counts["marks_entered"]},
                 ],
             }
         ],
-        "next_steps": ["Mark attendance", "Create homework", "View timetable", "Check submissions"],
+        "next_steps": ["Create homework", "Check submissions", "View timetable", "Enter marks"],
     }
 
 
 def _student_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]:
     student = _student_for_user(db, school_id, user)
+    session = _current_session(db, school_id)
+
     class_label = "Not assigned"
     if student and student.school_class:
         class_label = student.school_class.name
         if student.section:
             class_label += f" - {student.section.name}"
 
+    pending_homework = _pending_homework_for_student(db, school_id, student)
+    timetable_slots = _student_timetable_slots(db, school_id, student)
+    published_results = _published_exams_for_student(db, school_id, student)
+    student_fee_ids = [student.id] if student else []
+    student_pending_fee_amount = _pending_fee_amount_for_students(db, school_id, student_fee_ids)
+
+    att_pct = _student_attendance_percentage(db, school_id, student, session)
+    # tone: warning if below 75%, success if >= 90%, else info
+    att_tone = "info"
+    if att_pct != "—":
+        raw = float(att_pct.replace("%", ""))
+        att_tone = "warning" if raw < 75 else ("success" if raw >= 90 else "info")
+
+    attendance_chart_value = 0
+
+    if att_pct != "—":
+        attendance_chart_value = round(
+            float(att_pct.replace("%", "")),
+            1,
+        )
+
     cards = [
-        _card("homework", "Homework", 0, "Homework module comes in Phase 5"),
-        _card("attendance_percent", "Attendance %", 0, "Attendance module comes in Phase 4", "info"),
-        _card("pending_fees", "Pending Fees", _pending_fees_count(db, school_id), "Fee module comes in Phase 6", "warning"),
+         _card("homework", "Pending Homework", pending_homework, "Assignments waiting for your submission", "warning"),
+        _card("attendance_percent", "Attendance %", att_pct, f"Current session attendance ({session.name if session else 'N/A'})", att_tone),
+        _card("pending_fees", "Pending Fees", f"₹{student_pending_fee_amount:,.2f}", "Your unpaid fee balance", "warning"),
         _card("notices", "Notices", 0, "Communication module comes in Phase 9"),
+        _card("timetable_slots", "Timetable Slots", timetable_slots, "Weekly class timetable slots", "info"),
+        _card("published_results", "Published Results", published_results, "Report cards available to view", "success"),
         _card("current_class", "Current Class", class_label, "Student class and section"),
     ]
 
@@ -453,23 +730,47 @@ def _student_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
                 "title": "Student summary",
                 "type": "bar",
                 "items": [
-                    {"label": "Homework", "value": 0},
-                    {"label": "Attendance", "value": 0},
+                    {"label": "Homework", "value": pending_homework},
+                    # {"label": "Attendance", "value": attendance_chart_value},
                     {"label": "Notices", "value": 0},
+                    {"label": "Timetable", "value": timetable_slots},
+                    {"label": "Results", "value": published_results},
                 ],
             }
         ],
-        "next_steps": ["View homework", "Track attendance", "View fees", "Check notices"],
+        "next_steps": ["View homework", "View report cards", "View fees", "Check notices"],
     }
 
 
 def _parent_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]:
     children = _children_for_parent(db, school_id, user)
+    pending_homework = _pending_homework_for_children(db, school_id, children)
+    timetable_slots = sum(_student_timetable_slots(db, school_id, child) for child in children)
+    published_results = _published_exams_for_children(db, school_id, children)
+    child_pending_fee_amount = _pending_fee_amount_for_students(db, school_id, [child.id for child in children])
+    session = _current_session(db, school_id)
+
+    # count how many children have attendance below 75%
+    low_att_count = 0
+    for child in children:
+        pct_str = _student_attendance_percentage(db, school_id, child, session)
+        if pct_str != "—" and float(pct_str.replace("%", "")) < 75:
+            low_att_count += 1
+
+    att_alert_helper = (
+        f"{low_att_count} child{'ren' if low_att_count != 1 else ''} below 75%"
+        if low_att_count > 0
+        else "All children above 75% attendance"
+    )
+
     cards = [
         _card("children", "Children", len(children), "Linked active student profiles"),
-        _card("pending_fees", "Pending Fees", _pending_fees_count(db, school_id), "Fee module comes in Phase 6", "warning"),
+        _card("pending_homework", "Pending Homework", pending_homework, "Homework pending for linked children", "warning"),
+        _card("pending_fees", "Pending Fees", f"₹{child_pending_fee_amount:,.2f}", "Unpaid fee balance for linked children", "warning"),
         _card("notices", "Notices", 0, "Communication module comes in Phase 9"),
-        _card("attendance_alerts", "Attendance Alerts", 0, "Low attendance warnings come in Phase 4", "info"),
+        _card("timetable_slots", "Timetable Slots", timetable_slots, "Weekly slots for linked children", "info"),
+        _card("attendance_alerts", "Attendance Alerts", low_att_count, att_alert_helper, "warning" if low_att_count > 0 else "success"),
+        _card("published_results", "Published Results", published_results, "Child report cards available", "success"),
     ]
 
     return {
@@ -486,12 +787,15 @@ def _parent_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]
                 "type": "bar",
                 "items": [
                     {"label": "Children", "value": len(children)},
+                    {"label": "Homework", "value": pending_homework},
                     {"label": "Fees", "value": 0},
                     {"label": "Alerts", "value": 0},
+                    {"label": "Timetable", "value": timetable_slots},
+                    {"label": "Results", "value": published_results},
                 ],
             }
         ],
-        "next_steps": ["Child attendance", "Fee status", "Homework", "Notices"],
+        "next_steps": ["Child attendance", "Child results", "Fee status", "Homework", "Notices"],
     }
 
 
@@ -529,7 +833,7 @@ def overview(
             "login_id": current_user.login_id,
             "must_change_password": current_user.must_change_password,
         },
-        "phase": "Phase 3 - Dashboard and Quick Analytics",
+        "phase": "Phase 8 - Exam and Result Management",
         "quick_search_enabled": True,
         **dashboard,
     }
@@ -609,5 +913,55 @@ def quick_search(
     )
     for subject in subjects:
         add("subject", subject.name, "Subject setup", "/setup/subjects" if current_user.role in ADMIN_ROLES else None)
+
+    homework_query = db.query(HomeworkAssignment).filter(
+        HomeworkAssignment.school_id == school_id,
+        HomeworkAssignment.is_active.is_(True),
+        or_(HomeworkAssignment.title.ilike(like), HomeworkAssignment.description.ilike(like)),
+    )
+    if current_user.role == UserRole.TEACHER.value:
+        teacher = _teacher_for_user(db, school_id, current_user)
+        homework_query = homework_query.filter(HomeworkAssignment.teacher_id == teacher.id) if teacher else homework_query.filter(HomeworkAssignment.id == -1)
+    for homework in homework_query.order_by(HomeworkAssignment.created_at.desc()).limit(limit).all():
+        href = "/teacher-homework" if current_user.role == UserRole.TEACHER.value else "/homework" if current_user.role in ADMIN_ROLES else None
+        add("homework", homework.title, f"Due: {homework.due_date.isoformat()}", href)
+
+    exam_query = db.query(Exam).filter(
+        Exam.school_id == school_id,
+        Exam.is_active.is_(True),
+        or_(Exam.name.ilike(like), Exam.exam_type.ilike(like), Exam.description.ilike(like)),
+    )
+    if current_user.role == UserRole.TEACHER.value:
+        teacher = _teacher_for_user(db, school_id, current_user)
+        if teacher:
+            exam_query = exam_query.join(ExamSubject, ExamSubject.exam_id == Exam.id).filter(ExamSubject.teacher_id == teacher.id)
+        else:
+            exam_query = exam_query.filter(Exam.id == -1)
+    elif current_user.role == UserRole.STUDENT.value:
+        student = _student_for_user(db, school_id, current_user)
+        if student and student.class_id:
+            exam_query = exam_query.filter(Exam.class_id == student.class_id, Exam.result_status == "PUBLISHED")
+            if student.section_id is not None:
+                exam_query = exam_query.filter(or_(Exam.section_id.is_(None), Exam.section_id == student.section_id))
+        else:
+            exam_query = exam_query.filter(Exam.id == -1)
+    elif current_user.role == UserRole.PARENT.value:
+        children = _children_for_parent(db, school_id, current_user)
+        class_ids = [child.class_id for child in children if child.class_id]
+        if class_ids:
+            exam_query = exam_query.filter(Exam.result_status == "PUBLISHED", Exam.class_id.in_(class_ids))
+        else:
+            exam_query = exam_query.filter(Exam.id == -1)
+
+    for exam in exam_query.order_by(Exam.created_at.desc()).limit(limit).all():
+        if current_user.role == UserRole.TEACHER.value:
+            href = "/teacher-exams"
+        elif current_user.role == UserRole.STUDENT.value:
+            href = "/student-exams"
+        elif current_user.role == UserRole.PARENT.value:
+            href = "/parent-exams"
+        else:
+            href = "/exams"
+        add("exam", exam.name, f"{exam.exam_type or 'Exam'} · {exam.result_status}", href)
 
     return {"query": query_text, "results": results[:limit]}

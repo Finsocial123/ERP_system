@@ -35,6 +35,11 @@ def run_startup_migrations(engine) -> None:
     _add_column(engine, "users", "failed_login_attempts", "failed_login_attempts INTEGER DEFAULT 0")
     _add_column(engine, "users", "locked_until", "locked_until TIMESTAMP")
 
+    _add_column(engine, "exam_subjects", "start_time", "start_time TIME")
+    _add_column(engine, "exam_subjects", "end_time", "end_time TIME")
+    _add_column(engine, "exam_subjects", "room", "room VARCHAR(120)")
+    _add_column(engine, "exam_subjects", "timetable_note", "timetable_note TEXT")
+
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = SessionLocal()
     try:
@@ -66,3 +71,9 @@ def run_startup_migrations(engine) -> None:
         db.commit()
     finally:
         db.close()
+
+def run_phase4_migrations(engine) -> None:
+    """Ensure student_attendance table exists with all required columns."""
+    # The table is created by Base.metadata.create_all, but we guard
+    # any future column additions here for existing deployments.
+    _add_column(engine, "student_attendance", "note", "note TEXT")

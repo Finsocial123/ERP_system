@@ -1,13 +1,30 @@
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import Base, engine
-from app.core.migrations import run_startup_migrations
+from app.core.migrations import run_phase4_migrations, run_startup_migrations
 from app.models import (  # noqa: F401
     AcademicSession,
     ClassTeacherAssignment,
     Department,
+    HomeworkAssignment,
+    HomeworkSubmission,
+    TimetableDay,
+    TimetableEntry,
+    TimetablePeriod,
+    Exam,
+    ExamMark,
+    ExamSubject,
+    FeeAssignment,
+    FeeCategory,
+    FeeExpense,
+    FeePayment,
+    FeeStructure,
+    StudentFeeRecord,
     ParentGuardian,
     School,
     SchoolClass,
@@ -18,12 +35,17 @@ from app.models import (  # noqa: F401
     TeacherSubject,
     User,
 )
-from app.routes import academic, auth, dashboard,notice, people, schools
+
+from app.routes import academic, attendance, auth, dashboard, exams, fees, homework, people, schools, library, timetable, notice
 
 Base.metadata.create_all(bind=engine)
 run_startup_migrations(engine)
 
-app = FastAPI(title="School ERP Phase 3 API", version="3.0.0")
+app = FastAPI(title="School ERP Phase 8 + Phase 6 API", version="8.1.0")
+
+UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 app.add_middleware(
     CORSMiddleware,
@@ -36,7 +58,7 @@ app.add_middleware(
 
 @app.get("/")
 def root():
-    return {"message": "School ERP Phase 3 API is running"}
+    return {"message": "School ERP Phase 8 + Phase 6 API is running"}
 
 
 @app.get("/health")
@@ -50,3 +72,9 @@ app.include_router(academic.router)
 app.include_router(people.router)
 app.include_router(dashboard.router)
 app.include_router(notice.router)
+app.include_router(attendance.router)
+app.include_router(homework.router)
+app.include_router(timetable.router)
+app.include_router(exams.router)
+app.include_router(fees.router)
+app.include_router(library.router)

@@ -10,8 +10,8 @@ import {
   ClipboardList,
   CreditCard,
   GraduationCap,
-  Home,
   LayoutDashboard,
+  Library,
   LogOut,
   Menu,
   School,
@@ -35,6 +35,7 @@ type NavItem = {
 const ADMIN_ROLES = ["SUPER_ADMIN", "SCHOOL_OWNER", "SCHOOL_ADMIN"];
 
 const navItems: NavItem[] = [
+  // ── Admin ──────────────────────────────────────────────────────────────────
   {
     href: "/dashboard",
     label: "Admin Dashboard",
@@ -43,6 +44,37 @@ const navItems: NavItem[] = [
   },
   { href: "/students", label: "Students", icon: Users, roles: ADMIN_ROLES },
   { href: "/teachers", label: "Teachers", icon: UserRound, roles: ADMIN_ROLES },
+  {
+    href: "/homework",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/timetable",
+    label: "Timetable",
+    icon: CalendarCheck,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/exams",
+    label: "Exams & Results",
+    icon: GraduationCap,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/fees",
+    label: "Fee Management",
+    icon: CreditCard,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/attendance",
+    label: "Attendance",
+    icon: CalendarCheck,
+    roles: ADMIN_ROLES,
+  },
+  { href: "/library", label: "Library", icon: Library, roles: ADMIN_ROLES },
   {
     href: "/settings/school",
     label: "School Profile",
@@ -85,28 +117,48 @@ const navItems: NavItem[] = [
     icon: NotebookIcon,
     roles: ADMIN_ROLES,
   },
+
+  // ── Teacher ────────────────────────────────────────────────────────────────
   {
     href: "/teacher-dashboard",
-    label: "Teacher Dashboard",
+    label: "Dashboard",
     icon: LayoutDashboard,
     roles: ["TEACHER"],
   },
   {
-    href: "/teacher-dashboard",
-    label: "My Classes",
-    icon: Home,
-    roles: ["TEACHER"],
-  },
-  {
-    href: "/teacher-dashboard",
+    href: "/attendance",
     label: "Attendance",
     icon: CalendarCheck,
     roles: ["TEACHER"],
   },
   {
-    href: "/teacher-dashboard",
+    href: "/teacher-homework",
     label: "Homework",
     icon: ClipboardList,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teacher-timetable",
+    label: "Timetable",
+    icon: CalendarCheck,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teacher-exams",
+    label: "Exams & Marks",
+    icon: GraduationCap,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/homework",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teachers/curriculum",
+    label: "Curriculam",
+    icon: NotebookIcon,
     roles: ["TEACHER"],
   },
   {
@@ -115,28 +167,37 @@ const navItems: NavItem[] = [
     icon: NotebookIcon,
     roles: ["TEACHER"],
   },
-  {
-    href: "/teachers/curricular",
-    label: "Curricular",
-    icon: NotebookIcon,
-    roles: ["TEACHER"],
-  },
+  { href: "/library", label: "Library", icon: Library, roles: ["TEACHER"] },
+
+  // ── Student ────────────────────────────────────────────────────────────────
   {
     href: "/student-dashboard",
-    label: "Student Dashboard",
+    label: "Dashboard",
     icon: LayoutDashboard,
     roles: ["STUDENT"],
   },
   {
-    href: "/student-dashboard",
+    href: "/attendance/my",
+    label: "My Attendance",
+    icon: CalendarCheck,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/student-homework",
     label: "Homework",
     icon: ClipboardList,
     roles: ["STUDENT"],
   },
   {
-    href: "/student-dashboard",
-    label: "Attendance",
+    href: "/student-timetable",
+    label: "Timetable",
     icon: CalendarCheck,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/student-exams",
+    label: "Report Cards",
+    icon: GraduationCap,
     roles: ["STUDENT"],
   },
   {
@@ -145,18 +206,32 @@ const navItems: NavItem[] = [
     icon: NotebookIcon,
     roles: ["STUDENT"],
   },
+  { href: "/fees", label: "Fees", icon: CreditCard, roles: ["STUDENT"] },
+  { href: "/library", label: "Library", icon: Library, roles: ["STUDENT"] },
 
-  {
-    href: "/student-dashboard",
-    label: "Fees",
-    icon: CreditCard,
-    roles: ["STUDENT"],
-  },
-
+  // ── Parent ─────────────────────────────────────────────────────────────────
   {
     href: "/parent-dashboard",
-    label: "Parent Dashboard",
+    label: "Dashboard",
     icon: LayoutDashboard,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parent-homework",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parent-timetable",
+    label: "Timetable",
+    icon: CalendarCheck,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parent-exams",
+    label: "Child Results",
+    icon: GraduationCap,
     roles: ["PARENT"],
   },
   {
@@ -166,17 +241,12 @@ const navItems: NavItem[] = [
     roles: ["PARENT"],
   },
   {
-    href: "/parent-dashboard",
+    href: "/attendance/my",
     label: "Child Attendance",
     icon: CalendarCheck,
     roles: ["PARENT"],
   },
-  {
-    href: "/parent-dashboard",
-    label: "Fees",
-    icon: CreditCard,
-    roles: ["PARENT"],
-  },
+  { href: "/fees", label: "Child Fees", icon: CreditCard, roles: ["PARENT"] },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -233,8 +303,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-slate-50">
+      {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 w-72 border-r border-slate-200 bg-white p-4 transition lg:translate-x-0 ${open ? "translate-x-0" : "-translate-x-full"}`}
+        className={`fixed inset-y-0 left-0 z-40 w-72 border-r border-slate-200 bg-white p-4 transition lg:translate-x-0 ${
+          open ? "translate-x-0" : "-translate-x-full"
+        }`}
       >
         <div className="mb-6 flex items-center justify-between">
           <div>
@@ -264,7 +337,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 key={`${item.href}-${item.label}-${index}`}
                 href={item.href}
                 onClick={() => setOpen(false)}
-                className={`flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition ${active ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"}`}
+                className={`flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition ${
+                  active
+                    ? "bg-slate-900 text-white"
+                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                }`}
               >
                 <Icon size={18} />
                 {item.label}
@@ -274,6 +351,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
       </aside>
 
+      {/* Main content */}
       <div className="lg:pl-72">
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur lg:px-8">
           <button

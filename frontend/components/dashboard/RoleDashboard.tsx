@@ -88,11 +88,18 @@ const cardIcons: Record<string, LucideIcon> = {
   total_students: Users,
   pending_homework: Activity,
   homework: BookOpen,
+  homework_created: BookOpen,
+  submissions_to_check: Activity,
   attendance_percent: CalendarCheck,
   notices: Bell,
   children: Users,
   attendance_alerts: CalendarCheck,
   current_class: GraduationCap,
+  timetable_slots: CalendarCheck,
+  exams: GraduationCap,
+  published_results: GraduationCap,
+  exam_subjects: BookOpen,
+  marks_entered: Activity,
 };
 
 const toneClass: Record<string, string> = {
@@ -131,6 +138,7 @@ function SimpleBarChart({ chart }: { chart: ChartBlock }) {
 
       <div className="space-y-3">
         {chart.items.map((item) => {
+          const maxValue = 100
           const width = `${Math.max(4, Math.round((item.value / maxValue) * 100))}%`;
           return (
             <div key={`${chart.title}-${item.label}`}>
@@ -249,7 +257,7 @@ export default function RoleDashboard() {
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h3 className="font-bold text-slate-900">Quick Search</h3>
-                <p className="text-sm text-slate-500">Search students, teachers, classes or subjects based on your role.</p>
+                <p className="text-sm text-slate-500">Search students, teachers, classes, subjects, homework, or exams based on your role.</p>
               </div>
               <div className="relative w-full lg:max-w-md">
                 <Search className="absolute left-3 top-2.5 text-slate-400" size={18} />
@@ -302,7 +310,7 @@ export default function RoleDashboard() {
                   <div className="flex h-full flex-col justify-between gap-4">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-sm text-slate-500">{card.label}</p>
+                        <p className="text-sm text-slate-500 ">{card.label}</p>
                         <p className="mt-2 text-3xl font-bold text-slate-900">{formatValue(card.value)}</p>
                       </div>
                       <div className={`rounded-2xl p-3 ${tone}`}>

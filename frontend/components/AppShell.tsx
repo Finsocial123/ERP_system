@@ -41,6 +41,7 @@ const navItems: NavItem[] = [
   { href: "/homework", label: "Homework", icon: ClipboardList, roles: ADMIN_ROLES },
   { href: "/timetable", label: "Timetable", icon: CalendarCheck, roles: ADMIN_ROLES },
   { href: "/exams", label: "Exams & Results", icon: GraduationCap, roles: ADMIN_ROLES },
+  { href: "/fees", label: "Fee Management", icon: CreditCard, roles: ADMIN_ROLES },
   { href: "/attendance",              label: "Attendance",        icon: CalendarCheck,   roles: ADMIN_ROLES },
   { href: "/library",                 label: "Library",           icon: Library,         roles: ADMIN_ROLES },
   { href: "/settings/school",         label: "School Profile",    icon: School,          roles: ADMIN_ROLES },
@@ -64,7 +65,7 @@ const navItems: NavItem[] = [
   { href: "/attendance/my",           label: "My Attendance",     icon: CalendarCheck,   roles: ["STUDENT"] },
   { href: "/student-homework", label: "Homework", icon: ClipboardList, roles: ["STUDENT"] },
   { href: "/student-timetable", label: "Timetable", icon: CalendarCheck, roles: ["STUDENT"] },
-  { href: "/student-exams", label: "Exams & Report", icon: GraduationCap, roles: ["STUDENT"] },
+  { href: "/student-exams", label: "Report Cards", icon: GraduationCap, roles: ["STUDENT"] },
   { href: "/fees",                    label: "Fees",              icon: CreditCard,      roles: ["STUDENT"] },
   { href: "/library",                 label: "Library",           icon: Library,         roles: ["STUDENT"] },
 
@@ -74,7 +75,7 @@ const navItems: NavItem[] = [
   { href: "/parent-timetable", label: "Timetable", icon: CalendarCheck, roles: ["PARENT"] },
   { href: "/parent-exams", label: "Child Results", icon: GraduationCap, roles: ["PARENT"] },
   { href: "/attendance/my",           label: "Child Attendance",  icon: CalendarCheck,   roles: ["PARENT"] },
-  { href: "/fees",                    label: "Fees",              icon: CreditCard,      roles: ["PARENT"] },
+  { href: "/fees",                    label: "Child Fees",        icon: CreditCard,      roles: ["PARENT"] },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {

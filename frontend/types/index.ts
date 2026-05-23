@@ -487,3 +487,163 @@ export type SubjectResult = {
   results: ExamMark[];
   summary: Record<string, number | string>;
 };
+export type FeeMetaItem = {
+  id: number;
+  name: string;
+  extra?: string | null;
+};
+
+export type FeeMeta = {
+  categories: FeeMetaItem[];
+  structures: FeeMetaItem[];
+  classes: FeeMetaItem[];
+  sections: FeeMetaItem[];
+  students: FeeMetaItem[];
+  academic_sessions: FeeMetaItem[];
+  current_academic_session_id?: number | null;
+};
+
+export type FeeCategory = {
+  id: number;
+  name: string;
+  code?: string | null;
+  description?: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FeeStructure = {
+  id: number;
+  name: string;
+  category_id: number;
+  category_name?: string | null;
+  academic_session_id?: number | null;
+  academic_session_name?: string | null;
+  amount: number;
+  due_date?: string | null;
+  description?: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FeeAssignment = {
+  id: number;
+  fee_structure_id: number;
+  fee_structure_name?: string | null;
+  academic_session_id?: number | null;
+  academic_session_name?: string | null;
+  class_id?: number | null;
+  class_name?: string | null;
+  section_id?: number | null;
+  section_name?: string | null;
+  student_id?: number | null;
+  student_name?: string | null;
+  assigned_amount?: number | null;
+  due_date?: string | null;
+  note?: string | null;
+  is_active: boolean;
+  generated_records_count: number;
+  generated_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StudentFeeRecord = {
+  id: number;
+  student_id: number;
+  student_name?: string | null;
+  admission_no?: string | null;
+  roll_number?: string | null;
+  class_name?: string | null;
+  section_name?: string | null;
+  fee_structure_id?: number | null;
+  fee_structure_name?: string | null;
+  fee_assignment_id?: number | null;
+  academic_session_id?: number | null;
+  academic_session_name?: string | null;
+  title: string;
+  amount: number;
+  discount_amount: number;
+  fine_amount: number;
+  paid_amount: number;
+  balance_amount: number;
+  due_date?: string | null;
+  status: string;
+  note?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FeePayment = {
+  id: number;
+  student_fee_record_id: number;
+  student_id: number;
+  student_name?: string | null;
+  admission_no?: string | null;
+  fee_title?: string | null;
+  receipt_no: string;
+  amount: number;
+  payment_date: string;
+  payment_mode: string;
+  reference_no?: string | null;
+  note?: string | null;
+  collected_by_user_id?: number | null;
+  collected_by_name?: string | null;
+  created_at: string;
+};
+
+export type FeeReceipt = {
+  payment: FeePayment;
+  record: StudentFeeRecord;
+  school_name?: string | null;
+  school_code?: string | null;
+};
+
+export type FeeExpense = {
+  id: number;
+  title: string;
+  category?: string | null;
+  amount: number;
+  expense_date: string;
+  payment_mode: string;
+  vendor_name?: string | null;
+  reference_no?: string | null;
+  note?: string | null;
+  is_active: boolean;
+  created_by_user_id?: number | null;
+  created_by_name?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FeeDashboard = {
+  total_records: number;
+  pending_records: number;
+  partial_records: number;
+  paid_records: number;
+  overdue_records: number;
+  total_billable: number;
+  total_paid: number;
+  total_pending: number;
+  today_collection: number;
+  month_collection: number;
+  month_expense: number;
+  net_month_collection: number;
+};
+
+export type DailyCollectionReport = {
+  report_date: string;
+  total_collection: number;
+  total_payments: number;
+  payment_mode_summary: Record<string, number>;
+  payments: FeePayment[];
+};
+
+export type FeePortalResponse = {
+  role: string;
+  summary: FeeDashboard;
+  records: StudentFeeRecord[];
+  payments: FeePayment[];
+};

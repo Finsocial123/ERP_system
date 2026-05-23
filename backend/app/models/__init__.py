@@ -3,6 +3,7 @@ from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, T
 from app.models.homework import HomeworkAssignment, HomeworkSubmission
 from app.models.timetable import TimetableDay, TimetableEntry, TimetablePeriod
 from app.models.exam import Exam, ExamSubject, ExamMark
+from app.models.fee import FeeAssignment, FeeCategory, FeeExpense, FeePayment, FeeStructure, StudentFeeRecord
 from app.models.school import School
 from app.models.user import User
 
@@ -27,4 +28,10 @@ __all__ = [
     "ExamMark",
     "ExamSubject",
     "Exam",
+    "FeeCategory",
+    "FeeStructure",
+    "FeeAssignment",
+    "StudentFeeRecord",
+    "FeePayment",
+    "FeeExpense",
 ]

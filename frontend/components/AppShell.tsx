@@ -20,6 +20,7 @@ import {
   UserRound,
   Users,
   X,
+  NotebookIcon,
 } from "lucide-react";
 
 import { clearAuth, dashboardPathForRole, getSavedAuth } from "@/lib/api";
@@ -52,32 +53,137 @@ const navItems: NavItem[] = [
   { href: "/setup/classes",           label: "Classes",           icon: Settings,        roles: ADMIN_ROLES },
   { href: "/setup/sections",          label: "Sections",          icon: Settings,        roles: ADMIN_ROLES },
   { href: "/setup/subjects",          label: "Subjects",          icon: BookOpen,        roles: ADMIN_ROLES },
+  { href: "/setup/notice",            label: "Notice",            icon: NotebookIcon,    roles: ADMIN_ROLES},
 
   // ── Teacher ────────────────────────────────────────────────────────────────
-  { href: "/teacher-dashboard",       label: "Dashboard",         icon: LayoutDashboard, roles: ["TEACHER"] },
-  { href: "/attendance",              label: "Attendance",        icon: CalendarCheck,   roles: ["TEACHER"] },
-  { href: "/teacher-homework", label: "Homework", icon: ClipboardList, roles: ["TEACHER"] },
-  { href: "/teacher-timetable", label: "Timetable", icon: CalendarCheck, roles: ["TEACHER"] },
-  { href: "/teacher-exams", label: "Exams & Marks", icon: GraduationCap, roles: ["TEACHER"] },
-  { href: "/homework",                label: "Homework",          icon: ClipboardList,   roles: ["TEACHER"] },
-  { href: "/library",                 label: "Library",           icon: Library,         roles: ["TEACHER"] },
+  {
+    href: "/teacher-dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboard,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/attendance",
+    label: "Attendance",
+    icon: CalendarCheck,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teacher-homework",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teacher-timetable",
+    label: "Timetable",
+    icon: CalendarCheck,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teacher-exams",
+    label: "Exams & Marks",
+    icon: GraduationCap,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/homework",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teachers/curriculum",
+    label: "Curriculam",
+    icon: NotebookIcon,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teachers/notice",
+    label: "Notices",
+    icon: NotebookIcon,
+    roles: ["TEACHER"],
+  },
+  { href: "/library", label: "Library", icon: Library, roles: ["TEACHER"] },
 
   // ── Student ────────────────────────────────────────────────────────────────
-  { href: "/student-dashboard",       label: "Dashboard",         icon: LayoutDashboard, roles: ["STUDENT"] },
-  { href: "/attendance/my",           label: "My Attendance",     icon: CalendarCheck,   roles: ["STUDENT"] },
-  { href: "/student-homework", label: "Homework", icon: ClipboardList, roles: ["STUDENT"] },
-  { href: "/student-timetable", label: "Timetable", icon: CalendarCheck, roles: ["STUDENT"] },
-  { href: "/student-exams", label: "Report Cards", icon: GraduationCap, roles: ["STUDENT"] },
-  { href: "/fees",                    label: "Fees",              icon: CreditCard,      roles: ["STUDENT"] },
-  { href: "/library",                 label: "Library",           icon: Library,         roles: ["STUDENT"] },
+  {
+    href: "/student-dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboard,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/attendance/my",
+    label: "My Attendance",
+    icon: CalendarCheck,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/student-homework",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/student-timetable",
+    label: "Timetable",
+    icon: CalendarCheck,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/student-exams",
+    label: "Report Cards",
+    icon: GraduationCap,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/students/notice",
+    label: "Notices",
+    icon: NotebookIcon,
+    roles: ["STUDENT"],
+  },
+  { href: "/fees", label: "Fees", icon: CreditCard, roles: ["STUDENT"] },
+  { href: "/library", label: "Library", icon: Library, roles: ["STUDENT"] },
 
   // ── Parent ─────────────────────────────────────────────────────────────────
-  { href: "/parent-dashboard",        label: "Dashboard",         icon: LayoutDashboard, roles: ["PARENT"] },
-  { href: "/parent-homework", label: "Homework", icon: ClipboardList, roles: ["PARENT"] },
-  { href: "/parent-timetable", label: "Timetable", icon: CalendarCheck, roles: ["PARENT"] },
-  { href: "/parent-exams", label: "Child Results", icon: GraduationCap, roles: ["PARENT"] },
-  { href: "/attendance/my",           label: "Child Attendance",  icon: CalendarCheck,   roles: ["PARENT"] },
-  { href: "/fees",                    label: "Child Fees",        icon: CreditCard,      roles: ["PARENT"] },
+  {
+    href: "/parent-dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboard,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parent-homework",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parent-timetable",
+    label: "Timetable",
+    icon: CalendarCheck,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parent-exams",
+    label: "Child Results",
+    icon: GraduationCap,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parents/notice",
+    label: "Notice",
+    icon: NotebookIcon,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/attendance/my",
+    label: "Child Attendance",
+    icon: CalendarCheck,
+    roles: ["PARENT"],
+  },
+  { href: "/fees", label: "Child Fees", icon: CreditCard, roles: ["PARENT"] },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -99,11 +205,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     const protectedPaths = new Set(navItems.map((item) => item.href));
     if (protectedPaths.has(pathname)) {
       const canOpenPath = navItems.some(
-        (item) => item.href === pathname && item.roles.includes(saved.user.role)
+        (item) =>
+          item.href === pathname && item.roles.includes(saved.user.role),
       );
       if (!canOpenPath) {
         router.replace(
-          dashboardPathForRole(saved.user.role, Boolean(saved.user.must_change_password))
+          dashboardPathForRole(
+            saved.user.role,
+            Boolean(saved.user.must_change_password),
+          ),
         );
         return;
       }
@@ -193,8 +303,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               router.replace(
                 dashboardPathForRole(
                   auth.user.role,
-                  Boolean(auth.user.must_change_password)
-                )
+                  Boolean(auth.user.must_change_password),
+                ),
               )
             }
             className="hidden text-left lg:block"

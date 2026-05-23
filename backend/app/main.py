@@ -19,6 +19,12 @@ from app.models import (  # noqa: F401
     Exam,
     ExamMark,
     ExamSubject,
+    FeeAssignment,
+    FeeCategory,
+    FeeExpense,
+    FeePayment,
+    FeeStructure,
+    StudentFeeRecord,
     ParentGuardian,
     School,
     SchoolClass,
@@ -29,12 +35,12 @@ from app.models import (  # noqa: F401
     TeacherSubject,
     User,
 )
-from app.routes import academic, attendance, auth, dashboard, exams, homework, people, schools, library, timetable
+from app.routes import academic, attendance, auth, dashboard, exams, fees, homework, people, schools, library, timetable
 
 Base.metadata.create_all(bind=engine)
 run_startup_migrations(engine)
 
-app = FastAPI(title="School ERP Phase 8 API", version="8.0.0")
+app = FastAPI(title="School ERP Phase 8 + Phase 6 API", version="8.1.0")
 
 UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -51,7 +57,7 @@ app.add_middleware(
 
 @app.get("/")
 def root():
-    return {"message": "School ERP Phase 8 API is running"}
+    return {"message": "School ERP Phase 8 + Phase 6 API is running"}
 
 
 @app.get("/health")
@@ -68,4 +74,5 @@ app.include_router(attendance.router)
 app.include_router(homework.router)
 app.include_router(timetable.router)
 app.include_router(exams.router)
+app.include_router(fees.router)
 app.include_router(library.router)

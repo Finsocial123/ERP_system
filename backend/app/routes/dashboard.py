@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import inspect, or_, text
+from sqlalchemy import func, inspect, or_, text
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -11,6 +11,7 @@ from app.models.academic import AcademicSession, Department, SchoolClass, Sectio
 from app.models.homework import HomeworkAssignment, HomeworkSubmission
 from app.models.attendance import AttendanceStatus, StudentAttendance
 from app.models.exam import Exam, ExamMark, ExamSubject
+from app.models.fee import FeeExpense, FeePayment, StudentFeeRecord
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.school import School
 from app.models.timetable import TimetableEntry
@@ -92,6 +93,8 @@ def _admin_counts(db: Session, school_id: int) -> dict[str, int]:
         "timetable_slots": _count(db, db.query(TimetableEntry).filter(TimetableEntry.school_id == school_id, TimetableEntry.is_active.is_(True))),
         "exams": _count(db, db.query(Exam).filter(Exam.school_id == school_id, Exam.is_active.is_(True))),
         "published_results": _count(db, db.query(Exam).filter(Exam.school_id == school_id, Exam.is_active.is_(True), Exam.result_status == "PUBLISHED")),
+        "fee_records": _count(db, db.query(StudentFeeRecord).filter(StudentFeeRecord.school_id == school_id)),
+        "pending_fee_records": _count(db, db.query(StudentFeeRecord).filter(StudentFeeRecord.school_id == school_id, StudentFeeRecord.status.in_(["PENDING", "PARTIAL", "OVERDUE"]))),
     }
 
 
@@ -177,12 +180,57 @@ def _today_attendance_count(db: Session, school_id: int) -> int:
 
 
 def _pending_fees_count(db: Session, school_id: int) -> int:
-    return _optional_table_count(
+    return _count(
         db,
-        table_names=["student_fee_records", "fee_records", "student_fees", "fees"],
-        school_id=school_id,
-        status_columns=["status", "payment_status"],
-        status_values=["PENDING", "PARTIAL", "DUE", "UNPAID"],
+        db.query(StudentFeeRecord).filter(
+            StudentFeeRecord.school_id == school_id,
+            StudentFeeRecord.status.in_(["PENDING", "PARTIAL", "OVERDUE"]),
+        ),
+    )
+
+
+def _pending_fee_amount_for_school(db: Session, school_id: int) -> float:
+    return round(
+        float(
+            db.query(StudentFeeRecord)
+            .filter(StudentFeeRecord.school_id == school_id, StudentFeeRecord.status.in_(["PENDING", "PARTIAL", "OVERDUE"]))
+            .with_entities(func.coalesce(func.sum(StudentFeeRecord.balance_amount), 0))
+            .scalar()
+            or 0
+        ),
+        2,
+    )
+
+
+def _today_fee_collection(db: Session, school_id: int) -> float:
+    return round(
+        float(
+            db.query(FeePayment)
+            .filter(FeePayment.school_id == school_id, FeePayment.payment_date == date.today())
+            .with_entities(func.coalesce(func.sum(FeePayment.amount), 0))
+            .scalar()
+            or 0
+        ),
+        2,
+    )
+
+
+def _pending_fee_amount_for_students(db: Session, school_id: int, student_ids: list[int]) -> float:
+    if not student_ids:
+        return 0.0
+    return round(
+        float(
+            db.query(StudentFeeRecord)
+            .filter(
+                StudentFeeRecord.school_id == school_id,
+                StudentFeeRecord.student_id.in_(student_ids),
+                StudentFeeRecord.status.in_(["PENDING", "PARTIAL", "OVERDUE"]),
+            )
+            .with_entities(func.coalesce(func.sum(StudentFeeRecord.balance_amount), 0))
+            .scalar()
+            or 0
+        ),
+        2,
     )
 
 
@@ -481,6 +529,7 @@ def _admin_charts(db: Session, school_id: int, counts: dict[str, int]) -> list[d
         {"label": "Subjects", "value": counts["subjects"]},
         {"label": "Departments", "value": counts["departments"]},
         {"label": "Exams", "value": counts.get("exams", 0)},
+        {"label": "Fee Records", "value": counts.get("fee_records", 0)},
     ]
 
     people_summary = [
@@ -531,12 +580,16 @@ def _admin_dashboard(db: Session, school_id: int) -> dict[str, Any]:
     new_admissions = _new_admissions_count(db, school_id)
     today_attendance = _today_attendance_count(db, school_id)
     pending_fees = _pending_fees_count(db, school_id)
+    pending_fee_amount = _pending_fee_amount_for_school(db, school_id)
+    today_fee_collection = _today_fee_collection(db, school_id)
 
     cards = [
         _card("teachers", "Total Teachers", counts["teachers"], "Active teaching staff"),
         _card("students", "Total Students", counts["students"], "Active student records"),
         _card("today_attendance", "Today Attendance", today_attendance, "Marked records for today", "info"),
-        _card("pending_fees", "Pending Fees", pending_fees, "Pending fee records when fee module is added", "warning"),
+        _card("pending_fees", "Pending Fees", pending_fees, "Pending/partial/overdue student fee records", "warning"),
+        _card("pending_fee_amount", "Pending Fee Amount", f"₹{pending_fee_amount:,.2f}", "Total unpaid balance", "warning"),
+        _card("today_fee_collection", "Today Collection", f"₹{today_fee_collection:,.2f}", "Fee payments collected today", "success"),
         _card("new_admissions", "New Admissions", new_admissions, "Admissions in the last 30 days", "success"),
         _card("current_session", "Current Academic Session", session.name if session else "Not set", "Active/latest session"),
         _card("homework", "Homework Assigned", counts["homework"], "Total active homework assignments", "success"),
@@ -549,6 +602,8 @@ def _admin_dashboard(db: Session, school_id: int) -> dict[str, Any]:
         {
             "today_attendance": today_attendance,
             "pending_fees": pending_fees,
+            "pending_fee_amount": pending_fee_amount,
+            "today_fee_collection": today_fee_collection,
             "new_admissions": new_admissions,
         }
     )
@@ -634,6 +689,8 @@ def _student_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
     pending_homework = _pending_homework_for_student(db, school_id, student)
     timetable_slots = _student_timetable_slots(db, school_id, student)
     published_results = _published_exams_for_student(db, school_id, student)
+    student_fee_ids = [student.id] if student else []
+    student_pending_fee_amount = _pending_fee_amount_for_students(db, school_id, student_fee_ids)
 
     att_pct = _student_attendance_percentage(db, school_id, student, session)
     # tone: warning if below 75%, success if >= 90%, else info
@@ -653,7 +710,7 @@ def _student_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
     cards = [
          _card("homework", "Pending Homework", pending_homework, "Assignments waiting for your submission", "warning"),
         _card("attendance_percent", "Attendance %", att_pct, f"Current session attendance ({session.name if session else 'N/A'})", att_tone),
-        _card("pending_fees", "Pending Fees", _pending_fees_count(db, school_id), "Fee module comes in Phase 6", "warning"),
+        _card("pending_fees", "Pending Fees", f"₹{student_pending_fee_amount:,.2f}", "Your unpaid fee balance", "warning"),
         _card("notices", "Notices", 0, "Communication module comes in Phase 9"),
         _card("timetable_slots", "Timetable Slots", timetable_slots, "Weekly class timetable slots", "info"),
         _card("published_results", "Published Results", published_results, "Report cards available to view", "success"),
@@ -690,6 +747,7 @@ def _parent_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]
     pending_homework = _pending_homework_for_children(db, school_id, children)
     timetable_slots = sum(_student_timetable_slots(db, school_id, child) for child in children)
     published_results = _published_exams_for_children(db, school_id, children)
+    child_pending_fee_amount = _pending_fee_amount_for_students(db, school_id, [child.id for child in children])
     session = _current_session(db, school_id)
 
     # count how many children have attendance below 75%
@@ -708,7 +766,7 @@ def _parent_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]
     cards = [
         _card("children", "Children", len(children), "Linked active student profiles"),
         _card("pending_homework", "Pending Homework", pending_homework, "Homework pending for linked children", "warning"),
-        _card("pending_fees", "Pending Fees", _pending_fees_count(db, school_id), "Fee module comes in Phase 6", "warning"),
+        _card("pending_fees", "Pending Fees", f"₹{child_pending_fee_amount:,.2f}", "Unpaid fee balance for linked children", "warning"),
         _card("notices", "Notices", 0, "Communication module comes in Phase 9"),
         _card("timetable_slots", "Timetable Slots", timetable_slots, "Weekly slots for linked children", "info"),
         _card("attendance_alerts", "Attendance Alerts", low_att_count, att_alert_helper, "warning" if low_att_count > 0 else "success"),

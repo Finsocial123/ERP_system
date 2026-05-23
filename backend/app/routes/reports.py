@@ -1,0 +1,433 @@
+from datetime import date
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
+from app.dependencies.auth import current_school_id, require_roles
+from app.models.academic import AcademicSession, Department, SchoolClass, Section
+from app.models.attendance import AttendanceStatus, StudentAttendance
+from app.models.exam import Exam
+from app.models.homework import HomeworkAssignment, HomeworkSubmission
+from app.models.library import Book, BookIssue, IssueStatus
+from app.models.people import ParentGuardian, Student, Teacher, TeacherSubject, ClassTeacherAssignment
+from app.models.user import User, UserRole
+from app.schemas.reports import (
+    AttendanceReportResponse,
+    AttendanceReportRow,
+    HomeworkReportResponse,
+    HomeworkReportRow,
+    ReportsOverview,
+    StudentReportResponse,
+    StudentReportRow,
+    TeacherReportResponse,
+    TeacherReportRow,
+)
+
+router = APIRouter(prefix="/reports", tags=["Phase 10 - Reports"])
+
+ADMIN_ROLES = [UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN]
+
+
+def _student_name(s: Student) -> str:
+    return f"{s.first_name} {s.last_name or ''}".strip()
+
+
+def _att_pct(present: int, half_day: int, total: int) -> float:
+    if total == 0:
+        return 0.0
+    return round((present + half_day * 0.5) / total * 100, 1)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OVERVIEW
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/overview", response_model=ReportsOverview)
+def reports_overview(
+    school_id: int = Depends(current_school_id),
+    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    today = date.today()
+
+    total_students  = db.query(Student).filter(Student.school_id == school_id).count()
+    active_students = db.query(Student).filter(Student.school_id == school_id, Student.is_active.is_(True)).count()
+    total_teachers  = db.query(Teacher).filter(Teacher.school_id == school_id).count()
+    active_teachers = db.query(Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True)).count()
+    total_classes   = db.query(SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True)).count()
+    total_exams     = db.query(Exam).filter(Exam.school_id == school_id, Exam.is_active.is_(True)).count()
+    published_exams = db.query(Exam).filter(Exam.school_id == school_id, Exam.result_status == "PUBLISHED").count()
+    total_homework  = db.query(HomeworkAssignment).filter(HomeworkAssignment.school_id == school_id, HomeworkAssignment.is_active.is_(True)).count()
+
+    # attendance average across active session
+    active_session = db.query(AcademicSession).filter(
+        AcademicSession.school_id == school_id,
+        AcademicSession.is_active.is_(True),
+    ).first()
+
+    avg_att = 0.0
+    low_att_count = 0
+    if active_session:
+        att_records = db.query(StudentAttendance).filter(
+            StudentAttendance.school_id == school_id,
+            StudentAttendance.session_id == active_session.id,
+        ).all()
+
+        # group by student
+        student_map: dict[int, dict] = {}
+        for r in att_records:
+            if r.student_id not in student_map:
+                student_map[r.student_id] = {"total": 0, "present": 0, "half": 0}
+            student_map[r.student_id]["total"] += 1
+            if r.status == AttendanceStatus.PRESENT.value:
+                student_map[r.student_id]["present"] += 1
+            elif r.status == AttendanceStatus.HALF_DAY.value:
+                student_map[r.student_id]["half"] += 1
+
+        if student_map:
+            pcts = [_att_pct(v["present"], v["half"], v["total"]) for v in student_map.values()]
+            avg_att = round(sum(pcts) / len(pcts), 1)
+            low_att_count = sum(1 for p in pcts if p < 75)
+
+    # library
+    lib_books   = db.query(Book).filter(Book.school_id == school_id, Book.is_active.is_(True)).count()
+    lib_issued  = db.query(BookIssue).filter(
+        BookIssue.school_id == school_id,
+        BookIssue.status.in_([IssueStatus.ISSUED.value, IssueStatus.OVERDUE.value]),
+    ).count()
+    lib_overdue = db.query(BookIssue).filter(
+        BookIssue.school_id == school_id,
+        BookIssue.status.in_([IssueStatus.ISSUED.value, IssueStatus.OVERDUE.value]),
+        BookIssue.due_date < today,
+    ).count()
+
+    return ReportsOverview(
+        total_students=total_students,
+        active_students=active_students,
+        total_teachers=total_teachers,
+        active_teachers=active_teachers,
+        total_classes=total_classes,
+        total_exams=total_exams,
+        published_exams=published_exams,
+        total_homework=total_homework,
+        avg_attendance_pct=avg_att,
+        low_attendance_students=low_att_count,
+        library_books=lib_books,
+        library_issued=lib_issued,
+        overdue_books=lib_overdue,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STUDENT REPORT
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/students", response_model=StudentReportResponse)
+def student_report(
+    class_id: int | None = Query(default=None),
+    section_id: int | None = Query(default=None),
+    include_inactive: bool = Query(default=False),
+    school_id: int = Depends(current_school_id),
+    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    q = db.query(Student).filter(Student.school_id == school_id)
+    if not include_inactive:
+        q = q.filter(Student.is_active.is_(True))
+    if class_id:
+        q = q.filter(Student.class_id == class_id)
+    if section_id:
+        q = q.filter(Student.section_id == section_id)
+    students = q.order_by(Student.first_name).all()
+
+    # lookup maps
+    class_map   = {c.id: c.name for c in db.query(SchoolClass).filter(SchoolClass.school_id == school_id).all()}
+    section_map = {s.id: s.name for s in db.query(Section).filter(Section.school_id == school_id).all()}
+
+    rows = []
+    for s in students:
+        guardian = db.query(ParentGuardian).filter(
+            ParentGuardian.student_id == s.id,
+            ParentGuardian.is_active.is_(True),
+        ).first()
+        rows.append(StudentReportRow(
+            student_id=s.id,
+            admission_no=s.admission_no,
+            roll_number=s.roll_number,
+            full_name=_student_name(s),
+            gender=s.gender,
+            class_name=class_map.get(s.class_id) if s.class_id else None,
+            section_name=section_map.get(s.section_id) if s.section_id else None,
+            guardian_name=guardian.full_name if guardian else None,
+            guardian_phone=guardian.phone if guardian else None,
+            admission_date=str(s.admission_date) if s.admission_date else None,
+            status=s.status if s.status else ("ACTIVE" if s.is_active else "INACTIVE"),
+        ))
+
+    total = db.query(Student).filter(Student.school_id == school_id).count()
+    active = db.query(Student).filter(Student.school_id == school_id, Student.is_active.is_(True)).count()
+
+    # class breakdown
+    class_counts = {}
+    for s in db.query(Student).filter(Student.school_id == school_id, Student.is_active.is_(True)).all():
+        key = class_map.get(s.class_id, "Unassigned") if s.class_id else "Unassigned"
+        class_counts[key] = class_counts.get(key, 0) + 1
+    class_breakdown = [{"class": k, "count": v} for k, v in sorted(class_counts.items())]
+
+    return StudentReportResponse(
+        total_students=total,
+        active_students=active,
+        class_breakdown=class_breakdown,
+        rows=rows,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ATTENDANCE REPORT
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/attendance", response_model=AttendanceReportResponse)
+def attendance_report(
+    session_id: int = Query(...),
+    class_id: int | None = Query(default=None),
+    section_id: int | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    school_id: int = Depends(current_school_id),
+    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    session = db.query(AcademicSession).filter(
+        AcademicSession.id == session_id, AcademicSession.school_id == school_id
+    ).first()
+
+    class_map   = {c.id: c.name for c in db.query(SchoolClass).filter(SchoolClass.school_id == school_id).all()}
+    section_map = {s.id: s.name for s in db.query(Section).filter(Section.school_id == school_id).all()}
+
+    # fetch students
+    sq = db.query(Student).filter(Student.school_id == school_id, Student.is_active.is_(True))
+    if class_id:
+        sq = sq.filter(Student.class_id == class_id)
+    if section_id:
+        sq = sq.filter(Student.section_id == section_id)
+    students = sq.order_by(Student.first_name).all()
+
+    # fetch attendance
+    aq = db.query(StudentAttendance).filter(
+        StudentAttendance.school_id == school_id,
+        StudentAttendance.session_id == session_id,
+    )
+    if class_id:
+        aq = aq.filter(StudentAttendance.class_id == class_id)
+    if section_id:
+        aq = aq.filter(StudentAttendance.section_id == section_id)
+    if date_from:
+        aq = aq.filter(StudentAttendance.date >= date_from)
+    if date_to:
+        aq = aq.filter(StudentAttendance.date <= date_to)
+    records = aq.all()
+
+    # group by student
+    record_map: dict[int, dict] = {}
+    for r in records:
+        if r.student_id not in record_map:
+            record_map[r.student_id] = {"total": 0, "present": 0, "absent": 0, "leave": 0, "half": 0}
+        record_map[r.student_id]["total"] += 1
+        if r.status == AttendanceStatus.PRESENT.value:
+            record_map[r.student_id]["present"] += 1
+        elif r.status == AttendanceStatus.ABSENT.value:
+            record_map[r.student_id]["absent"] += 1
+        elif r.status == AttendanceStatus.LEAVE.value:
+            record_map[r.student_id]["leave"] += 1
+        elif r.status == AttendanceStatus.HALF_DAY.value:
+            record_map[r.student_id]["half"] += 1
+
+    rows = []
+    for s in students:
+        d = record_map.get(s.id, {"total": 0, "present": 0, "absent": 0, "leave": 0, "half": 0})
+        pct = _att_pct(d["present"], d["half"], d["total"])
+        rows.append(AttendanceReportRow(
+            student_id=s.id,
+            student_name=_student_name(s),
+            admission_no=s.admission_no,
+            roll_number=s.roll_number,
+            class_name=class_map.get(s.class_id) if s.class_id else None,
+            section_name=section_map.get(s.section_id) if s.section_id else None,
+            total_days=d["total"],
+            present=d["present"],
+            absent=d["absent"],
+            leave=d["leave"],
+            half_day=d["half"],
+            percentage=pct,
+            low_attendance=pct < 75 and d["total"] > 0,
+        ))
+
+    avg_pct = round(sum(r.percentage for r in rows) / len(rows), 1) if rows else 0.0
+    low_count = sum(1 for r in rows if r.low_attendance)
+
+    return AttendanceReportResponse(
+        session_id=session_id,
+        session_name=session.name if session else str(session_id),
+        class_id=class_id,
+        class_name=class_map.get(class_id) if class_id else None,
+        section_id=section_id,
+        date_from=date_from,
+        date_to=date_to,
+        total_students=len(rows),
+        avg_percentage=avg_pct,
+        low_attendance_count=low_count,
+        rows=rows,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEACHER REPORT
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/teachers", response_model=TeacherReportResponse)
+def teacher_report(
+    department_id: int | None = Query(default=None),
+    include_inactive: bool = Query(default=False),
+    school_id: int = Depends(current_school_id),
+    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    dept_map = {d.id: d.name for d in db.query(Department).filter(Department.school_id == school_id).all()}
+
+    q = db.query(Teacher).filter(Teacher.school_id == school_id)
+    if not include_inactive:
+        q = q.filter(Teacher.is_active.is_(True))
+    if department_id:
+        q = q.filter(Teacher.department_id == department_id)
+    teachers = q.order_by(Teacher.full_name).all()
+
+    rows = []
+    for t in teachers:
+        subjects_count = db.query(TeacherSubject).filter(TeacherSubject.teacher_id == t.id).count()
+        classes_count  = db.query(ClassTeacherAssignment).filter(ClassTeacherAssignment.teacher_id == t.id).count()
+        rows.append(TeacherReportRow(
+            teacher_id=t.id,
+            employee_id=t.employee_id,
+            full_name=t.full_name,
+            department_name=dept_map.get(t.department_id) if t.department_id else None,
+            email=t.email,
+            phone=t.phone,
+            qualification=t.qualification,
+            joining_date=str(t.joining_date) if t.joining_date else None,
+            status=t.status if t.status else ("ACTIVE" if t.is_active else "INACTIVE"),
+            subjects_assigned=subjects_count,
+            classes_assigned=classes_count,
+        ))
+
+    total   = db.query(Teacher).filter(Teacher.school_id == school_id).count()
+    active  = db.query(Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True)).count()
+
+    dept_counts: dict = {}
+    for t in db.query(Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True)).all():
+        key = dept_map.get(t.department_id, "No Department") if t.department_id else "No Department"
+        dept_counts[key] = dept_counts.get(key, 0) + 1
+    dept_breakdown = [{"department": k, "count": v} for k, v in sorted(dept_counts.items())]
+
+    return TeacherReportResponse(
+        total_teachers=total,
+        active_teachers=active,
+        department_breakdown=dept_breakdown,
+        rows=rows,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HOMEWORK REPORT
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/homework", response_model=HomeworkReportResponse)
+def homework_report(
+    session_id: int | None = Query(default=None),
+    class_id: int | None = Query(default=None),
+    school_id: int = Depends(current_school_id),
+    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    class_map   = {c.id: c.name for c in db.query(SchoolClass).filter(SchoolClass.school_id == school_id).all()}
+    section_map = {s.id: s.name for s in db.query(Section).filter(Section.school_id == school_id).all()}
+
+    session_name = None
+    if session_id:
+        s = db.query(AcademicSession).filter(AcademicSession.id == session_id, AcademicSession.school_id == school_id).first()
+        session_name = s.name if s else None
+
+    q = db.query(HomeworkAssignment).filter(
+        HomeworkAssignment.school_id == school_id,
+        HomeworkAssignment.is_active.is_(True),
+    )
+    if session_id:
+        q = q.filter(HomeworkAssignment.academic_session_id == session_id)
+    if class_id:
+        q = q.filter(HomeworkAssignment.class_id == class_id)
+    assignments = q.order_by(HomeworkAssignment.due_date.desc()).all()
+
+    rows = []
+    for hw in assignments:
+        # count students in target class/section
+        sq = db.query(Student).filter(Student.school_id == school_id, Student.is_active.is_(True), Student.class_id == hw.class_id)
+        if hw.section_id:
+            sq = sq.filter(Student.section_id == hw.section_id)
+        total_students = sq.count()
+
+        subs = db.query(HomeworkSubmission).filter(HomeworkSubmission.homework_id == hw.id).all()
+        submitted = sum(1 for s in subs if s.status in ("SUBMITTED", "CHECKED"))
+        checked   = sum(1 for s in subs if s.status == "CHECKED")
+        pending   = max(0, total_students - submitted)
+        rate      = round(submitted / total_students * 100, 1) if total_students > 0 else 0.0
+
+        teacher_name = None
+        if hw.teacher_id:
+            t = db.query(Teacher).filter(Teacher.id == hw.teacher_id).first()
+            teacher_name = t.full_name if t else None
+
+        subject_name = None
+        if hw.subject_id:
+            from app.models.academic import Subject
+            subj = db.query(Subject).filter(Subject.id == hw.subject_id).first()
+            subject_name = subj.name if subj else None
+
+        rows.append(HomeworkReportRow(
+            assignment_id=hw.id,
+            title=hw.title,
+            subject_name=subject_name,
+            class_name=class_map.get(hw.class_id),
+            section_name=section_map.get(hw.section_id) if hw.section_id else None,
+            due_date=hw.due_date,
+            teacher_name=teacher_name,
+            total_students=total_students,
+            submitted=submitted,
+            checked=checked,
+            pending=pending,
+            submission_rate=rate,
+        ))
+
+    return HomeworkReportResponse(
+        session_id=session_id,
+        session_name=session_name,
+        class_id=class_id,
+        rows=rows,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FEE REPORT (placeholder — Phase 6 not yet built)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/fees")
+def fee_report(
+    school_id: int = Depends(current_school_id),
+    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    return {
+        "message": "Fee management module (Phase 6) not yet implemented.",
+        "total_collected": 0,
+        "total_pending": 0,
+        "rows": [],
+    }

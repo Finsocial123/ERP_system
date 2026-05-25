@@ -83,6 +83,7 @@ export type AcademicSession = {
 export type ParentGuardian = {
   id: number;
   full_name: string;
+  user_id?: number | null;
   relation?: string | null;
   email?: string | null;
   phone?: string | null;
@@ -113,6 +114,8 @@ export type Student = {
   is_active: boolean;
   user_id?: number | null;
   temporary_password?: string | null;
+  parent_temporary_password?: string | null;
+  parent_login_id?: string | null;
 };
 
 export type Teacher = {

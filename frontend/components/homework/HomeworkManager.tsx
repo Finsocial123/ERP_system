@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Edit2, Eye, FileText, Plus, RefreshCcw, Search, Trash2, UploadCloud, X } from "lucide-react";
 
 import { AppSection } from "@/components/CrudManager";
@@ -72,6 +72,7 @@ export default function HomeworkManager({ mode }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const submissionsRef = useRef<HTMLDivElement | null>(null);
 
   const filteredSections = useMemo(() => {
     if (!meta) return [];
@@ -113,6 +114,9 @@ export default function HomeworkManager({ mode }: Props) {
         if (row.id) nextFeedback[row.id] = row.teacher_feedback || "";
       });
       setFeedback(nextFeedback);
+      window.setTimeout(() => {
+        submissionsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 80);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load submissions");
     }
@@ -301,7 +305,8 @@ export default function HomeworkManager({ mode }: Props) {
       </div>
 
       {selected && (
-        <Card className="mt-6">
+        <div ref={submissionsRef}>
+          <Card className="mt-6">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-bold text-slate-900">Submissions: {selected.title}</h2>
@@ -329,7 +334,8 @@ export default function HomeworkManager({ mode }: Props) {
               </tbody>
             </table>
           </div>
-        </Card>
+          </Card>
+        </div>
       )}
     </AppSection>
   );

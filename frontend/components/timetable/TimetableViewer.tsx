@@ -48,7 +48,6 @@ export default function TimetableViewer({ role }: Props) {
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-wide text-slate-400">Phase 7</p>
           <h1 className="text-2xl font-bold text-slate-900">Timetable</h1>
           <p className="text-sm text-slate-500">View weekly subject-period allocation with teacher and room details.</p>
         </div>

@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "School ERP Phase 1",
-  description: "Production-ready SaaS foundation starter for school ERP",
+  title: "School ERP",
+  description: "School and college management portal",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

@@ -478,7 +478,6 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-wide text-slate-400">Phase 8</p>
           <h1 className="text-2xl font-bold text-slate-900">Exam and Result Management</h1>
           <p className="text-sm text-slate-500">Create exams, prepare exam timetable, enter marks, publish results and view reports.</p>
         </div>

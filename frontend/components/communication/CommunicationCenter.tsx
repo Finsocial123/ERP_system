@@ -348,7 +348,6 @@ export default function CommunicationCenter() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-wide text-slate-400">Phase 9</p>
           <h1 className="text-2xl font-bold text-slate-900">Notice, Communication & Support</h1>
           <p className="mt-1 text-sm text-slate-500">Circulars, announcements, event calendar, support tickets, complaints and in-app notifications.</p>
         </div>

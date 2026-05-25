@@ -5,7 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+import razorpay
+from razorpay.errors import SignatureVerificationError
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
 from app.models.academic import AcademicSession, SchoolClass, Section
@@ -35,6 +38,9 @@ from app.schemas.fee import (
     FeeStructureCreate,
     FeeStructureRead,
     FeeStructureUpdate,
+    RazorpayOrderCreate,
+    RazorpayOrderResponse,
+    RazorpayVerify,
     StudentFeeRecordCreate,
     StudentFeeRecordRead,
     StudentFeeRecordUpdate,
@@ -963,3 +969,112 @@ def delete_expense(
     expense.is_active = False
     db.commit()
     return MessageResponse(message="Expense deactivated")
+
+
+@router.post("/razorpay/create-order", response_model=RazorpayOrderResponse)
+def create_razorpay_order(
+    payload: RazorpayOrderCreate,
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a Razorpay order for fee payment."""
+    # Get and verify fee record
+    record = _get_or_404(db, StudentFeeRecord, payload.student_fee_record_id, school_id, "Student fee record")
+    
+    if record.status == "WAIVED":
+        raise HTTPException(status_code=400, detail="Cannot collect payment for a waived record")
+    
+    _recalculate_record(record)
+    
+    # Create Razorpay order
+    client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+    order = client.order.create({
+        "amount": int(record.balance_amount * 100),  # Razorpay needs paise
+        "currency": "INR",
+        "receipt": f"fee_{record.id}_{school_id}",
+        "notes": {
+            "student_fee_record_id": str(record.id),
+            "school_id": str(school_id),
+        },
+    })
+    
+    return RazorpayOrderResponse(
+        order_id=order["id"],
+        amount=order["amount"],
+        currency=order["currency"],
+        key=settings.RAZORPAY_KEY_ID,
+        student_fee_record_id=record.id,
+        student_name=_full_student_name(record.student) if record.student else None,
+        fee_title=record.title,
+    )
+
+
+@router.post("/razorpay/verify-payment", response_model=FeeReceiptRead)
+def verify_razorpay_payment(
+    payload: RazorpayVerify,
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Verify Razorpay payment signature and create FeePayment record."""
+    # Step 1: Verify signature to prevent tampered payments
+    client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+    try:
+        client.utility.verify_payment_signature({
+            "razorpay_order_id": payload.razorpay_order_id,
+            "razorpay_payment_id": payload.razorpay_payment_id,
+            "razorpay_signature": payload.razorpay_signature,
+        })
+    except SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid payment signature")
+    
+    # Step 2: Get payment details and verify record
+    record = _get_or_404(db, StudentFeeRecord, payload.student_fee_record_id, school_id, "Student fee record")
+    
+    if record.status == "WAIVED":
+        raise HTTPException(status_code=400, detail="Cannot collect payment for a waived record")
+    
+    _recalculate_record(record)
+    
+    # Fetch payment details from Razorpay to get the actual amount
+    payment_details = client.payment.fetch(payload.razorpay_payment_id)
+    amount = _money(payment_details["amount"] / 100)  # Convert from paise to rupees
+    
+    if amount > record.balance_amount:
+        raise HTTPException(status_code=400, detail=f"Payment cannot exceed pending balance ₹{_money(record.balance_amount):,.2f}")
+    
+    # Step 3: Create FeePayment record
+    payment_date = date.today()
+    payment = FeePayment(
+        school_id=school_id,
+        student_fee_record_id=record.id,
+        student_id=record.student_id,
+        collected_by_user_id=current_user.id,
+        receipt_no=_receipt_number(db, school_id, payment_date),
+        amount=amount,
+        payment_date=payment_date,
+        payment_mode="ONLINE",
+        razorpay_order_id=payload.razorpay_order_id,
+        razorpay_payment_id=payload.razorpay_payment_id,
+        razorpay_signature=payload.razorpay_signature,
+    )
+    
+    # Update fee record
+    record.paid_amount = _money(record.paid_amount + payment.amount)
+    _recalculate_record(record)
+    
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+    db.refresh(record)
+    
+    # Return receipt
+    school = db.get(School, school_id)
+    return FeeReceiptRead(
+        payment=_payment_read(payment),
+        record=_record_read(record),
+        school_name=school.name if school else None,
+        school_code=school.school_code if school else None,
+    )
+

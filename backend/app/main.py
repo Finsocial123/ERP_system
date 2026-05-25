@@ -43,7 +43,7 @@ from app.models import (  # noqa: F401
     SupportTicket,
 )
 
-from app.routes import academic, attendance, reports,auth, dashboard, exams,fees, homework, people, schools, library, timetable, notice, communication, curriculum
+from app.routes import academic, attendance, reports,auth, dashboard, exams,fees, homework, people, schools, library, timetable, notice, communication, curriculum, meetings
 
 Base.metadata.create_all(bind=engine)
 run_startup_migrations(engine)
@@ -88,3 +88,4 @@ app.include_router(fees.router)
 app.include_router(library.router)
 app.include_router(reports.router)
 app.include_router(curriculum.router)
+app.include_router(meetings.router)

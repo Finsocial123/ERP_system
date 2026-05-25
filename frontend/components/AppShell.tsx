@@ -117,6 +117,12 @@ const navItems: NavItem[] = [
     icon: NotebookIcon,
     roles: ADMIN_ROLES,
   },
+  {
+    href: "/communication",
+    label: "Communication",
+    icon: NotebookIcon,
+    roles: [...ADMIN_ROLES, "TEACHER", "STUDENT", "PARENT"],
+  },
 
   // ── Teacher ────────────────────────────────────────────────────────────────
   {

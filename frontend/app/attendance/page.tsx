@@ -511,7 +511,7 @@ export default function AttendancePage() {
                           >
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-2">
-                                {s.low_attendance && <AlertTriangle size={14} className="flex-shrink-0 text-amber-500" />}
+                                {s.low_attendance && <AlertTriangle size={14} className="shrink-0 text-amber-500" />}
                                 <div>
                                   <p className="font-medium text-slate-900">{s.student_name}</p>
                                   <p className="text-xs text-slate-400">{s.admission_no}</p>

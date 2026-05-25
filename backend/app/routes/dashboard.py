@@ -179,6 +179,37 @@ def _today_attendance_count(db: Session, school_id: int) -> int:
     )
 
 
+def _teacher_today_attendance_count(db: Session, school_id: int, teacher: Teacher | None) -> int:
+    """
+    Count today's attendance records only for the classes where the teacher
+    is assigned as class teacher (ClassTeacherAssignment).
+    Returns 0 if teacher has no class assignments.
+    """
+    if not teacher:
+        return 0
+ 
+    assigned_class_ids = [
+        row.class_id
+        for row in db.query(ClassTeacherAssignment).filter(
+            ClassTeacherAssignment.teacher_id == teacher.id,
+            ClassTeacherAssignment.school_id == school_id,
+        ).all()
+    ]
+ 
+    if not assigned_class_ids:
+        return 0
+ 
+    return (
+        db.query(StudentAttendance)
+        .filter(
+            StudentAttendance.school_id == school_id,
+            StudentAttendance.class_id.in_(assigned_class_ids),
+            StudentAttendance.date == date.today(),
+        )
+        .count()
+    )
+
+
 def _pending_fees_count(db: Session, school_id: int) -> int:
     return _count(
         db,
@@ -640,7 +671,9 @@ def _teacher_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
         _card("my_subjects", "My Subjects", my_subjects, "Assigned subject scopes"),
         _card("my_classes", "My Classes", my_classes, "Class teacher assignments"),
         _card("total_students", "My Students", total_students, "Students in assigned classes"),
-        _card("today_attendance", "Today Attendance", _today_attendance_count(db, school_id), "Phase 4 attendance data", "info"),
+        # _card("today_attendance", "Today Attendance", _today_attendance_count(db, school_id), "Phase 4 attendance data", "info"),
+        _card("today_attendance", "Today Attendance", _teacher_today_attendance_count(db, school_id, teacher), 
+      "Students marked present/absent today in your classes", "info"),
         _card("homework_created", "Homework Created", homework_counts["homework_created"], "Active homework assignments", "success"),
         _card("submissions_to_check", "Submissions To Check", homework_counts["submissions_to_check"], "Submitted homework waiting for checking", "warning"),
         _card("timetable_slots", "Timetable Slots", timetable_slots, "Assigned weekly teaching slots", "info"),

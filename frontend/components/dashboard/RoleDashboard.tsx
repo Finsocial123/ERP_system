@@ -329,23 +329,29 @@ export default function RoleDashboard() {
             </Card>
           )}
 
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6">
             {data.cards.map((card) => {
               const Icon = cardIcons[card.key] || Activity;
               const tone = toneClass[card.tone || "default"] || toneClass.default;
+              const rawValue = formatValue(card.value);
+              const isLongValue = rawValue.length > 10;
               return (
                 <Card key={card.key} className="transition hover:-translate-y-0.5 hover:shadow-md">
-                  <div className="flex h-full flex-col justify-between gap-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm text-slate-500">{card.label}</p>
-                        <p className="mt-2 text-3xl font-bold text-slate-900">{formatValue(card.value)}</p>
-                      </div>
-                      <div className={`rounded-2xl p-3 ${tone}`}>
-                        <Icon size={22} />
+                  <div className="flex h-full flex-col justify-between gap-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm font-medium text-slate-500 leading-snug">{card.label}</p>
+                      <div className={`shrink-0 rounded-2xl p-2.5 ${tone}`}>
+                        <Icon size={18} />
                       </div>
                     </div>
-                    {card.helper && <p className="text-xs leading-5 text-slate-500">{card.helper}</p>}
+                    <p
+                      className={`font-bold text-slate-900 break-all leading-tight ${
+                        isLongValue ? "text-xl" : "text-3xl"
+                      }`}
+                    >
+                      {rawValue}
+                    </p>
+                    {card.helper && <p className="text-xs leading-5 text-slate-400">{card.helper}</p>}
                   </div>
                 </Card>
               );

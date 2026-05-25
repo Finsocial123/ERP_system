@@ -134,10 +134,12 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function SummaryCard({ label, value, helper }: { label: string; value: string | number; helper: string }) {
+  const rawValue = String(value);
+  const isLong = rawValue.length > 10;
   return (
     <Card>
       <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</p>
-      <p className="mt-2 text-2xl font-bold text-slate-900">{value}</p>
+      <p className={`mt-2 font-bold text-slate-900 break-all leading-tight ${isLong ? "text-lg" : "text-2xl"}`}>{value}</p>
       <p className="mt-1 text-xs text-slate-500">{helper}</p>
     </Card>
   );

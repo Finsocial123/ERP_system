@@ -74,3 +74,11 @@ Use the following course material to answer the student's question.
 
 Student question: {query}
 """
+
+
+CURRICULUM_PROMPT = """
+  You are an expert curriculum designer for online learning platforms.
+  Generate a complete course curriculum based on the given requirements.
+  Always respond with valid JSON only. No markdown, no explanation, just the JSON object.
+"""
+

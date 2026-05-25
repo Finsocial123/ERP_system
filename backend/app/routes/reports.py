@@ -148,7 +148,7 @@ def student_report(
     rows = []
     for s in students:
         guardian = db.query(ParentGuardian).filter(
-            ParentGuardian.student_id == s.id,
+            ParentGuardian.students.contains(s),
             ParentGuardian.is_active.is_(True),
         ).first()
         rows.append(StudentReportRow(

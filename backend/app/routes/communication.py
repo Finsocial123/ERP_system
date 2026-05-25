@@ -1,0 +1,911 @@
+from datetime import date, datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, selectinload
+
+from app.core.database import get_db
+from app.dependencies.auth import get_current_user, require_roles
+from app.models.communication import (
+    Announcement,
+    Circular,
+    CommunicationStatus,
+    Complaint,
+    ComplaintStatus,
+    InAppNotification,
+    InAppNotificationRead,
+    SchoolEvent,
+    SupportTicket,
+    SupportTicketStatus,
+)
+from app.models.user import User, UserRole
+from app.schemas.common import MessageResponse
+from app.schemas.communication import (
+    AnnouncementCreate,
+    AnnouncementOut,
+    AnnouncementUpdate,
+    CircularCreate,
+    CircularOut,
+    CircularUpdate,
+    CommunicationOverview,
+    ComplaintCreate,
+    ComplaintOut,
+    ComplaintUpdate,
+    EventCreate,
+    EventOut,
+    EventUpdate,
+    NotificationCreate,
+    NotificationOut,
+    SupportTicketCreate,
+    SupportTicketOut,
+    SupportTicketUpdate,
+    UserMini,
+)
+
+router = APIRouter(prefix="/communication", tags=["Phase 9 - Communication & Support"])
+
+ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
+ALL_PORTAL_ROLES = [
+    UserRole.SCHOOL_OWNER.value,
+    UserRole.SCHOOL_ADMIN.value,
+    UserRole.TEACHER.value,
+    UserRole.STUDENT.value,
+    UserRole.PARENT.value,
+]
+
+
+def _school_id(user: User) -> int:
+    if not user.school_id:
+        raise HTTPException(status_code=400, detail="User is not linked to a school")
+    return user.school_id
+
+
+def _is_admin(user: User) -> bool:
+    return user.role in ADMIN_ROLES
+
+
+def _roles_to_csv(roles: list[UserRole] | list[str] | None) -> str | None:
+    if not roles:
+        return None
+    values = [r.value if isinstance(r, UserRole) else str(r) for r in roles]
+    unique = []
+    for value in values:
+        if value and value not in unique:
+            unique.append(value)
+    return ",".join(unique) if unique else None
+
+
+def _csv_to_roles(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [part for part in value.split(",") if part]
+
+
+def _audience_allows(audience_csv: str | None, user: User) -> bool:
+    if _is_admin(user):
+        return True
+    roles = _csv_to_roles(audience_csv)
+    return not roles or user.role in roles
+
+
+def _user_mini(user: User | None) -> UserMini | None:
+    return UserMini.model_validate(user) if user else None
+
+
+def _circular_out(item: Circular) -> CircularOut:
+    return CircularOut(
+        id=item.id,
+        circular_no=item.circular_no,
+        title=item.title,
+        content=item.content,
+        issue_date=item.issue_date,
+        priority=item.priority,
+        status=item.status,
+        audience_roles=_csv_to_roles(item.audience_roles),
+        attachment_url=item.attachment_url,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+        author=_user_mini(item.author),
+    )
+
+
+def _announcement_out(item: Announcement) -> AnnouncementOut:
+    return AnnouncementOut(
+        id=item.id,
+        title=item.title,
+        message=item.message,
+        priority=item.priority,
+        status=item.status,
+        audience_roles=_csv_to_roles(item.audience_roles),
+        start_at=item.start_at,
+        end_at=item.end_at,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+        author=_user_mini(item.author),
+    )
+
+
+def _event_out(item: SchoolEvent) -> EventOut:
+    return EventOut(
+        id=item.id,
+        title=item.title,
+        description=item.description,
+        event_date=item.event_date,
+        end_date=item.end_date,
+        start_time=item.start_time,
+        end_time=item.end_time,
+        location=item.location,
+        category=item.category,
+        status=item.status,
+        audience_roles=_csv_to_roles(item.audience_roles),
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+        author=_user_mini(item.author),
+    )
+
+
+def _ticket_out(item: SupportTicket) -> SupportTicketOut:
+    return SupportTicketOut(
+        id=item.id,
+        subject=item.subject,
+        description=item.description,
+        category=item.category,
+        priority=item.priority,
+        status=item.status,
+        resolution=item.resolution,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+        resolved_at=item.resolved_at,
+        creator=_user_mini(item.creator),
+        assignee=_user_mini(item.assignee),
+    )
+
+
+def _complaint_out(item: Complaint, viewer: User) -> ComplaintOut:
+    creator = None if item.is_anonymous and not _is_admin(viewer) else _user_mini(item.creator)
+    return ComplaintOut(
+        id=item.id,
+        subject=item.subject,
+        description=item.description,
+        category=item.category,
+        priority=item.priority,
+        status=item.status,
+        action_taken=item.action_taken,
+        is_anonymous=item.is_anonymous,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+        resolved_at=item.resolved_at,
+        creator=creator,
+        assignee=_user_mini(item.assignee),
+    )
+
+
+def _notification_out(item: InAppNotification, read_ids: set[int]) -> NotificationOut:
+    return NotificationOut(
+        id=item.id,
+        title=item.title,
+        message=item.message,
+        category=item.category,
+        priority=item.priority,
+        target_role=item.target_role,
+        target_user_id=item.target_user_id,
+        link=item.link,
+        expires_at=item.expires_at,
+        created_at=item.created_at,
+        is_read=item.id in read_ids,
+        author=_user_mini(item.author),
+    )
+
+
+def _visible_notification_query(db: Session, user: User):
+    now = datetime.utcnow()
+    return db.query(InAppNotification).options(selectinload(InAppNotification.author)).filter(
+        InAppNotification.school_id == _school_id(user),
+        or_(InAppNotification.expires_at.is_(None), InAppNotification.expires_at > now),
+        or_(InAppNotification.target_user_id.is_(None), InAppNotification.target_user_id == user.id),
+        or_(InAppNotification.target_role.is_(None), InAppNotification.target_role == user.role),
+    )
+
+
+def _create_notification(
+    db: Session,
+    *,
+    school_id: int,
+    title: str,
+    message: str,
+    category: str,
+    created_by: int | None,
+    priority: str = "NORMAL",
+    target_role: str | None = None,
+    target_user_id: int | None = None,
+    link: str | None = None,
+) -> None:
+    db.add(
+        InAppNotification(
+            school_id=school_id,
+            title=title,
+            message=message,
+            category=category,
+            priority=priority,
+            target_role=target_role,
+            target_user_id=target_user_id,
+            link=link,
+            created_by=created_by,
+        )
+    )
+
+
+def _broadcast_notification(
+    db: Session,
+    *,
+    school_id: int,
+    title: str,
+    message: str,
+    category: str,
+    created_by: int | None,
+    priority: str = "NORMAL",
+    audience_csv: str | None = None,
+    link: str | None = None,
+) -> None:
+    roles = _csv_to_roles(audience_csv)
+    if not roles:
+        _create_notification(
+            db,
+            school_id=school_id,
+            title=title,
+            message=message,
+            category=category,
+            priority=priority,
+            created_by=created_by,
+            link=link,
+        )
+        return
+    for role in roles:
+        _create_notification(
+            db,
+            school_id=school_id,
+            title=title,
+            message=message,
+            category=category,
+            priority=priority,
+            target_role=role,
+            created_by=created_by,
+            link=link,
+        )
+
+
+def _notify_admins(db: Session, school_id: int, title: str, message: str, category: str, created_by: int | None) -> None:
+    for role in (UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value):
+        _create_notification(
+            db,
+            school_id=school_id,
+            title=title,
+            message=message,
+            category=category,
+            priority="HIGH",
+            target_role=role,
+            created_by=created_by,
+            link="/communication",
+        )
+
+
+# ───────────────────────────────── Circulars ─────────────────────────────────
+
+@router.post("/circulars", response_model=CircularOut, status_code=status.HTTP_201_CREATED)
+def create_circular(
+    payload: CircularCreate,
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    school_id = _school_id(current_user)
+    audience_csv = _roles_to_csv(payload.audience_roles)
+    circular = Circular(
+        school_id=school_id,
+        created_by=current_user.id,
+        circular_no=payload.circular_no,
+        title=payload.title,
+        content=payload.content,
+        issue_date=payload.issue_date or date.today(),
+        priority=payload.priority.value,
+        status=payload.status.value,
+        audience_roles=audience_csv,
+        attachment_url=payload.attachment_url,
+    )
+    db.add(circular)
+    db.flush()
+    if circular.status == CommunicationStatus.PUBLISHED.value:
+        _broadcast_notification(
+            db,
+            school_id=school_id,
+            title=f"New circular: {circular.title}",
+            message=circular.content[:250],
+            category="CIRCULAR",
+            priority=circular.priority,
+            audience_csv=audience_csv,
+            created_by=current_user.id,
+            link="/communication",
+        )
+    db.commit()
+    db.refresh(circular)
+    return _circular_out(circular)
+
+
+@router.get("/circulars", response_model=list[CircularOut])
+def list_circulars(
+    status_filter: CommunicationStatus | None = Query(default=None, alias="status"),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(Circular).options(selectinload(Circular.author)).filter(Circular.school_id == _school_id(current_user))
+    if status_filter:
+        q = q.filter(Circular.status == status_filter.value)
+    elif not _is_admin(current_user):
+        q = q.filter(Circular.status == CommunicationStatus.PUBLISHED.value)
+    items = q.order_by(Circular.issue_date.desc(), Circular.created_at.desc()).all()
+    visible = [item for item in items if _audience_allows(item.audience_roles, current_user)]
+    return [_circular_out(item) for item in visible[skip : skip + limit]]
+
+
+@router.patch("/circulars/{circular_id}", response_model=CircularOut)
+def update_circular(
+    circular_id: int,
+    payload: CircularUpdate,
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    item = db.query(Circular).filter(Circular.id == circular_id, Circular.school_id == _school_id(current_user)).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Circular not found")
+    data = payload.model_dump(exclude_unset=True)
+    if "audience_roles" in data:
+        item.audience_roles = _roles_to_csv(payload.audience_roles)
+        data.pop("audience_roles")
+    for key, value in data.items():
+        setattr(item, key, value.value if hasattr(value, "value") else value)
+    db.commit()
+    db.refresh(item)
+    return _circular_out(item)
+
+
+@router.delete("/circulars/{circular_id}", response_model=MessageResponse)
+def delete_circular(
+    circular_id: int,
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    item = db.query(Circular).filter(Circular.id == circular_id, Circular.school_id == _school_id(current_user)).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Circular not found")
+    db.delete(item)
+    db.commit()
+    return MessageResponse(message="Circular deleted successfully")
+
+
+# ─────────────────────────────── Announcements ───────────────────────────────
+
+@router.post("/announcements", response_model=AnnouncementOut, status_code=status.HTTP_201_CREATED)
+def create_announcement(
+    payload: AnnouncementCreate,
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    school_id = _school_id(current_user)
+    audience_csv = _roles_to_csv(payload.audience_roles)
+    item = Announcement(
+        school_id=school_id,
+        created_by=current_user.id,
+        title=payload.title,
+        message=payload.message,
+        priority=payload.priority.value,
+        status=payload.status.value,
+        audience_roles=audience_csv,
+        start_at=payload.start_at,
+        end_at=payload.end_at,
+    )
+    db.add(item)
+    db.flush()
+    if item.status == CommunicationStatus.PUBLISHED.value:
+        _broadcast_notification(
+            db,
+            school_id=school_id,
+            title=f"Announcement: {item.title}",
+            message=item.message[:250],
+            category="ANNOUNCEMENT",
+            priority=item.priority,
+            audience_csv=audience_csv,
+            created_by=current_user.id,
+            link="/communication",
+        )
+    db.commit()
+    db.refresh(item)
+    return _announcement_out(item)
+
+
+@router.get("/announcements", response_model=list[AnnouncementOut])
+def list_announcements(
+    status_filter: CommunicationStatus | None = Query(default=None, alias="status"),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    now = datetime.utcnow()
+    q = db.query(Announcement).options(selectinload(Announcement.author)).filter(Announcement.school_id == _school_id(current_user))
+    if status_filter:
+        q = q.filter(Announcement.status == status_filter.value)
+    elif not _is_admin(current_user):
+        q = q.filter(
+            Announcement.status == CommunicationStatus.PUBLISHED.value,
+            or_(Announcement.start_at.is_(None), Announcement.start_at <= now),
+            or_(Announcement.end_at.is_(None), Announcement.end_at > now),
+        )
+    items = q.order_by(Announcement.created_at.desc()).all()
+    visible = [item for item in items if _audience_allows(item.audience_roles, current_user)]
+    return [_announcement_out(item) for item in visible[skip : skip + limit]]
+
+
+@router.patch("/announcements/{announcement_id}", response_model=AnnouncementOut)
+def update_announcement(
+    announcement_id: int,
+    payload: AnnouncementUpdate,
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    item = db.query(Announcement).filter(Announcement.id == announcement_id, Announcement.school_id == _school_id(current_user)).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    data = payload.model_dump(exclude_unset=True)
+    if "audience_roles" in data:
+        item.audience_roles = _roles_to_csv(payload.audience_roles)
+        data.pop("audience_roles")
+    for key, value in data.items():
+        setattr(item, key, value.value if hasattr(value, "value") else value)
+    db.commit()
+    db.refresh(item)
+    return _announcement_out(item)
+
+
+@router.delete("/announcements/{announcement_id}", response_model=MessageResponse)
+def delete_announcement(
+    announcement_id: int,
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    item = db.query(Announcement).filter(Announcement.id == announcement_id, Announcement.school_id == _school_id(current_user)).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    db.delete(item)
+    db.commit()
+    return MessageResponse(message="Announcement deleted successfully")
+
+
+# ─────────────────────────────────── Events ──────────────────────────────────
+
+@router.post("/events", response_model=EventOut, status_code=status.HTTP_201_CREATED)
+def create_event(
+    payload: EventCreate,
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    school_id = _school_id(current_user)
+    audience_csv = _roles_to_csv(payload.audience_roles)
+    item = SchoolEvent(
+        school_id=school_id,
+        created_by=current_user.id,
+        title=payload.title,
+        description=payload.description,
+        event_date=payload.event_date,
+        end_date=payload.end_date,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        location=payload.location,
+        category=payload.category,
+        status=payload.status.value,
+        audience_roles=audience_csv,
+    )
+    db.add(item)
+    db.flush()
+    if item.status == CommunicationStatus.PUBLISHED.value:
+        _broadcast_notification(
+            db,
+            school_id=school_id,
+            title=f"Event added: {item.title}",
+            message=item.description or f"Event date: {item.event_date}",
+            category="EVENT",
+            priority="NORMAL",
+            audience_csv=audience_csv,
+            created_by=current_user.id,
+            link="/communication",
+        )
+    db.commit()
+    db.refresh(item)
+    return _event_out(item)
+
+
+@router.get("/events", response_model=list[EventOut])
+def list_events(
+    from_date: date | None = Query(default=None),
+    status_filter: CommunicationStatus | None = Query(default=None, alias="status"),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=300),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(SchoolEvent).options(selectinload(SchoolEvent.author)).filter(SchoolEvent.school_id == _school_id(current_user))
+    if from_date:
+        q = q.filter(SchoolEvent.event_date >= from_date)
+    if status_filter:
+        q = q.filter(SchoolEvent.status == status_filter.value)
+    elif not _is_admin(current_user):
+        q = q.filter(SchoolEvent.status == CommunicationStatus.PUBLISHED.value)
+    items = q.order_by(SchoolEvent.event_date.asc(), SchoolEvent.start_time.asc()).all()
+    visible = [item for item in items if _audience_allows(item.audience_roles, current_user)]
+    return [_event_out(item) for item in visible[skip : skip + limit]]
+
+
+@router.patch("/events/{event_id}", response_model=EventOut)
+def update_event(
+    event_id: int,
+    payload: EventUpdate,
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    item = db.query(SchoolEvent).filter(SchoolEvent.id == event_id, SchoolEvent.school_id == _school_id(current_user)).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Event not found")
+    data = payload.model_dump(exclude_unset=True)
+    if "audience_roles" in data:
+        item.audience_roles = _roles_to_csv(payload.audience_roles)
+        data.pop("audience_roles")
+    for key, value in data.items():
+        setattr(item, key, value.value if hasattr(value, "value") else value)
+    db.commit()
+    db.refresh(item)
+    return _event_out(item)
+
+
+@router.delete("/events/{event_id}", response_model=MessageResponse)
+def delete_event(
+    event_id: int,
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    item = db.query(SchoolEvent).filter(SchoolEvent.id == event_id, SchoolEvent.school_id == _school_id(current_user)).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Event not found")
+    db.delete(item)
+    db.commit()
+    return MessageResponse(message="Event deleted successfully")
+
+
+# ─────────────────────────────── Support tickets ─────────────────────────────
+
+@router.post("/tickets", response_model=SupportTicketOut, status_code=status.HTTP_201_CREATED)
+def create_ticket(
+    payload: SupportTicketCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    school_id = _school_id(current_user)
+    item = SupportTicket(
+        school_id=school_id,
+        created_by=current_user.id,
+        subject=payload.subject,
+        description=payload.description,
+        category=payload.category,
+        priority=payload.priority.value,
+        status=SupportTicketStatus.OPEN.value,
+    )
+    db.add(item)
+    db.flush()
+    _notify_admins(db, school_id, "New support ticket", item.subject, "SUPPORT", current_user.id)
+    db.commit()
+    db.refresh(item)
+    return _ticket_out(item)
+
+
+@router.get("/tickets", response_model=list[SupportTicketOut])
+def list_tickets(
+    status_filter: SupportTicketStatus | None = Query(default=None, alias="status"),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(SupportTicket).options(selectinload(SupportTicket.creator), selectinload(SupportTicket.assignee)).filter(
+        SupportTicket.school_id == _school_id(current_user)
+    )
+    if not _is_admin(current_user):
+        q = q.filter(SupportTicket.created_by == current_user.id)
+    if status_filter:
+        q = q.filter(SupportTicket.status == status_filter.value)
+    items = q.order_by(SupportTicket.created_at.desc()).offset(skip).limit(limit).all()
+    return [_ticket_out(item) for item in items]
+
+
+@router.patch("/tickets/{ticket_id}", response_model=SupportTicketOut)
+def update_ticket(
+    ticket_id: int,
+    payload: SupportTicketUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    item = db.query(SupportTicket).options(selectinload(SupportTicket.creator), selectinload(SupportTicket.assignee)).filter(
+        SupportTicket.id == ticket_id,
+        SupportTicket.school_id == _school_id(current_user),
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Support ticket not found")
+    if not _is_admin(current_user) and item.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="You can update only your own tickets")
+
+    data = payload.model_dump(exclude_unset=True)
+    admin_only = {"status", "assigned_to", "resolution"}
+    if not _is_admin(current_user):
+        data = {k: v for k, v in data.items() if k not in admin_only}
+        if item.status not in {SupportTicketStatus.OPEN.value, SupportTicketStatus.IN_PROGRESS.value}:
+            raise HTTPException(status_code=400, detail="Closed/resolved tickets cannot be edited by requester")
+
+    old_status = item.status
+    for key, value in data.items():
+        setattr(item, key, value.value if hasattr(value, "value") else value)
+    if item.status in {SupportTicketStatus.RESOLVED.value, SupportTicketStatus.CLOSED.value} and old_status != item.status:
+        item.resolved_at = datetime.utcnow()
+        if item.created_by:
+            _create_notification(
+                db,
+                school_id=item.school_id,
+                title="Support ticket updated",
+                message=f"Your ticket '{item.subject}' is now {item.status.replace('_', ' ').title()}.",
+                category="SUPPORT",
+                priority="NORMAL",
+                target_user_id=item.created_by,
+                created_by=current_user.id,
+                link="/communication",
+            )
+    db.commit()
+    db.refresh(item)
+    return _ticket_out(item)
+
+
+# ───────────────────────────────── Complaints ────────────────────────────────
+
+@router.post("/complaints", response_model=ComplaintOut, status_code=status.HTTP_201_CREATED)
+def create_complaint(
+    payload: ComplaintCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    school_id = _school_id(current_user)
+    item = Complaint(
+        school_id=school_id,
+        created_by=current_user.id,
+        subject=payload.subject,
+        description=payload.description,
+        category=payload.category,
+        priority=payload.priority.value,
+        status=ComplaintStatus.SUBMITTED.value,
+        is_anonymous=payload.is_anonymous,
+    )
+    db.add(item)
+    db.flush()
+    _notify_admins(db, school_id, "New complaint submitted", item.subject, "COMPLAINT", None if payload.is_anonymous else current_user.id)
+    db.commit()
+    db.refresh(item)
+    return _complaint_out(item, current_user)
+
+
+@router.get("/complaints", response_model=list[ComplaintOut])
+def list_complaints(
+    status_filter: ComplaintStatus | None = Query(default=None, alias="status"),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(Complaint).options(selectinload(Complaint.creator), selectinload(Complaint.assignee)).filter(
+        Complaint.school_id == _school_id(current_user)
+    )
+    if not _is_admin(current_user):
+        q = q.filter(Complaint.created_by == current_user.id)
+    if status_filter:
+        q = q.filter(Complaint.status == status_filter.value)
+    items = q.order_by(Complaint.created_at.desc()).offset(skip).limit(limit).all()
+    return [_complaint_out(item, current_user) for item in items]
+
+
+@router.patch("/complaints/{complaint_id}", response_model=ComplaintOut)
+def update_complaint(
+    complaint_id: int,
+    payload: ComplaintUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    item = db.query(Complaint).options(selectinload(Complaint.creator), selectinload(Complaint.assignee)).filter(
+        Complaint.id == complaint_id,
+        Complaint.school_id == _school_id(current_user),
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+    if not _is_admin(current_user) and item.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="You can update only your own complaints")
+
+    data = payload.model_dump(exclude_unset=True)
+    admin_only = {"status", "assigned_to", "action_taken"}
+    if not _is_admin(current_user):
+        data = {k: v for k, v in data.items() if k not in admin_only}
+        if item.status not in {ComplaintStatus.SUBMITTED.value, ComplaintStatus.UNDER_REVIEW.value}:
+            raise HTTPException(status_code=400, detail="Closed/resolved complaints cannot be edited by requester")
+
+    old_status = item.status
+    for key, value in data.items():
+        setattr(item, key, value.value if hasattr(value, "value") else value)
+    if item.status in {ComplaintStatus.RESOLVED.value, ComplaintStatus.REJECTED.value, ComplaintStatus.CLOSED.value} and old_status != item.status:
+        item.resolved_at = datetime.utcnow()
+        if item.created_by:
+            _create_notification(
+                db,
+                school_id=item.school_id,
+                title="Complaint status updated",
+                message=f"Your complaint '{item.subject}' is now {item.status.replace('_', ' ').title()}.",
+                category="COMPLAINT",
+                priority="NORMAL",
+                target_user_id=item.created_by,
+                created_by=current_user.id,
+                link="/communication",
+            )
+    db.commit()
+    db.refresh(item)
+    return _complaint_out(item, current_user)
+
+
+# ───────────────────────────── In-app notifications ──────────────────────────
+
+@router.post("/notifications", response_model=NotificationOut, status_code=status.HTTP_201_CREATED)
+def create_notification(
+    payload: NotificationCreate,
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    item = InAppNotification(
+        school_id=_school_id(current_user),
+        created_by=current_user.id,
+        title=payload.title,
+        message=payload.message,
+        category=payload.category,
+        priority=payload.priority.value,
+        target_role=payload.target_role.value if payload.target_role else None,
+        target_user_id=payload.target_user_id,
+        link=payload.link,
+        expires_at=payload.expires_at,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return _notification_out(item, set())
+
+
+@router.get("/notifications", response_model=list[NotificationOut])
+def list_notifications(
+    unread_only: bool = Query(default=False),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=30, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    query = _visible_notification_query(db, current_user).order_by(InAppNotification.created_at.desc())
+    items = query.all()
+    ids = [item.id for item in items]
+    read_ids: set[int] = set()
+    if ids:
+        read_ids = {
+            row[0]
+            for row in db.query(InAppNotificationRead.notification_id)
+            .filter(InAppNotificationRead.user_id == current_user.id, InAppNotificationRead.notification_id.in_(ids))
+            .all()
+        }
+    if unread_only:
+        items = [item for item in items if item.id not in read_ids]
+    return [_notification_out(item, read_ids) for item in items[skip : skip + limit]]
+
+
+@router.post("/notifications/{notification_id}/read", response_model=MessageResponse)
+def mark_notification_read(
+    notification_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    item = _visible_notification_query(db, current_user).filter(InAppNotification.id == notification_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    exists = db.query(InAppNotificationRead).filter(
+        InAppNotificationRead.notification_id == notification_id,
+        InAppNotificationRead.user_id == current_user.id,
+    ).first()
+    if not exists:
+        db.add(InAppNotificationRead(notification_id=notification_id, user_id=current_user.id))
+        db.commit()
+    return MessageResponse(message="Notification marked as read")
+
+
+@router.post("/notifications/read-all", response_model=MessageResponse)
+def mark_all_notifications_read(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    items = _visible_notification_query(db, current_user).all()
+    ids = [item.id for item in items]
+    if not ids:
+        return MessageResponse(message="No notifications to mark")
+    existing = {
+        row[0]
+        for row in db.query(InAppNotificationRead.notification_id)
+        .filter(InAppNotificationRead.user_id == current_user.id, InAppNotificationRead.notification_id.in_(ids))
+        .all()
+    }
+    for notification_id in ids:
+        if notification_id not in existing:
+            db.add(InAppNotificationRead(notification_id=notification_id, user_id=current_user.id))
+    db.commit()
+    return MessageResponse(message="All notifications marked as read")
+
+
+# ───────────────────────────────── Overview ──────────────────────────────────
+
+@router.get("/overview", response_model=CommunicationOverview)
+def communication_overview(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    school_id = _school_id(current_user)
+    today = date.today()
+
+    if _is_admin(current_user):
+        circulars = db.query(func.count(Circular.id)).filter(Circular.school_id == school_id).scalar() or 0
+        announcements = db.query(func.count(Announcement.id)).filter(Announcement.school_id == school_id).scalar() or 0
+        upcoming_events = db.query(func.count(SchoolEvent.id)).filter(SchoolEvent.school_id == school_id, SchoolEvent.event_date >= today).scalar() or 0
+        open_tickets = db.query(func.count(SupportTicket.id)).filter(
+            SupportTicket.school_id == school_id,
+            SupportTicket.status.in_([SupportTicketStatus.OPEN.value, SupportTicketStatus.IN_PROGRESS.value]),
+        ).scalar() or 0
+        open_complaints = db.query(func.count(Complaint.id)).filter(
+            Complaint.school_id == school_id,
+            Complaint.status.in_([ComplaintStatus.SUBMITTED.value, ComplaintStatus.UNDER_REVIEW.value]),
+        ).scalar() or 0
+    else:
+        circulars = len(list_circulars(CommunicationStatus.PUBLISHED, 0, 1000, current_user, db))
+        announcements = len(list_announcements(CommunicationStatus.PUBLISHED, 0, 1000, current_user, db))
+        upcoming_events = len(list_events(today, CommunicationStatus.PUBLISHED, 0, 1000, current_user, db))
+        open_tickets = db.query(func.count(SupportTicket.id)).filter(
+            SupportTicket.school_id == school_id,
+            SupportTicket.created_by == current_user.id,
+            SupportTicket.status.in_([SupportTicketStatus.OPEN.value, SupportTicketStatus.IN_PROGRESS.value]),
+        ).scalar() or 0
+        open_complaints = db.query(func.count(Complaint.id)).filter(
+            Complaint.school_id == school_id,
+            Complaint.created_by == current_user.id,
+            Complaint.status.in_([ComplaintStatus.SUBMITTED.value, ComplaintStatus.UNDER_REVIEW.value]),
+        ).scalar() or 0
+
+    visible_notifications = _visible_notification_query(db, current_user).all()
+    notification_ids = [item.id for item in visible_notifications]
+    read_ids: set[int] = set()
+    if notification_ids:
+        read_ids = {
+            row[0]
+            for row in db.query(InAppNotificationRead.notification_id)
+            .filter(InAppNotificationRead.user_id == current_user.id, InAppNotificationRead.notification_id.in_(notification_ids))
+            .all()
+        }
+    unread_notifications = len([item for item in visible_notifications if item.id not in read_ids])
+
+    return CommunicationOverview(
+        circulars=circulars,
+        announcements=announcements,
+        upcoming_events=upcoming_events,
+        open_tickets=open_tickets,
+        open_complaints=open_complaints,
+        unread_notifications=unread_notifications,
+    )

@@ -6,6 +6,15 @@ from app.models.exam import Exam, ExamSubject, ExamMark
 from app.models.fee import FeeAssignment, FeeCategory, FeeExpense, FeePayment, FeeStructure, StudentFeeRecord
 from app.models.school import School
 from app.models.user import User
+from app.models.communication import (
+    Announcement,
+    Circular,
+    Complaint,
+    InAppNotification,
+    InAppNotificationRead,
+    SchoolEvent,
+    SupportTicket,
+)
 
 __all__ = [
     "School",
@@ -34,4 +43,11 @@ __all__ = [
     "StudentFeeRecord",
     "FeePayment",
     "FeeExpense",
+    "Announcement",
+    "Circular",
+    "Complaint",
+    "InAppNotification",
+    "InAppNotificationRead",
+    "SchoolEvent",
+    "SupportTicket",
 ]

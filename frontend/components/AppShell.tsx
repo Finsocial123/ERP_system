@@ -54,6 +54,12 @@ const navItems: NavItem[] = [
   { href: "/setup/sections",          label: "Sections",          icon: Settings,        roles: ADMIN_ROLES },
   { href: "/setup/subjects",          label: "Subjects",          icon: BookOpen,        roles: ADMIN_ROLES },
   { href: "/setup/notice",            label: "Notice",            icon: NotebookIcon,    roles: ADMIN_ROLES},
+  {
+    href: "/communication",
+    label: "Communication",
+    icon: NotebookIcon,
+    roles: [...ADMIN_ROLES, "TEACHER", "STUDENT", "PARENT"],
+  },
 
   // ── Teacher ────────────────────────────────────────────────────────────────
   {

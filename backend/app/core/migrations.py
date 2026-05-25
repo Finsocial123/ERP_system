@@ -34,6 +34,7 @@ def run_startup_migrations(engine) -> None:
     _add_column(engine, "users", "last_login_at", "last_login_at TIMESTAMP")
     _add_column(engine, "users", "failed_login_attempts", "failed_login_attempts INTEGER DEFAULT 0")
     _add_column(engine, "users", "locked_until", "locked_until TIMESTAMP")
+    _add_column(engine, "parent_guardians", "user_id", "user_id INTEGER")
 
     _add_column(engine, "exam_subjects", "start_time", "start_time TIME")
     _add_column(engine, "exam_subjects", "end_time", "end_time TIME")

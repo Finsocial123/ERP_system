@@ -15,6 +15,7 @@ from app.schemas.common import MessageResponse
 from app.schemas.people import (
     ClassTeacherCreate,
     ClassTeacherRead,
+    ParentLoginCreate,
     StudentCreate,
     StudentRead,
     StudentUpdate,
@@ -80,6 +81,72 @@ def _ensure_login_id_available(db: Session, school_id: int, login_id: str, exclu
     return normalized
 
 
+def _parent_login_candidates(guardian: ParentGuardian, fallback_seed: str) -> list[str]:
+    candidates: list[str] = []
+    for value in (guardian.email, guardian.phone, f"{fallback_seed}-PARENT", f"PARENT-{fallback_seed}"):
+        if value and str(value).strip():
+            normalized = normalize_login_id(str(value))
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+    return candidates
+
+
+def _ensure_parent_login(
+    db: Session,
+    school_id: int,
+    guardian: ParentGuardian,
+    fallback_seed: str,
+    password: str | None = None,
+) -> tuple[User | None, str | None]:
+    """Create or link a parent portal user for a guardian.
+
+    Returns (user, temporary_password). temporary_password is only returned when a
+    new login is created. If a matching parent user already exists, the guardian
+    is linked to it without changing that user's password.
+    """
+    if guardian.user_id:
+        return db.get(User, guardian.user_id), None
+
+    school_slug = _school_slug(db, school_id)
+    candidate_login_ids = _parent_login_candidates(guardian, fallback_seed)
+    if guardian.id:
+        candidate_login_ids.append(normalize_login_id(f"{fallback_seed}-PARENT-{guardian.id}"))
+
+    selected_login_id: str | None = None
+    for login_id in candidate_login_ids:
+        existing = db.query(User).filter(User.school_id == school_id, User.login_id == login_id).first()
+        if not existing:
+            selected_login_id = login_id
+            break
+        if existing.role == UserRole.PARENT.value:
+            guardian.user_id = existing.id
+            return existing, None
+
+    if not selected_login_id:
+        selected_login_id = normalize_login_id(f"PARENT-{fallback_seed}-{guardian.id or 'NEW'}")
+        suffix = 1
+        base_login_id = selected_login_id
+        while db.query(User).filter(User.school_id == school_id, User.login_id == selected_login_id).first():
+            suffix += 1
+            selected_login_id = normalize_login_id(f"{base_login_id}-{suffix}")
+
+    temporary_password = password or generate_temporary_password()
+    user = User(
+        school_id=school_id,
+        full_name=guardian.full_name,
+        email=str(guardian.email).lower() if guardian.email else _synthetic_email(selected_login_id, school_slug, "parent"),
+        phone=guardian.phone,
+        login_id=selected_login_id,
+        hashed_password=get_password_hash(temporary_password),
+        role=UserRole.PARENT.value,
+        must_change_password=True,
+    )
+    db.add(user)
+    db.flush()
+    guardian.user_id = user.id
+    return user, temporary_password
+
+
 # Students
 @router.get("/students", response_model=list[StudentRead])
 def list_students(
@@ -118,11 +185,17 @@ def create_student(payload: StudentCreate, current_user: User = Depends(require_
     _validate_same_school(db, Section, payload.section_id, school_id, "Section")
     _validate_section_belongs_to_class(db, payload.section_id, payload.class_id, school_id)
 
+    if payload.create_parent_login and not payload.guardian:
+        raise HTTPException(status_code=400, detail="Add parent/guardian details before creating a parent login")
+
     guardian = None
+    parent_temporary_password = None
     if payload.guardian:
         guardian = ParentGuardian(school_id=school_id, **payload.guardian.model_dump(exclude_none=True))
         db.add(guardian)
         db.flush()
+        if payload.create_parent_login:
+            parent_user, parent_temporary_password = _ensure_parent_login(db, school_id, guardian, payload.admission_no, payload.parent_password)
 
     user_id = None
     temporary_password = None
@@ -145,12 +218,18 @@ def create_student(payload: StudentCreate, current_user: User = Depends(require_
         db.flush()
         user_id = user.id
 
-    data = payload.model_dump(exclude={"guardian", "create_login", "password"})
+    data = payload.model_dump(exclude={"guardian", "create_login", "password", "create_parent_login", "parent_password"})
     student = Student(school_id=school_id, guardian_id=guardian.id if guardian else None, user_id=user_id, **data)
     db.add(student)
     _commit_or_duplicate(db, "Student admission number already exists in this school")
     db.refresh(student)
     student.temporary_password = temporary_password
+    student.parent_temporary_password = parent_temporary_password
+    if guardian and guardian.user:
+        student.parent_login_id = guardian.user.login_id
+    elif guardian and guardian.user_id:
+        parent_user = db.get(User, guardian.user_id)
+        student.parent_login_id = parent_user.login_id if parent_user else None
     return student
 
 
@@ -159,11 +238,33 @@ def get_student(student_id: int, school_id: int = Depends(current_school_id), db
     return _get_or_404(db, Student, student_id, school_id)
 
 
+
+
+@router.post("/students/{student_id}/parent-login", response_model=StudentRead)
+def create_parent_login_for_student(
+    student_id: int,
+    payload: ParentLoginCreate,
+    current_user: User = Depends(require_school_admin),
+    db: Session = Depends(get_db),
+):
+    school_id = current_user.school_id
+    student = _get_or_404(db, Student, student_id, school_id)
+    if not student.guardian:
+        raise HTTPException(status_code=400, detail="This student has no parent/guardian details")
+
+    parent_user, temporary_password = _ensure_parent_login(db, school_id, student.guardian, student.admission_no, payload.password)
+    db.commit()
+    db.refresh(student)
+    student.parent_temporary_password = temporary_password
+    student.parent_login_id = parent_user.login_id if parent_user else None
+    return student
+
+
 @router.put("/students/{student_id}", response_model=StudentRead)
 def update_student(student_id: int, payload: StudentUpdate, current_user: User = Depends(require_school_admin), db: Session = Depends(get_db)):
     school_id = current_user.school_id
     student = _get_or_404(db, Student, student_id, school_id)
-    values = payload.model_dump(exclude_unset=True, exclude={"guardian"})
+    values = payload.model_dump(exclude_unset=True, exclude={"guardian", "create_parent_login", "parent_password"})
 
     class_id = values.get("class_id", student.class_id)
     section_id = values.get("section_id", student.section_id)
@@ -179,6 +280,7 @@ def update_student(student_id: int, payload: StudentUpdate, current_user: User =
     for key, value in values.items():
         setattr(student, key, value)
 
+    parent_temporary_password = None
     if payload.guardian is not None:
         guardian_values = payload.guardian.model_dump(exclude_unset=True)
         if student.guardian:
@@ -189,6 +291,11 @@ def update_student(student_id: int, payload: StudentUpdate, current_user: User =
             db.add(guardian)
             db.flush()
             student.guardian_id = guardian.id
+
+    if payload.create_parent_login:
+        if not student.guardian:
+            raise HTTPException(status_code=400, detail="Add parent/guardian details before creating a parent login")
+        parent_user, parent_temporary_password = _ensure_parent_login(db, school_id, student.guardian, student.admission_no, payload.parent_password)
 
     if student.user_id:
         user = db.get(User, student.user_id)
@@ -202,6 +309,13 @@ def update_student(student_id: int, payload: StudentUpdate, current_user: User =
 
     _commit_or_duplicate(db, "Student admission number already exists in this school")
     db.refresh(student)
+    student.parent_temporary_password = parent_temporary_password
+    if payload.create_parent_login:
+        if student.guardian and student.guardian.user:
+            student.parent_login_id = student.guardian.user.login_id
+        elif student.guardian and student.guardian.user_id:
+            parent_user = db.get(User, student.guardian.user_id)
+            student.parent_login_id = parent_user.login_id if parent_user else None
     return student
 
 

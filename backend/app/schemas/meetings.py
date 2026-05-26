@@ -26,3 +26,13 @@ class MeetingListOut(BaseModel):
     total: int
 
 
+class TeacherClassOut(BaseModel):
+    class_id: int
+    class_name: str
+    section_id: int | None
+    section_name: str | None
+    subject_id: int
+    subject_name: str
+
+    class Config:
+        from_attributes = True

@@ -116,6 +116,9 @@ class FeePayment(Base):
     payment_mode: Mapped[str] = mapped_column(String(50), default="CASH")
     reference_no: Mapped[str | None] = mapped_column(String(120), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    razorpay_order_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    razorpay_payment_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    razorpay_signature: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     student_fee_record = relationship("StudentFeeRecord", back_populates="payments")

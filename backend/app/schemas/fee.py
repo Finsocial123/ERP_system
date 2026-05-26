@@ -277,3 +277,26 @@ class FeePortalResponse(BaseModel):
     summary: FeeDashboardRead
     records: list[StudentFeeRecordRead]
     payments: list[FeePaymentRead]
+
+
+# Razorpay Integration Schemas
+class RazorpayOrderCreate(BaseModel):
+    student_fee_record_id: int
+
+
+class RazorpayOrderResponse(BaseModel):
+    order_id: str
+    amount: int
+    currency: str
+    key: str
+    student_fee_record_id: int
+    student_name: str | None
+    fee_title: str | None
+
+
+class RazorpayVerify(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+    student_fee_record_id: int
+

@@ -79,7 +79,6 @@ export default function ReportCards({ role }: { role: "student" | "parent" }) {
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-wide text-slate-400">Phase 8</p>
           <h1 className="text-2xl font-bold text-slate-900">{role === "parent" ? "Child Exams" : "My Exams"}</h1>
           <p className="text-sm text-slate-500">View exam timetable first. Published results appear below after admin/teacher publishes them.</p>
         </div>

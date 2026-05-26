@@ -151,13 +151,11 @@ def _student_for_user(db: Session, school_id: int, user: User) -> Student | None
 
 
 def _children_for_parent(db: Session, school_id: int, user: User) -> list[Student]:
-    conditions = []
+    conditions = [ParentGuardian.user_id == user.id]
     if user.email:
         conditions.append(ParentGuardian.email == user.email)
     if user.phone:
         conditions.append(ParentGuardian.phone == user.phone)
-    if not conditions:
-        return []
 
     guardians = (
         db.query(ParentGuardian)

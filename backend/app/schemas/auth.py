@@ -30,6 +30,7 @@ class LoginRequest(BaseModel):
     login_id: str | None = Field(default=None, min_length=1, max_length=255)
     email: EmailStr | None = None
     password: str
+    selected_role: str | None = Field(default=None, max_length=30)
 
     @field_validator("password")
     @classmethod

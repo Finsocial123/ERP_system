@@ -24,14 +24,21 @@ class ParentGuardianUpdate(ParentGuardianBase):
 class ParentGuardianRead(ParentGuardianBase):
     id: int
     full_name: str
+    user_id: int | None = None
     is_active: bool
 
     model_config = {"from_attributes": True}
 
 
+class ParentLoginCreate(BaseModel):
+    password: str | None = Field(default=None, min_length=6, max_length=72)
+
+
 class StudentCreate(BaseModel):
     create_login: bool = False
     password: str | None = Field(default=None, min_length=6, max_length=72)
+    create_parent_login: bool = False
+    parent_password: str | None = Field(default=None, min_length=6, max_length=72)
     admission_no: str = Field(min_length=1, max_length=80)
     roll_number: str | None = Field(default=None, max_length=80)
     first_name: str = Field(min_length=1, max_length=120)
@@ -50,6 +57,8 @@ class StudentCreate(BaseModel):
 
 
 class StudentUpdate(BaseModel):
+    create_parent_login: bool = False
+    parent_password: str | None = Field(default=None, min_length=6, max_length=72)
     admission_no: str | None = Field(default=None, min_length=1, max_length=80)
     roll_number: str | None = Field(default=None, max_length=80)
     first_name: str | None = Field(default=None, min_length=1, max_length=120)
@@ -90,6 +99,8 @@ class StudentRead(BaseModel):
     is_active: bool
     user_id: int | None = None
     temporary_password: str | None = None
+    parent_temporary_password: str | None = None
+    parent_login_id: str | None = None
 
     model_config = {"from_attributes": True}
 

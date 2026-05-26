@@ -533,7 +533,7 @@ export default function ReportsPage() {
                             <tr key={r.student_id} className={`transition ${r.low_attendance ? "bg-amber-50" : "hover:bg-slate-50"}`}>
                               <td className="px-4 py-2.5 font-medium text-slate-900">
                                 <div className="flex items-center gap-1.5">
-                                  {r.low_attendance && <AlertTriangle size={12} className="text-amber-500 flex-shrink-0" />}
+                                  {r.low_attendance && <AlertTriangle size={12} className="text-amber-500 shrink-0" />}
                                   {r.student_name}
                                 </div>
                               </td>
@@ -675,16 +675,16 @@ export default function ReportsPage() {
                             <th className="px-4 py-3 text-left text-xs font-medium text-slate-500">Teacher</th>
                             <th className="px-4 py-3 text-left text-xs font-medium text-slate-500">Due</th>
                             <th className="px-4 py-3 text-center text-xs font-medium text-slate-500">Students</th>
-                            <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 text-emerald-600">Submitted</th>
-                            <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 text-blue-600">Checked</th>
-                            <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 text-amber-600">Pending</th>
+                            <th className="px-4 py-3 text-center text-xs font-medium text-slate-500">Submitted</th>
+                            <th className="px-4 py-3 text-center text-xs font-medium text-slate-500">Checked</th>
+                            <th className="px-4 py-3 text-center text-xs font-medium text-slate-500">Pending</th>
                             <th className="px-4 py-3 text-center text-xs font-medium text-slate-500">Rate</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                           {hwReport.rows.map((r) => (
                             <tr key={r.assignment_id} className="hover:bg-slate-50 transition">
-                              <td className="px-4 py-2.5 font-medium text-slate-900 max-w-[160px] truncate">{r.title}</td>
+                              <td className="px-4 py-2.5 font-medium text-slate-900 max-w-40 truncate">{r.title}</td>
                               <td className="px-4 py-2.5 text-slate-600">{r.subject_name ?? "—"}</td>
                               <td className="px-4 py-2.5 text-slate-600">
                                 {r.class_name}{r.section_name ? ` - ${r.section_name}` : ""}

@@ -12,6 +12,7 @@ import {
   GraduationCap,
   RefreshCw,
   Search,
+  ShieldCheck,
   UserRound,
   Users,
 } from "lucide-react";
@@ -57,7 +58,6 @@ type SearchResult = {
 type Overview = {
   school: { id: number; name: string; type: string; school_code: string } | null;
   user: { id: number; full_name: string; role: string; login_id?: string | null; must_change_password?: boolean };
-  phase: string;
   role_dashboard: "admin" | "teacher" | "student" | "parent";
   title: string;
   description: string;
@@ -72,7 +72,6 @@ type Overview = {
   } | null;
   recent_activities: ActivityItem[];
   charts: ChartBlock[];
-  next_steps: string[];
   quick_search_enabled: boolean;
 };
 
@@ -121,15 +120,23 @@ function formatValue(value: number | string) {
   return value || "-";
 }
 
+function formatRole(value: string) {
+  return value
+    .toLowerCase()
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function SimpleBarChart({ chart }: { chart: ChartBlock }) {
   const maxValue = Math.max(1, ...chart.items.map((item) => item.value));
 
   return (
     <Card>
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex items-center justify-between gap-3">
         <div>
-          <h3 className="font-bold text-slate-900">{chart.title}</h3>
-          <p className="text-xs text-slate-500">Basic Phase 3 chart</p>
+          <h3 className="font-semibold text-slate-900">{chart.title}</h3>
+          <p className="text-xs text-slate-500">Live overview</p>
         </div>
         <div className="rounded-2xl bg-slate-100 p-3 text-slate-700">
           <BarChart3 size={20} />
@@ -137,21 +144,24 @@ function SimpleBarChart({ chart }: { chart: ChartBlock }) {
       </div>
 
       <div className="space-y-3">
-        {chart.items.map((item) => {
-          const maxValue = 100
-          const width = `${Math.max(4, Math.round((item.value / maxValue) * 100))}%`;
-          return (
-            <div key={`${chart.title}-${item.label}`}>
-              <div className="mb-1 flex items-center justify-between text-xs">
-                <span className="font-medium text-slate-600">{item.label}</span>
-                <span className="font-semibold text-slate-900">{item.value}</span>
+        {chart.items.length === 0 ? (
+          <p className="text-sm text-slate-500">No chart data available.</p>
+        ) : (
+          chart.items.map((item) => {
+            const width = `${Math.max(4, Math.round((item.value / maxValue) * 100))}%`;
+            return (
+              <div key={`${chart.title}-${item.label}`}>
+                <div className="mb-1 flex items-center justify-between text-xs">
+                  <span className="font-medium text-slate-600">{item.label}</span>
+                  <span className="font-semibold text-slate-900">{item.value}</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                  <div className="h-full rounded-full bg-slate-900" style={{ width }} />
+                </div>
               </div>
-              <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                <div className="h-full rounded-full bg-slate-900" style={{ width }} />
-              </div>
-            </div>
-          );
-        })}
+            );
+          })
+        )}
       </div>
     </Card>
   );
@@ -220,104 +230,128 @@ export default function RoleDashboard() {
 
   return (
     <AppSection title={visibleTitle} description={visibleDescription}>
-      {error && <p className="mb-4 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+      {error && <p className="mb-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
       {loading ? (
-        <p className="text-slate-500">Loading dashboard...</p>
+        <Card>
+          <p className="text-sm text-slate-500">Loading dashboard...</p>
+        </Card>
       ) : data ? (
         <>
-          <Card className="mb-6 bg-slate-900 text-white">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <p className="text-sm text-slate-300">{data.phase}</p>
-                <h2 className="mt-2 text-2xl font-bold">{data.school?.name || "School ERP"}</h2>
-                <div className="mt-3 grid gap-2 text-sm text-slate-300 sm:grid-cols-3">
-                  <p>School code: <span className="font-semibold text-white">{data.school?.school_code || "-"}</span></p>
-                  <p>User: <span className="font-semibold text-white">{data.user.full_name}</span></p>
-                  <p>Role: <span className="font-semibold text-white">{data.user.role}</span></p>
-                </div>
-                <p className="mt-3 text-sm text-slate-300">Session: <span className="font-semibold text-white">{sessionText}</span></p>
-              </div>
-
-              <Button
-                type="button"
-                onClick={() => loadDashboard(true)}
-                disabled={refreshing}
-                className="w-full bg-white text-slate-900 hover:bg-slate-100 lg:w-auto"
-              >
-                <span className="inline-flex items-center justify-center gap-2">
-                  <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
-                  {refreshing ? "Refreshing..." : "Refresh Dashboard"}
-                </span>
-              </Button>
-            </div>
-          </Card>
-
-          <Card className="mb-6">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <h3 className="font-bold text-slate-900">Quick Search</h3>
-                <p className="text-sm text-slate-500">Search students, teachers, classes, subjects, homework, or exams based on your role.</p>
-              </div>
-              <div className="relative w-full lg:max-w-md">
-                <Search className="absolute left-3 top-2.5 text-slate-400" size={18} />
-                <Input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search name, ID, class, subject..."
-                  className="pl-10"
-                />
-              </div>
-            </div>
-
-            {search.trim() && (
-              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                {searching ? (
-                  <p className="text-sm text-slate-500">Searching...</p>
-                ) : searchResults.length === 0 ? (
-                  <p className="text-sm text-slate-500">No matching result found.</p>
-                ) : (
-                  <div className="grid gap-2 md:grid-cols-2">
-                    {searchResults.map((result, index) => {
-                      const body = (
-                        <div className="rounded-xl border border-slate-200 bg-white p-3 transition hover:border-slate-300">
-                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{result.kind}</p>
-                          <p className="font-semibold text-slate-900">{result.title}</p>
-                          <p className="text-sm text-slate-500">{result.subtitle}</p>
-                        </div>
-                      );
-
-                      return result.href ? (
-                        <Link key={`${result.kind}-${result.title}-${index}`} href={result.href}>
-                          {body}
-                        </Link>
-                      ) : (
-                        <div key={`${result.kind}-${result.title}-${index}`}>{body}</div>
-                      );
-                    })}
+          <Card className="mb-6 overflow-hidden p-0">
+            <div className="border-b border-slate-100 bg-linear-to-r from-slate-50 to-white px-5 py-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
+                  <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-600 shadow-sm">
+                    <ShieldCheck size={14} /> Secure ERP Portal
                   </div>
-                )}
+                  <h2 className="truncate text-2xl font-bold text-slate-900">{data.school?.name || "School ERP"}</h2>
+                  <p className="mt-1 text-sm text-slate-500">Signed in as {data.user.full_name}</p>
+                </div>
+
+                <Button
+                  type="button"
+                  onClick={() => loadDashboard(true)}
+                  disabled={refreshing}
+                  className="w-full lg:w-auto"
+                >
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
+                    {refreshing ? "Refreshing..." : "Refresh"}
+                  </span>
+                </Button>
               </div>
-            )}
+            </div>
+
+            <div className="grid gap-4 p-5 md:grid-cols-3">
+              <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">School Code</p>
+                <p className="mt-1 font-semibold text-slate-900">{data.school?.school_code || "-"}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Role</p>
+                <p className="mt-1 font-semibold text-slate-900">{formatRole(data.user.role)}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Academic Session</p>
+                <p className="mt-1 font-semibold text-slate-900">{sessionText}</p>
+              </div>
+            </div>
           </Card>
 
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+          {data.quick_search_enabled && (
+            <Card className="mb-6">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <h3 className="font-semibold text-slate-900">Quick Search</h3>
+                  <p className="text-sm text-slate-500">Find students, teachers, classes, subjects, homework or exams.</p>
+                </div>
+                <div className="relative w-full lg:max-w-md">
+                  <Search className="absolute left-3 top-2.5 text-slate-400" size={18} />
+                  <Input
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Search name, ID, class, subject..."
+                    className="pl-10"
+                  />
+                </div>
+              </div>
+
+              {search.trim() && (
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  {searching ? (
+                    <p className="text-sm text-slate-500">Searching...</p>
+                  ) : searchResults.length === 0 ? (
+                    <p className="text-sm text-slate-500">No matching result found.</p>
+                  ) : (
+                    <div className="grid gap-2 md:grid-cols-2">
+                      {searchResults.map((result, index) => {
+                        const body = (
+                          <div className="rounded-xl border border-slate-200 bg-white p-3 transition hover:border-slate-300 hover:shadow-sm">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{result.kind}</p>
+                            <p className="font-semibold text-slate-900">{result.title}</p>
+                            <p className="text-sm text-slate-500">{result.subtitle}</p>
+                          </div>
+                        );
+
+                        return result.href ? (
+                          <Link key={`${result.kind}-${result.title}-${index}`} href={result.href}>
+                            {body}
+                          </Link>
+                        ) : (
+                          <div key={`${result.kind}-${result.title}-${index}`}>{body}</div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </Card>
+          )}
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6">
             {data.cards.map((card) => {
               const Icon = cardIcons[card.key] || Activity;
               const tone = toneClass[card.tone || "default"] || toneClass.default;
+              const rawValue = formatValue(card.value);
+              const isLongValue = rawValue.length > 10;
               return (
-                <Card key={card.key}>
-                  <div className="flex h-full flex-col justify-between gap-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm text-slate-500 ">{card.label}</p>
-                        <p className="mt-2 text-3xl font-bold text-slate-900">{formatValue(card.value)}</p>
-                      </div>
-                      <div className={`rounded-2xl p-3 ${tone}`}>
-                        <Icon size={22} />
+                <Card key={card.key} className="transition hover:-translate-y-0.5 hover:shadow-md">
+                  <div className="flex h-full flex-col justify-between gap-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm font-medium text-slate-500 leading-snug">{card.label}</p>
+                      <div className={`shrink-0 rounded-2xl p-2.5 ${tone}`}>
+                        <Icon size={18} />
                       </div>
                     </div>
-                    {card.helper && <p className="text-xs text-slate-500">{card.helper}</p>}
+                    <p
+                      className={`font-bold text-slate-900 break-all leading-tight ${
+                        isLongValue ? "text-xl" : "text-3xl"
+                      }`}
+                    >
+                      {rawValue}
+                    </p>
+                    {card.helper && <p className="text-xs leading-5 text-slate-400">{card.helper}</p>}
                   </div>
                 </Card>
               );
@@ -333,35 +367,22 @@ export default function RoleDashboard() {
               </div>
             </div>
 
-            <div className="space-y-6">
-              <Card>
-                <h3 className="font-bold text-slate-900">Recent Activities</h3>
-                <div className="mt-4 space-y-3">
-                  {data.recent_activities.length === 0 ? (
-                    <p className="text-sm text-slate-500">No recent activity yet.</p>
-                  ) : (
-                    data.recent_activities.map((activity, index) => (
-                      <div key={`${activity.kind}-${index}`} className="border-l-2 border-slate-200 pl-3">
-                        <p className="text-sm font-semibold text-slate-900">{activity.title}</p>
-                        {activity.description && <p className="text-sm text-slate-500">{activity.description}</p>}
-                        <p className="text-xs text-slate-400">{formatDate(activity.created_at)}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </Card>
-
-              <Card>
-                <h3 className="font-bold text-slate-900">Next Development Phases</h3>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {data.next_steps.map((step) => (
-                    <span key={step} className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-700">
-                      {step}
-                    </span>
-                  ))}
-                </div>
-              </Card>
-            </div>
+            <Card>
+              <h3 className="font-semibold text-slate-900">Recent Activities</h3>
+              <div className="mt-4 space-y-3">
+                {data.recent_activities.length === 0 ? (
+                  <p className="text-sm text-slate-500">No recent activity yet.</p>
+                ) : (
+                  data.recent_activities.map((activity, index) => (
+                    <div key={`${activity.kind}-${index}`} className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
+                      <p className="text-sm font-semibold text-slate-900">{activity.title}</p>
+                      {activity.description && <p className="mt-1 text-sm text-slate-500">{activity.description}</p>}
+                      <p className="mt-2 text-xs text-slate-400">{formatDate(activity.created_at)}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </Card>
           </div>
         </>
       ) : null}

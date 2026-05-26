@@ -179,6 +179,37 @@ def _today_attendance_count(db: Session, school_id: int) -> int:
     )
 
 
+def _teacher_today_attendance_count(db: Session, school_id: int, teacher: Teacher | None) -> int:
+    """
+    Count today's attendance records only for the classes where the teacher
+    is assigned as class teacher (ClassTeacherAssignment).
+    Returns 0 if teacher has no class assignments.
+    """
+    if not teacher:
+        return 0
+ 
+    assigned_class_ids = [
+        row.class_id
+        for row in db.query(ClassTeacherAssignment).filter(
+            ClassTeacherAssignment.teacher_id == teacher.id,
+            ClassTeacherAssignment.school_id == school_id,
+        ).all()
+    ]
+ 
+    if not assigned_class_ids:
+        return 0
+ 
+    return (
+        db.query(StudentAttendance)
+        .filter(
+            StudentAttendance.school_id == school_id,
+            StudentAttendance.class_id.in_(assigned_class_ids),
+            StudentAttendance.date == date.today(),
+        )
+        .count()
+    )
+
+
 def _pending_fees_count(db: Session, school_id: int) -> int:
     return _count(
         db,
@@ -280,13 +311,11 @@ def _student_for_user(db: Session, school_id: int, user: User) -> Student | None
 
 def _children_for_parent(db: Session, school_id: int, user: User) -> list[Student]:
     guardians_query = db.query(ParentGuardian).filter(ParentGuardian.school_id == school_id, ParentGuardian.is_active.is_(True))
-    conditions = []
+    conditions = [ParentGuardian.user_id == user.id]
     if user.email:
         conditions.append(ParentGuardian.email == user.email)
     if user.phone:
         conditions.append(ParentGuardian.phone == user.phone)
-    if not conditions:
-        return []
 
     guardians = guardians_query.filter(or_(*conditions)).all()
     guardian_ids = [guardian.id for guardian in guardians]
@@ -296,7 +325,7 @@ def _children_for_parent(db: Session, school_id: int, user: User) -> list[Studen
     return (
         db.query(Student)
         .filter(Student.school_id == school_id, Student.guardian_id.in_(guardian_ids), Student.is_active.is_(True))
-        .order_by(Student.id.desc())
+        .order_by(Student.first_name.asc())
         .all()
     )
 
@@ -640,7 +669,8 @@ def _teacher_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
         _card("my_subjects", "My Subjects", my_subjects, "Assigned subject scopes"),
         _card("my_classes", "My Classes", my_classes, "Class teacher assignments"),
         _card("total_students", "My Students", total_students, "Students in assigned classes"),
-        _card("today_attendance", "Today Attendance", _today_attendance_count(db, school_id), "Phase 4 attendance data", "info"),
+        _card("today_attendance", "Today Attendance", _teacher_today_attendance_count(db, school_id, teacher), 
+      "Students marked present/absent today in your classes", "info"),
         _card("homework_created", "Homework Created", homework_counts["homework_created"], "Active homework assignments", "success"),
         _card("submissions_to_check", "Submissions To Check", homework_counts["submissions_to_check"], "Submitted homework waiting for checking", "warning"),
         _card("timetable_slots", "Timetable Slots", timetable_slots, "Assigned weekly teaching slots", "info"),
@@ -711,7 +741,7 @@ def _student_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any
          _card("homework", "Pending Homework", pending_homework, "Assignments waiting for your submission", "warning"),
         _card("attendance_percent", "Attendance %", att_pct, f"Current session attendance ({session.name if session else 'N/A'})", att_tone),
         _card("pending_fees", "Pending Fees", f"₹{student_pending_fee_amount:,.2f}", "Your unpaid fee balance", "warning"),
-        _card("notices", "Notices", 0, "Communication module comes in Phase 9"),
+        _card("notices", "Notices", 0, "Latest notices and school updates"),
         _card("timetable_slots", "Timetable Slots", timetable_slots, "Weekly class timetable slots", "info"),
         _card("published_results", "Published Results", published_results, "Report cards available to view", "success"),
         _card("current_class", "Current Class", class_label, "Student class and section"),
@@ -767,7 +797,7 @@ def _parent_dashboard(db: Session, school_id: int, user: User) -> dict[str, Any]
         _card("children", "Children", len(children), "Linked active student profiles"),
         _card("pending_homework", "Pending Homework", pending_homework, "Homework pending for linked children", "warning"),
         _card("pending_fees", "Pending Fees", f"₹{child_pending_fee_amount:,.2f}", "Unpaid fee balance for linked children", "warning"),
-        _card("notices", "Notices", 0, "Communication module comes in Phase 9"),
+        _card("notices", "Notices", 0, "Latest notices and school updates"),
         _card("timetable_slots", "Timetable Slots", timetable_slots, "Weekly slots for linked children", "info"),
         _card("attendance_alerts", "Attendance Alerts", low_att_count, att_alert_helper, "warning" if low_att_count > 0 else "success"),
         _card("published_results", "Published Results", published_results, "Child report cards available", "success"),
@@ -833,7 +863,7 @@ def overview(
             "login_id": current_user.login_id,
             "must_change_password": current_user.must_change_password,
         },
-        "phase": "Phase 8 - Exam and Result Management",
+        "phase": "School ERP Dashboard",
         "quick_search_enabled": True,
         **dashboard,
     }

@@ -11,6 +11,7 @@ class ParentGuardian(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     full_name: Mapped[str] = mapped_column(String(150), nullable=False)
     relation: Mapped[str | None] = mapped_column(String(80), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
@@ -23,6 +24,7 @@ class ParentGuardian(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     students = relationship("Student", back_populates="guardian")
+    user = relationship("User")
 
 
 class Student(Base):

@@ -9,14 +9,23 @@ import { apiFetch, dashboardPathForRole, saveAuth } from "@/lib/api";
 import type { AuthResponse } from "@/types";
 import { AuthLink, Button, Card, Input, Label } from "@/components/ui";
 
-const portalTabs = ["Admin", "Teacher", "Student", "Parent"];
+const portalTabs = ["Admin", "Teacher", "Student", "Parent"] as const;
+
+type PortalTab = (typeof portalTabs)[number];
+
+const loginPlaceholders: Record<PortalTab, string> = {
+  Admin: "admin@school.com",
+  Teacher: "EMP102 or teacher@email.com",
+  Student: "STU2026001",
+  Parent: "parent@email.com / phone / STU2026001-PARENT",
+};
 
 export default function LoginPage() {
   const router = useRouter();
   const [schoolCode, setSchoolCode] = useState("");
   const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
-  const [activeTab, setActiveTab] = useState("Admin");
+  const [activeTab, setActiveTab] = useState<PortalTab>("Admin");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -28,7 +37,7 @@ export default function LoginPage() {
     try {
       const data = await apiFetch<AuthResponse>("/auth/login", {
         method: "POST",
-        body: JSON.stringify({ school_code: schoolCode, login_id: loginId, password }),
+        body: JSON.stringify({ school_code: schoolCode, login_id: loginId, password, selected_role: activeTab.toUpperCase() }),
       });
       saveAuth(data);
       router.replace(dashboardPathForRole(data.user.role, Boolean(data.user.must_change_password)));
@@ -40,7 +49,7 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 via-white to-slate-100 p-4">
+    <main className="flex min-h-screen items-center justify-center bg-linear-to-br from-slate-50 via-white to-slate-100 p-4">
       <Card className="w-full max-w-lg border-slate-200/80 p-0 shadow-lg">
         <div className="rounded-t-2xl bg-slate-900 p-6 text-white">
           <div className="mb-5 flex items-center gap-3">
@@ -77,7 +86,8 @@ export default function LoginPage() {
             </div>
             <div>
               <Label>Email / Employee ID / Admission No.</Label>
-              <Input value={loginId} onChange={(e) => setLoginId(e.target.value)} required placeholder={activeTab === "Student" ? "STU2026001" : activeTab === "Teacher" ? "EMP102 or teacher@email.com" : "admin@school.com"} />
+              <Input value={loginId} onChange={(e) => setLoginId(e.target.value)} required placeholder={loginPlaceholders[activeTab]} />
+              <p className="mt-1 text-xs text-slate-500">The selected tab must match the account role.</p>
             </div>
             <div>
               <div className="flex items-center justify-between">

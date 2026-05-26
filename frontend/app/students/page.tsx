@@ -31,6 +31,8 @@ type StudentForm = {
   guardian_address: string;
   create_login: boolean;
   password: string;
+  create_parent_login: boolean;
+  parent_password: string;
 };
 
 const emptyForm: StudentForm = {
@@ -56,6 +58,8 @@ const emptyForm: StudentForm = {
   guardian_address: "",
   create_login: false,
   password: "",
+  create_parent_login: false,
+  parent_password: "",
 };
 
 function toNullable(value: string) {
@@ -153,6 +157,8 @@ export default function StudentsPage() {
       guardian,
       create_login: form.create_login,
       password: form.create_login && form.password ? form.password : null,
+      create_parent_login: form.create_parent_login,
+      parent_password: form.create_parent_login && form.parent_password ? form.parent_password : null,
     };
   };
 
@@ -164,12 +170,22 @@ export default function StudentsPage() {
     try {
       const payload = buildPayload();
       if (editing) {
-        await apiFetch(`/students/${editing.id}`, { method: "PUT", body: JSON.stringify(payload) });
+        const updated = await apiFetch<Student>(`/students/${editing.id}`, { method: "PUT", body: JSON.stringify(payload) });
+        const messages: string[] = [];
+        if (updated.parent_temporary_password) {
+          messages.push(`Parent login created. Login ID: ${updated.parent_login_id || updated.guardian?.email || updated.guardian?.phone || `${updated.admission_no}-PARENT`}, temporary password: ${updated.parent_temporary_password}`);
+        }
+        setTemporaryCredential(messages.join(" | "));
       } else {
         const created = await apiFetch<Student>("/students", { method: "POST", body: JSON.stringify(payload) });
+        const messages: string[] = [];
         if (created.temporary_password) {
-          setTemporaryCredential(`Student login created. Login ID: ${created.admission_no}, temporary password: ${created.temporary_password}`);
+          messages.push(`Student login created. Login ID: ${created.admission_no}, temporary password: ${created.temporary_password}`);
         }
+        if (created.parent_temporary_password) {
+          messages.push(`Parent login created. Login ID: ${created.parent_login_id || created.guardian?.email || created.guardian?.phone || `${created.admission_no}-PARENT`}, temporary password: ${created.parent_temporary_password}`);
+        }
+        setTemporaryCredential(messages.join(" | "));
       }
       reset();
       await loadStudents();
@@ -206,6 +222,8 @@ export default function StudentsPage() {
       guardian_address: student.guardian?.address ?? "",
       create_login: false,
       password: "",
+      create_parent_login: false,
+      parent_password: "",
     });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -218,6 +236,26 @@ export default function StudentsPage() {
       await loadStudents();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to deactivate student");
+    }
+  };
+
+  const createParentLogin = async (student: Student) => {
+    if (!student.guardian) {
+      setError("Add guardian details before creating a parent login.");
+      return;
+    }
+    setError("");
+    setTemporaryCredential("");
+    try {
+      const updated = await apiFetch<Student>(`/students/${student.id}/parent-login`, { method: "POST", body: JSON.stringify({}) });
+      if (updated.parent_temporary_password) {
+        setTemporaryCredential(`Parent login created. Login ID: ${updated.parent_login_id || updated.guardian?.email || updated.guardian?.phone || `${updated.admission_no}-PARENT`}, temporary password: ${updated.parent_temporary_password}`);
+      } else {
+        setTemporaryCredential("Parent login is already linked for this guardian.");
+      }
+      await loadStudents();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create parent login");
     }
   };
 
@@ -264,6 +302,15 @@ export default function StudentsPage() {
             </div>
           )}
 
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 md:col-span-3">
+            <label className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+              <input type="checkbox" checked={form.create_parent_login} onChange={(e) => setField("create_parent_login", e.target.checked)} />
+              Create parent login account
+            </label>
+            <p className="mt-1 text-xs text-slate-500">Parent login uses guardian email, phone, or admission number + -PARENT. Parent can view child dashboard, homework, timetable, results, fees, attendance and notices.</p>
+            {form.create_parent_login && <div className="mt-3 max-w-sm"><Label>Parent Temporary Password</Label><Input type="password" value={form.parent_password} onChange={(e) => setField("parent_password", e.target.value)} minLength={6} placeholder="Auto-generate if blank" /></div>}
+          </div>
+
           <div className="flex items-center gap-2 md:col-span-3">
             <Button disabled={saving} type="submit"><span className="inline-flex items-center gap-2"><UserPlus size={16} /> {editing ? "Update Student" : "Add Student"}</span></Button>
             {editing && <button type="button" onClick={reset} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"><X size={16} /> Cancel</button>}
@@ -291,10 +338,20 @@ export default function StudentsPage() {
                   <td className="px-4 py-3 font-medium text-slate-900">{student.first_name} {student.last_name}<p className="text-xs font-normal text-slate-500">{student.email || student.phone || "-"}</p></td>
                   <td className="px-4 py-3 text-slate-600">{student.admission_no}{student.roll_number ? ` / Roll ${student.roll_number}` : ""}</td>
                   <td className="px-4 py-3 text-slate-600">{student.class_id ? classNameById.get(student.class_id) : "-"} {student.section_id ? `- ${sectionNameById.get(student.section_id)}` : ""}</td>
-                  <td className="px-4 py-3 text-slate-600">{student.guardian?.full_name || "-"}</td>
-                  <td className="px-4 py-3 text-slate-600">{student.user_id ? "Created" : "No login"}</td>
+                  <td className="px-4 py-3 text-slate-600">
+                    {student.guardian?.full_name || "-"}
+                    {student.guardian?.user_id && <p className="text-xs text-green-700">Parent login created</p>}
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">
+                    <p>Student: {student.user_id ? "Created" : "No login"}</p>
+                    <p className="text-xs">Parent: {student.guardian?.user_id ? "Created" : "No login"}</p>
+                  </td>
                   <td className="px-4 py-3"><span className="rounded-full bg-green-50 px-2 py-1 text-xs font-semibold text-green-700">{student.status}</span></td>
-                  <td className="flex gap-2 px-4 py-3"><button onClick={() => startEdit(student)} className="rounded-lg border border-slate-200 p-2 hover:bg-slate-100"><Edit2 size={15} /></button><button onClick={() => deactivate(student)} className="rounded-lg border border-red-200 p-2 text-red-600 hover:bg-red-50"><Trash2 size={15} /></button></td>
+                  <td className="flex flex-wrap gap-2 px-4 py-3">
+                    <button onClick={() => startEdit(student)} className="rounded-lg border border-slate-200 p-2 hover:bg-slate-100" title="Edit student"><Edit2 size={15} /></button>
+                    {student.guardian && !student.guardian.user_id && <button onClick={() => createParentLogin(student)} className="rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100">Parent Login</button>}
+                    <button onClick={() => deactivate(student)} className="rounded-lg border border-red-200 p-2 text-red-600 hover:bg-red-50" title="Deactivate student"><Trash2 size={15} /></button>
+                  </td>
                 </tr>
               ))}
             </tbody>

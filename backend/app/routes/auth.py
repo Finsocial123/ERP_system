@@ -27,6 +27,12 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 
 GENERIC_LOGIN_ERROR = "Invalid school code, login ID, or password"
 GENERIC_RESET_MESSAGE = "If this account exists, password reset instructions have been generated."
+LOGIN_ROLE_GROUPS = {
+    "ADMIN": {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value},
+    "TEACHER": {UserRole.TEACHER.value},
+    "STUDENT": {UserRole.STUDENT.value},
+    "PARENT": {UserRole.PARENT.value},
+}
 
 
 def _hash_reset_token(token: str) -> str:
@@ -137,6 +143,14 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=GENERIC_LOGIN_ERROR)
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive. Contact your school admin.")
+
+    selected_role = (payload.selected_role or "").strip().upper()
+    allowed_roles = LOGIN_ROLE_GROUPS.get(selected_role)
+    if allowed_roles and user.role not in allowed_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"This account is registered as {user.role.replace('_', ' ').title()}. Please select the correct portal tab.",
+        )
 
     user.last_login_at = datetime.utcnow()
     user.failed_login_attempts = 0

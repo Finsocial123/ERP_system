@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 import razorpay
 from razorpay.errors import SignatureVerificationError
 
@@ -112,11 +112,13 @@ def _student_for_user(db: Session, school_id: int, user: User) -> Student | None
 
 
 def _children_for_parent(db: Session, school_id: int, user: User) -> list[Student]:
-    conditions = [ParentGuardian.user_id == user.id]
+    conditions = []
     if user.email:
         conditions.append(ParentGuardian.email == user.email)
     if user.phone:
         conditions.append(ParentGuardian.phone == user.phone)
+    if not conditions:
+        return []
 
     guardians = (
         db.query(ParentGuardian)
@@ -354,24 +356,32 @@ def _dashboard_summary(db: Session, school_id: int, student_ids: list[int] | Non
     today = date.today()
     month_start = today.replace(day=1)
 
-    records = records_query.all()
-    total_billable = sum(_money(record.amount + record.fine_amount - record.discount_amount) for record in records)
-    total_paid = sum(_money(record.paid_amount) for record in records)
-    total_pending = sum(_money(record.balance_amount) for record in records if record.status in PENDING_STATUSES)
+    # single query for all record aggregates — no Python loop over all records
+    from sqlalchemy import case as _case
+    agg = records_query.with_entities(
+        func.count(StudentFeeRecord.id).label("total"),
+        func.coalesce(func.sum(_case((StudentFeeRecord.status == "PENDING", 1), else_=0)), 0).label("pending"),
+        func.coalesce(func.sum(_case((StudentFeeRecord.status == "PARTIAL", 1), else_=0)), 0).label("partial"),
+        func.coalesce(func.sum(_case((StudentFeeRecord.status == "PAID",    1), else_=0)), 0).label("paid"),
+        func.coalesce(func.sum(_case((StudentFeeRecord.status == "OVERDUE", 1), else_=0)), 0).label("overdue"),
+        func.coalesce(func.sum(StudentFeeRecord.amount + StudentFeeRecord.fine_amount - StudentFeeRecord.discount_amount), 0).label("billable"),
+        func.coalesce(func.sum(StudentFeeRecord.paid_amount), 0).label("paid_amt"),
+        func.coalesce(func.sum(_case((StudentFeeRecord.status.in_(list(PENDING_STATUSES)), StudentFeeRecord.balance_amount), else_=0)), 0).label("pending_amt"),
+    ).first()
 
     today_collection = _money(payments_query.filter(FeePayment.payment_date == today).with_entities(func.coalesce(func.sum(FeePayment.amount), 0)).scalar())
     month_collection = _money(payments_query.filter(FeePayment.payment_date >= month_start).with_entities(func.coalesce(func.sum(FeePayment.amount), 0)).scalar())
-    month_expense = _money(expenses_query.filter(FeeExpense.expense_date >= month_start).with_entities(func.coalesce(func.sum(FeeExpense.amount), 0)).scalar())
+    month_expense    = _money(expenses_query.filter(FeeExpense.expense_date >= month_start).with_entities(func.coalesce(func.sum(FeeExpense.amount), 0)).scalar())
 
     return FeeDashboardRead(
-        total_records=len(records),
-        pending_records=len([record for record in records if record.status == "PENDING"]),
-        partial_records=len([record for record in records if record.status == "PARTIAL"]),
-        paid_records=len([record for record in records if record.status == "PAID"]),
-        overdue_records=len([record for record in records if record.status == "OVERDUE"]),
-        total_billable=_money(total_billable),
-        total_paid=_money(total_paid),
-        total_pending=_money(total_pending),
+        total_records=int(agg.total or 0),
+        pending_records=int(agg.pending or 0),
+        partial_records=int(agg.partial or 0),
+        paid_records=int(agg.paid or 0),
+        overdue_records=int(agg.overdue or 0),
+        total_billable=_money(agg.billable),
+        total_paid=_money(agg.paid_amt),
+        total_pending=_money(agg.pending_amt),
         today_collection=today_collection,
         month_collection=month_collection,
         month_expense=month_expense,
@@ -495,12 +505,23 @@ def fee_portal(
 
     records = (
         _records_query(db, school_id)
+        .options(
+            joinedload(StudentFeeRecord.student).joinedload(Student.school_class),
+            joinedload(StudentFeeRecord.student).joinedload(Student.section),
+            joinedload(StudentFeeRecord.fee_structure),
+            joinedload(StudentFeeRecord.academic_session),
+        )
         .filter(StudentFeeRecord.student_id.in_(student_ids))
         .order_by(StudentFeeRecord.due_date.asc(), StudentFeeRecord.id.desc())
         .all()
     )
     payments = (
         _payment_query(db, school_id)
+        .options(
+            joinedload(FeePayment.student),
+            joinedload(FeePayment.student_fee_record),
+            joinedload(FeePayment.collected_by),
+        )
         .filter(FeePayment.student_id.in_(student_ids))
         .order_by(FeePayment.payment_date.desc(), FeePayment.id.desc())
         .limit(50)
@@ -640,8 +661,56 @@ def list_assignments(
     _: User = Depends(require_roles(*ADMIN_ROLES)),
     db: Session = Depends(get_db),
 ):
-    assignments = db.query(FeeAssignment).filter(FeeAssignment.school_id == school_id).order_by(FeeAssignment.id.desc()).all()
-    return [_assignment_read(db, item) for item in assignments]
+    assignments = (
+        db.query(FeeAssignment)
+        .options(
+            joinedload(FeeAssignment.fee_structure),
+            joinedload(FeeAssignment.academic_session),
+            joinedload(FeeAssignment.school_class),
+            joinedload(FeeAssignment.section),
+            joinedload(FeeAssignment.student),
+        )
+        .filter(FeeAssignment.school_id == school_id)
+        .order_by(FeeAssignment.id.desc())
+        .all()
+    )
+    # pre-fetch record counts per assignment in one query
+    from sqlalchemy import func as _func2
+    assignment_ids = [a.id for a in assignments]
+    record_counts = dict(
+        db.query(StudentFeeRecord.fee_assignment_id, _func2.count(StudentFeeRecord.id))
+        .filter(
+            StudentFeeRecord.school_id == school_id,
+            StudentFeeRecord.fee_assignment_id.in_(assignment_ids),
+        )
+        .group_by(StudentFeeRecord.fee_assignment_id)
+        .all()
+    ) if assignment_ids else {}
+
+    def _assignment_read_fast(assignment: FeeAssignment) -> FeeAssignmentRead:
+        return FeeAssignmentRead(
+            id=assignment.id,
+            fee_structure_id=assignment.fee_structure_id,
+            fee_structure_name=assignment.fee_structure.name if assignment.fee_structure else None,
+            academic_session_id=assignment.academic_session_id,
+            academic_session_name=assignment.academic_session.name if assignment.academic_session else None,
+            class_id=assignment.class_id,
+            class_name=assignment.school_class.name if assignment.school_class else None,
+            section_id=assignment.section_id,
+            section_name=assignment.section.name if assignment.section else None,
+            student_id=assignment.student_id,
+            student_name=_full_student_name(assignment.student),
+            assigned_amount=_money(assignment.assigned_amount) if assignment.assigned_amount is not None else None,
+            due_date=assignment.due_date,
+            note=assignment.note,
+            is_active=assignment.is_active,
+            generated_records_count=record_counts.get(assignment.id, 0),
+            generated_at=assignment.generated_at,
+            created_at=assignment.created_at,
+            updated_at=assignment.updated_at,
+        )
+
+    return [_assignment_read_fast(item) for item in assignments]
 
 
 @router.post("/assignments", response_model=FeeAssignmentRead, status_code=status.HTTP_201_CREATED)
@@ -733,7 +802,18 @@ def list_records(
         query = query.filter(Student.section_id == section_id)
     if status_filter:
         query = query.filter(StudentFeeRecord.status == status_filter.upper())
-    records = query.order_by(StudentFeeRecord.due_date.asc(), StudentFeeRecord.id.desc()).limit(limit).all()
+    records = (
+        query
+        .options(
+            joinedload(StudentFeeRecord.student).joinedload(Student.school_class),
+            joinedload(StudentFeeRecord.student).joinedload(Student.section),
+            joinedload(StudentFeeRecord.fee_structure),
+            joinedload(StudentFeeRecord.academic_session),
+        )
+        .order_by(StudentFeeRecord.due_date.asc(), StudentFeeRecord.id.desc())
+        .limit(limit)
+        .all()
+    )
     return [_record_read(item) for item in records]
 
 
@@ -990,7 +1070,7 @@ def create_razorpay_order(
 
     _recalculate_record(record)
 
-    # Minimum amount check
+    # Minimum amount check — Razorpay requires at least ₹1 (100 paise)
     amount_paise = int(record.balance_amount * 100)
     if amount_paise < 100:
         raise HTTPException(status_code=400, detail="Balance amount is too low for online payment (minimum ₹1)")
@@ -1037,6 +1117,8 @@ def verify_razorpay_payment(
         raise HTTPException(status_code=400, detail="Invalid payment signature")
 
     # Step 2 — Duplicate payment guard
+    # If this payment_id was already processed (e.g. browser crash and retry),
+    # return the existing receipt instead of creating a duplicate record.
     existing_payment = (
         db.query(FeePayment)
         .filter(
@@ -1068,7 +1150,7 @@ def verify_razorpay_payment(
 
     _recalculate_record(record)
 
-    # Step 4 — Fetching actual amount from Razorpay
+    # Step 4 — Fetch actual amount from Razorpay (never trust the frontend)
     payment_details = client.payment.fetch(payload.razorpay_payment_id)
     amount = _money(payment_details["amount"] / 100)  # paise → rupees
 
@@ -1106,3 +1188,4 @@ def verify_razorpay_payment(
         school_name=school.name if school else None,
         school_code=school.school_code if school else None,
     )
+

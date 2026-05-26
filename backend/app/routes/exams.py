@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
@@ -151,11 +151,13 @@ def _student_for_user(db: Session, school_id: int, user: User) -> Student | None
 
 
 def _children_for_parent(db: Session, school_id: int, user: User) -> list[Student]:
-    conditions = [ParentGuardian.user_id == user.id]
+    conditions = []
     if user.email:
         conditions.append(ParentGuardian.email == user.email)
     if user.phone:
         conditions.append(ParentGuardian.phone == user.phone)
+    if not conditions:
+        return []
 
     guardians = (
         db.query(ParentGuardian)
@@ -406,10 +408,24 @@ def _exam_timetable_items_for_exam(db: Session, exam: Exam, student: Student | N
 def _report_card_for_student(db: Session, exam: Exam, student: Student) -> StudentReportCard:
     subjects = (
         db.query(ExamSubject)
+        .options(joinedload(ExamSubject.subject))
         .filter(ExamSubject.school_id == exam.school_id, ExamSubject.exam_id == exam.id, ExamSubject.is_active.is_(True))
         .order_by(ExamSubject.id.asc())
         .all()
     )
+    # fetch ALL marks for this student for ALL subjects in one query
+    subject_ids = [es.id for es in subjects]
+    marks_map = {}
+    if subject_ids:
+        marks_map = {
+            m.exam_subject_id: m
+            for m in db.query(ExamMark).filter(
+                ExamMark.school_id == exam.school_id,
+                ExamMark.student_id == student.id,
+                ExamMark.exam_subject_id.in_(subject_ids),
+            ).all()
+        }
+
     total_marks = 0.0
     obtained = 0.0
     subject_rows: list[ReportCardSubject] = []
@@ -417,11 +433,7 @@ def _report_card_for_student(db: Session, exam: Exam, student: Student) -> Stude
     has_fail = False
 
     for exam_subject in subjects:
-        mark = (
-            db.query(ExamMark)
-            .filter(ExamMark.school_id == exam.school_id, ExamMark.exam_subject_id == exam_subject.id, ExamMark.student_id == student.id)
-            .first()
-        )
+        mark = marks_map.get(exam_subject.id)
         total_marks += float(exam_subject.max_marks or 0)
         marks_obtained = mark.marks_obtained if mark else None
         if marks_obtained is not None and not bool(mark.is_absent):
@@ -953,9 +965,38 @@ def my_exam_timetable(
         .order_by(Exam.start_date.asc().nullslast(), Exam.id.asc())
         .all()
     )
+    if not exams:
+        return []
+
+    exam_ids = [e.id for e in exams]
+    # fetch ALL subjects for ALL exams in one query with eager loads
+    all_subjects = (
+        db.query(ExamSubject)
+        .options(
+            joinedload(ExamSubject.subject),
+            joinedload(ExamSubject.teacher),
+        )
+        .filter(
+            ExamSubject.school_id == school_id,
+            ExamSubject.exam_id.in_(exam_ids),
+            ExamSubject.is_active.is_(True),
+        )
+        .order_by(
+            ExamSubject.exam_date.asc().nullslast(),
+            ExamSubject.start_time.asc().nullslast(),
+            ExamSubject.id.asc(),
+        )
+        .all()
+    )
+    from collections import defaultdict
+    subjects_by_exam: dict[int, list] = defaultdict(list)
+    for es in all_subjects:
+        subjects_by_exam[es.exam_id].append(es)
+
     items: list[ExamTimetableItem] = []
     for exam in exams:
-        items.extend(_exam_timetable_items_for_exam(db, exam, student))
+        for index, exam_subject in enumerate(subjects_by_exam[exam.id]):
+            items.append(_timetable_item(exam, exam_subject, index, student))
     return items
 
 

@@ -1,7 +1,7 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.dependencies.auth import current_school_id, require_roles
@@ -302,10 +302,24 @@ def teacher_report(
         q = q.filter(Teacher.department_id == department_id)
     teachers = q.order_by(Teacher.full_name).all()
 
+    # pre-fetch counts for all teachers in two queries instead of 2 per teacher
+    from sqlalchemy import func as _func
+    teacher_ids = [t.id for t in teachers]
+    subj_counts = dict(
+        db.query(TeacherSubject.teacher_id, _func.count(TeacherSubject.id))
+        .filter(TeacherSubject.teacher_id.in_(teacher_ids))
+        .group_by(TeacherSubject.teacher_id).all()
+    ) if teacher_ids else {}
+    class_counts = dict(
+        db.query(ClassTeacherAssignment.teacher_id, _func.count(ClassTeacherAssignment.id))
+        .filter(ClassTeacherAssignment.teacher_id.in_(teacher_ids))
+        .group_by(ClassTeacherAssignment.teacher_id).all()
+    ) if teacher_ids else {}
+
     rows = []
     for t in teachers:
-        subjects_count = db.query(TeacherSubject).filter(TeacherSubject.teacher_id == t.id).count()
-        classes_count  = db.query(ClassTeacherAssignment).filter(ClassTeacherAssignment.teacher_id == t.id).count()
+        subjects_count = subj_counts.get(t.id, 0)
+        classes_count  = class_counts.get(t.id, 0)
         rows.append(TeacherReportRow(
             teacher_id=t.id,
             employee_id=t.employee_id,
@@ -367,17 +381,38 @@ def homework_report(
         q = q.filter(HomeworkAssignment.class_id == class_id)
     assignments = q.order_by(HomeworkAssignment.due_date.desc()).all()
 
+    # pre-fetch student counts per class/section in one GROUP BY
+    from sqlalchemy import func as _func2, case as _case2
+    from app.models.homework import HomeworkSubmission as _HWSub
+    class_section_pairs = list({(hw.class_id, hw.section_id) for hw in assignments})
+    student_count_map = {}
+    for class_id_k, section_id_k in class_section_pairs:
+        q = db.query(_func2.count(Student.id)).filter(
+            Student.school_id == school_id,
+            Student.is_active.is_(True),
+            Student.class_id == class_id_k,
+        )
+        if section_id_k:
+            q = q.filter(Student.section_id == section_id_k)
+        student_count_map[(class_id_k, section_id_k)] = q.scalar() or 0
+
+    # pre-fetch submission counts per assignment in one query
+    hw_ids = [hw.id for hw in assignments]
+    sub_counts = {}
+    if hw_ids:
+        for row in db.query(
+            _HWSub.homework_id,
+            _func2.sum(_case2((_HWSub.status.in_(["SUBMITTED", "CHECKED"]), 1), else_=0)).label("submitted"),
+            _func2.sum(_case2((_HWSub.status == "CHECKED", 1), else_=0)).label("checked"),
+        ).filter(_HWSub.homework_id.in_(hw_ids)).group_by(_HWSub.homework_id).all():
+            sub_counts[row.homework_id] = {"submitted": int(row.submitted or 0), "checked": int(row.checked or 0)}
+
     rows = []
     for hw in assignments:
-        # count students in target class/section
-        sq = db.query(Student).filter(Student.school_id == school_id, Student.is_active.is_(True), Student.class_id == hw.class_id)
-        if hw.section_id:
-            sq = sq.filter(Student.section_id == hw.section_id)
-        total_students = sq.count()
-
-        subs = db.query(HomeworkSubmission).filter(HomeworkSubmission.homework_id == hw.id).all()
-        submitted = sum(1 for s in subs if s.status in ("SUBMITTED", "CHECKED"))
-        checked   = sum(1 for s in subs if s.status == "CHECKED")
+        total_students = student_count_map.get((hw.class_id, hw.section_id), 0)
+        sc = sub_counts.get(hw.id, {"submitted": 0, "checked": 0})
+        submitted = sc["submitted"]
+        checked   = sc["checked"]
         pending   = max(0, total_students - submitted)
         rate      = round(submitted / total_students * 100, 1) if total_students > 0 else 0.0
 

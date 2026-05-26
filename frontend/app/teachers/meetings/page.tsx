@@ -2,8 +2,7 @@
 
 import AppShell from "@/components/AppShell";
 import { useState, useEffect, useCallback } from "react";
-import { getSavedAuth } from "@/lib/api";
-import { apiFetch } from "@/lib/api";
+import { getSavedAuth, apiFetch } from "@/lib/api";
 
 type MeetingType = "teacher_class" | "admin_teachers";
 type MeetingStatus = "scheduled" | "live" | "ended";
@@ -30,6 +29,7 @@ interface MeetingOut {
   ended_at: string | null;
   scheduled_at: string | null;
   record: boolean;
+  recording_url: string | null;
   class_name?: string;
   section_name?: string;
   teacher_name?: string;
@@ -43,7 +43,6 @@ interface MeetingListOut {
 interface JoinResponse {
   join_url: string;
 }
-
 interface CreateMeetingResponse {
   meeting_id: number;
   join_url: string;
@@ -70,9 +69,9 @@ const STATUS_META: Record<
   },
 };
 
-const TYPE_META: Record<MeetingType, { label: string; icon: string }> = {
-  teacher_class: { label: "Class Meeting", icon: "" },
-  admin_teachers: { label: "Staff Meeting", icon: "" },
+const TYPE_META: Record<MeetingType, { label: string }> = {
+  teacher_class: { label: "Class Meeting" },
+  admin_teachers: { label: "Staff Meeting" },
 };
 
 function fmt(dt: string | null) {
@@ -103,6 +102,35 @@ function duration(start: string | null, end: string | null): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
 
+interface DeduplicatedClass {
+  class_id: number;
+  class_name: string;
+  section_id: number | null;
+  section_name: string | null;
+  subjects: string[];
+  key: string;
+}
+
+function deduplicateClasses(raw: ClassOption[]): DeduplicatedClass[] {
+  const map = new Map<string, DeduplicatedClass>();
+  for (const cls of raw) {
+    const key = `${cls.class_id}-${cls.section_id ?? "null"}`;
+    if (map.has(key)) {
+      map.get(key)!.subjects.push(cls.subject_name);
+    } else {
+      map.set(key, {
+        class_id: cls.class_id,
+        class_name: cls.class_name,
+        section_id: cls.section_id,
+        section_name: cls.section_name,
+        subjects: [cls.subject_name],
+        key,
+      });
+    }
+  }
+  return Array.from(map.values());
+}
+
 function Modal({
   title,
   onClose,
@@ -124,12 +152,95 @@ function Modal({
           <button
             onClick={onClose}
             className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100 text-slate-500 hover:text-slate-700 transition-colors"
-          >
-            ✕
-          </button>
+          ></button>
         </div>
         <div className="overflow-y-auto flex-1 px-6 py-5">{children}</div>
       </div>
+    </div>
+  );
+}
+
+function RecordingSection({
+  meetingId,
+  existingUrl,
+}: {
+  meetingId: number;
+  existingUrl: string | null;
+}) {
+  const [url, setUrl] = useState<string | null>(existingUrl);
+  const [loading, setLoading] = useState(false);
+  const [polled, setPolled] = useState(false);
+
+  async function poll() {
+    setLoading(true);
+    try {
+      const data = await apiFetch<{
+        ready: boolean;
+        recording_url: string | null;
+      }>(`/meetings/${meetingId}/recording/fetch`, { method: "POST" });
+      if (data.ready && data.recording_url) setUrl(data.recording_url);
+    } catch {
+      /* fail silently */
+    } finally {
+      setLoading(false);
+      setPolled(true);
+    }
+  }
+
+  if (url) {
+    return (
+      <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <div>
+            <p className="text-sm font-semibold text-violet-900">
+              Recording ready
+            </p>
+            <p className="text-xs text-violet-600">
+              Watch the full session anytime
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={() => window.open(url, "_blank")}
+          className="w-full py-2.5 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700 transition-colors"
+        >
+          Watch Recording
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <div>
+          <p className="text-sm font-semibold text-slate-700">
+            Recording processing
+          </p>
+          <p className="text-xs text-slate-500">
+            BBB takes 5–30 mins after session ends
+          </p>
+        </div>
+      </div>
+      {polled && (
+        <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">
+          Not ready yet — check back in a few minutes
+        </p>
+      )}
+      <button
+        onClick={poll}
+        disabled={loading}
+        className="w-full py-2 text-sm border border-slate-200 rounded-xl hover:bg-white transition-colors disabled:opacity-50 font-medium text-slate-600"
+      >
+        {loading ? (
+          <span className="flex items-center justify-center gap-2">
+            <span className="w-3.5 h-3.5 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
+            Checking...
+          </span>
+        ) : (
+          "Check for Recording"
+        )}
+      </button>
     </div>
   );
 }
@@ -141,19 +252,21 @@ function TeacherMeetingForm({
   onClose: () => void;
   onCreated: (joinUrl: string) => void;
 }) {
-  const [classes, setClasses] = useState<ClassOption[]>([]);
+  const [classes, setClasses] = useState<DeduplicatedClass[]>([]);
   const [classesLoading, setClassesLoading] = useState(true);
-  const [selectedClass, setSelectedClass] = useState<ClassOption | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     apiFetch<ClassOption[]>("/teachers/me/classes")
-      .then(setClasses)
+      .then((raw) => setClasses(deduplicateClasses(raw)))
       .catch((e) => setError(e.message))
       .finally(() => setClassesLoading(false));
   }, []);
+
+  const selectedClass = classes.find((c) => c.key === selectedKey) ?? null;
 
   async function handleCreate() {
     if (!selectedClass || !title.trim()) return;
@@ -184,7 +297,6 @@ function TeacherMeetingForm({
 
   return (
     <div className="space-y-5">
-      {/* Title */}
       <div>
         <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">
           Meeting Title
@@ -194,10 +306,10 @@ function TeacherMeetingForm({
           onChange={(e) => setTitle(e.target.value)}
           placeholder="e.g. Math Chapter 5 — Live Doubt Session"
           className={inputCls}
+          autoFocus
         />
       </div>
 
-      {/* Class picker */}
       <div>
         <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">
           Select Class
@@ -207,7 +319,7 @@ function TeacherMeetingForm({
             {[1, 2, 3].map((i) => (
               <div
                 key={i}
-                className="h-12 bg-slate-100 rounded-xl animate-pulse"
+                className="h-14 bg-slate-100 rounded-xl animate-pulse"
               />
             ))}
           </div>
@@ -216,17 +328,13 @@ function TeacherMeetingForm({
             No classes assigned to you yet.
           </p>
         ) : (
-          <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-            {classes.map((cls, i) => {
-              const key = `${cls.class_id}-${cls.section_id}`;
-              const selKey = selectedClass
-                ? `${selectedClass.class_id}-${selectedClass.section_id}`
-                : "";
-              const isSelected = key === selKey;
+          <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+            {classes.map((cls) => {
+              const isSelected = cls.key === selectedKey;
               return (
                 <button
-                  key={i}
-                  onClick={() => setSelectedClass(cls)}
+                  key={cls.key}
+                  onClick={() => setSelectedKey(isSelected ? null : cls.key)}
                   className={`w-full text-left px-4 py-3 rounded-xl border text-sm transition-all ${
                     isSelected
                       ? "border-slate-900 bg-slate-900 text-white"
@@ -240,7 +348,7 @@ function TeacherMeetingForm({
                   <div
                     className={`text-xs mt-0.5 ${isSelected ? "text-slate-300" : "text-slate-400"}`}
                   >
-                    {cls.subject_name}
+                    {cls.subjects.join(", ")}
                   </div>
                 </button>
               );
@@ -267,7 +375,7 @@ function TeacherMeetingForm({
           disabled={loading || !title.trim() || !selectedClass}
           className="flex-1 py-2.5 text-sm bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-50 transition-colors font-medium"
         >
-          {loading ? "Starting..." : "Start Meeting"}
+          {loading ? "Starting..." : " Start Meeting"}
         </button>
       </div>
     </div>
@@ -319,23 +427,20 @@ function AdminMeetingForm({
           onChange={(e) => setTitle(e.target.value)}
           placeholder="e.g. Weekly Staff Briefing"
           className={inputCls}
+          autoFocus
         />
       </div>
-
       <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-700 space-y-1">
         <p className="font-semibold">Staff meeting:</p>
-        <p>• All teachers in the school can join</p>
-        <p>• You join as moderator</p>
-        <p>• Teachers join as attendees</p>
-        <p>• Session is recorded automatically</p>
+        <p>- All teachers in the school can join as attendees</p>
+        <p>- You join as moderator with full controls</p>
+        <p>- Session is recorded automatically</p>
       </div>
-
       {error && (
         <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">
           {error}
         </p>
       )}
-
       <div className="flex gap-3 pt-2 border-t border-slate-100">
         <button
           onClick={onClose}
@@ -348,7 +453,7 @@ function AdminMeetingForm({
           disabled={loading || !title.trim()}
           className="flex-1 py-2.5 text-sm bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-colors font-medium"
         >
-          {loading ? "Starting..." : "Start Staff Meeting"}
+          {loading ? "Starting..." : " Start Staff Meeting"}
         </button>
       </div>
     </div>
@@ -375,30 +480,23 @@ function MeetingCard({
   const sm = STATUS_META[meeting.status];
   const tm = TYPE_META[meeting.meeting_type];
   const isLive = meeting.status === "live";
+  const isEnded = meeting.status === "ended";
   const isOwner = meeting.created_by_user_id === currentUserId;
 
   return (
     <div
-      className={`group relative bg-white rounded-2xl border transition-all duration-200 hover:shadow-lg hover:-translate-y-0.5 ${
-        isLive
-          ? "border-emerald-300 shadow-emerald-100 shadow-md"
-          : "border-slate-200"
-      }`}
+      className={`group relative bg-white rounded-2xl border transition-all duration-200 hover:shadow-lg hover:-translate-y-0.5 ${isLive ? "border-emerald-300 shadow-emerald-100 shadow-md" : "border-slate-200"}`}
     >
-      {/* Live pulse badge */}
       {isLive && (
         <div className="absolute -top-2.5 left-4 flex items-center gap-1.5 bg-emerald-500 text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full shadow-sm">
           <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
           LIVE NOW
         </div>
       )}
-
       <div className="p-5">
-        {/* Header */}
         <div className="flex items-start justify-between gap-3 mb-3">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
-              <span className="text-base">{tm.icon}</span>
               <h3 className="font-semibold text-slate-800 truncate">
                 {meeting.title}
               </h3>
@@ -420,7 +518,6 @@ function MeetingCard({
           </span>
         </div>
 
-        {/* Meta row */}
         <div className="grid grid-cols-2 gap-2 mb-4 text-xs text-slate-500">
           <div>
             <span className="text-slate-400">Started</span>
@@ -428,7 +525,7 @@ function MeetingCard({
               {fmtTime(meeting.started_at ?? meeting.created_at)}
             </p>
           </div>
-          {meeting.status === "ended" && (
+          {isEnded && (
             <div>
               <span className="text-slate-400">Duration</span>
               <p className="text-slate-700 font-medium">
@@ -439,11 +536,15 @@ function MeetingCard({
           {meeting.record && (
             <div className="col-span-2 flex items-center gap-1 text-slate-400">
               <span>Recorded</span>
+              {isEnded && meeting.recording_url && (
+                <span className="ml-1 text-violet-600 font-medium">
+                  · Ready
+                </span>
+              )}
             </div>
           )}
         </div>
 
-        {/* Actions */}
         <div className="flex gap-2">
           {isLive && (
             <button
@@ -463,12 +564,12 @@ function MeetingCard({
               {ending === meeting.id ? "Ending..." : "End"}
             </button>
           )}
-          {meeting.status !== "live" && (
+          {isEnded && (
             <button
               onClick={() => onView(meeting)}
               className="flex-1 py-2 text-sm border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 transition-colors"
             >
-              View Details
+              {meeting.recording_url ? " View & Watch" : "View Details"}
             </button>
           )}
         </div>
@@ -498,10 +599,11 @@ function MeetingDetailModal({
             {sm.label}
           </span>
           <span className="text-xs px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 font-medium">
-            {tm.icon} {tm.label}
+            {tm.label}
           </span>
           {meeting.record && (
             <span className="text-xs px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 font-medium">
+              {" "}
               Recorded
             </span>
           )}
@@ -544,6 +646,13 @@ function MeetingDetailModal({
             </div>
           )}
         </div>
+
+        {meeting.record && (
+          <RecordingSection
+            meetingId={meeting.id}
+            existingUrl={meeting.recording_url}
+          />
+        )}
       </div>
     </Modal>
   );
@@ -557,19 +666,14 @@ function LaunchModal({
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-
   function copy() {
     navigator.clipboard.writeText(joinUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
-
   return (
     <Modal title="Meeting Ready" onClose={onClose}>
       <div className="space-y-5 text-center">
-        <div className=" flex items-center justify-center mx-auto text-3xl">
-          {/* Emoji removed */}
-        </div>
         <div>
           <p className="text-slate-800 font-semibold text-lg">
             Your meeting is live!
@@ -587,10 +691,8 @@ function LaunchModal({
         >
           Enter Classroom
         </button>
-        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-left">
-          <p className="text-xs text-slate-500 mb-1 font-medium">
-            Direct join link
-          </p>
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-left space-y-2">
+          <p className="text-xs text-slate-500 font-medium">Direct join link</p>
           <p className="text-xs text-slate-700 break-all font-mono">
             {joinUrl}
           </p>
@@ -598,12 +700,12 @@ function LaunchModal({
             onClick={copy}
             className="text-xs px-3 py-1 border border-slate-200 rounded-lg hover:bg-white transition-colors text-slate-600"
           >
-            {copied ? "Copied!" : "Copy link"}
+            {copied ? " Copied!" : "Copy link"}
           </button>
         </div>
         <button
           onClick={onClose}
-          className="w-full py-2 text-sm text-slate-500 hover:text-slate-700 transition-colors"
+          className="w-full py-2 text-sm text-slate-400 hover:text-slate-600 transition-colors"
         >
           Dismiss
         </button>
@@ -625,7 +727,6 @@ export default function MeetingsPage() {
   const canCreate = isAdmin || isTeacher;
 
   const [activeTab, setActiveTab] = useState<Tab>("live");
-
   const [liveMeetings, setLiveMeetings] = useState<MeetingListOut | null>(null);
   const [pastMeetings, setPastMeetings] = useState<MeetingListOut | null>(null);
   const [liveLoading, setLiveLoading] = useState(true);
@@ -633,17 +734,15 @@ export default function MeetingsPage() {
   const [liveError, setLiveError] = useState("");
   const [pastError, setPastError] = useState("");
   const [pastSkip, setPastSkip] = useState(0);
+  const limit = 12;
 
   const [creatingTeacher, setCreatingTeacher] = useState(false);
   const [creatingAdmin, setCreatingAdmin] = useState(false);
   const [launchUrl, setLaunchUrl] = useState<string | null>(null);
   const [viewingMeeting, setViewingMeeting] = useState<MeetingOut | null>(null);
   const [endingId, setEndingId] = useState<number | null>(null);
-
   const [joining, setJoining] = useState<number | null>(null);
   const [ending, setEnding] = useState<number | null>(null);
-
-  const limit = 12;
 
   const fetchLive = useCallback(async () => {
     setLiveLoading(true);
@@ -684,7 +783,6 @@ export default function MeetingsPage() {
   useEffect(() => {
     if (activeTab === "past") fetchPast();
   }, [activeTab, fetchPast]);
-
   useEffect(() => {
     if (activeTab !== "live") return;
     const interval = setInterval(fetchLive, 30000);
@@ -707,13 +805,13 @@ export default function MeetingsPage() {
     setEnding(meetingId);
     try {
       await apiFetch(`/meetings/${meetingId}/end`, { method: "POST" });
+      setEndingId(null);
       fetchLive();
       if (activeTab === "past") fetchPast();
     } catch (e: any) {
       alert(e.message);
     } finally {
       setEnding(null);
-      setEndingId(null);
     }
   }
 
@@ -744,7 +842,6 @@ export default function MeetingsPage() {
               </p>
             )}
           </div>
-
           {canCreate && (
             <div className="flex items-center gap-2">
               {isTeacher && (
@@ -778,11 +875,7 @@ export default function MeetingsPage() {
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`px-5 py-2 text-sm font-medium rounded-lg transition-all ${
-                activeTab === tab
-                  ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-500 hover:text-slate-700"
-              }`}
+              className={`px-5 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === tab ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
             >
               {label}
               {tab === "live" && liveCount > 0 && (
@@ -807,7 +900,6 @@ export default function MeetingsPage() {
                 ))}
               </div>
             )}
-
             {liveError && (
               <div className="text-center py-20">
                 <p className="text-red-600 text-sm font-medium mb-3">
@@ -821,55 +913,53 @@ export default function MeetingsPage() {
                 </button>
               </div>
             )}
-
-            {!liveLoading && !liveError && liveMeetings && (
-              <>
-                {liveMeetings.items.length === 0 ? (
-                  <div className="text-center py-24">
-                    <div className="text-5xl mb-4">{/* Emoji removed */}</div>
-                    <p className="text-slate-600 text-lg font-medium mb-2">
-                      No live sessions right now
-                    </p>
-                    <p className="text-slate-400 text-sm mb-6">
-                      {canCreate
-                        ? "Start a meeting to begin a live session"
-                        : "Check back when a teacher starts a class"}
-                    </p>
-                    {isTeacher && (
-                      <button
-                        onClick={() => setCreatingTeacher(true)}
-                        className="px-5 py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-xl hover:bg-emerald-700 transition-colors"
-                      >
-                        Start a Class Meeting
-                      </button>
-                    )}
-                    {isAdmin && (
-                      <button
-                        onClick={() => setCreatingAdmin(true)}
-                        className="ml-3 px-5 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-xl hover:bg-slate-700 transition-colors"
-                      >
-                        Start Staff Meeting
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                    {liveMeetings.items.map((m) => (
-                      <MeetingCard
-                        key={m.id}
-                        meeting={m}
-                        currentUserId={currentUserId}
-                        onJoin={handleJoin}
-                        onEnd={(id) => setEndingId(id)}
-                        onView={setViewingMeeting}
-                        joining={joining}
-                        ending={ending}
-                      />
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
+            {!liveLoading &&
+              !liveError &&
+              liveMeetings &&
+              (liveMeetings.items.length === 0 ? (
+                <div className="text-center py-24">
+                  <div className="text-5xl mb-4"></div>
+                  <p className="text-slate-600 text-lg font-medium mb-2">
+                    No live sessions right now
+                  </p>
+                  <p className="text-slate-400 text-sm mb-6">
+                    {canCreate
+                      ? "Start a meeting to begin a live session"
+                      : "Check back when a teacher starts a class"}
+                  </p>
+                  {isTeacher && (
+                    <button
+                      onClick={() => setCreatingTeacher(true)}
+                      className="px-5 py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-xl hover:bg-emerald-700 transition-colors"
+                    >
+                      Start a Class Meeting
+                    </button>
+                  )}
+                  {isAdmin && (
+                    <button
+                      onClick={() => setCreatingAdmin(true)}
+                      className="ml-3 px-5 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-xl hover:bg-slate-700 transition-colors"
+                    >
+                      Start Staff Meeting
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                  {liveMeetings.items.map((m) => (
+                    <MeetingCard
+                      key={m.id}
+                      meeting={m}
+                      currentUserId={currentUserId}
+                      onJoin={handleJoin}
+                      onEnd={(id) => setEndingId(id)}
+                      onView={setViewingMeeting}
+                      joining={joining}
+                      ending={ending}
+                    />
+                  ))}
+                </div>
+              ))}
           </div>
         )}
 
@@ -886,7 +976,6 @@ export default function MeetingsPage() {
                 ))}
               </div>
             )}
-
             {pastError && (
               <div className="text-center py-16">
                 <p className="text-red-600 text-sm mb-3">{pastError}</p>
@@ -898,20 +987,21 @@ export default function MeetingsPage() {
                 </button>
               </div>
             )}
-
-            {!pastLoading && !pastError && pastMeetings && (
-              <>
-                {pastMeetings.items.length === 0 ? (
-                  <div className="text-center py-24">
-                    <div className="text-5xl mb-4">{/* Emoji removed */}</div>
-                    <p className="text-slate-600 text-lg font-medium">
-                      No past meetings yet
-                    </p>
-                    <p className="text-slate-400 text-sm mt-1">
-                      Ended sessions will appear here
-                    </p>
-                  </div>
-                ) : (
+            {!pastLoading &&
+              !pastError &&
+              pastMeetings &&
+              (pastMeetings.items.length === 0 ? (
+                <div className="text-center py-24">
+                  <div className="text-5xl mb-4">️</div>
+                  <p className="text-slate-600 text-lg font-medium">
+                    No past meetings yet
+                  </p>
+                  <p className="text-slate-400 text-sm mt-1">
+                    Ended sessions will appear here
+                  </p>
+                </div>
+              ) : (
+                <>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                     {pastMeetings.items.map((m) => (
                       <MeetingCard
@@ -926,36 +1016,36 @@ export default function MeetingsPage() {
                       />
                     ))}
                   </div>
-                )}
-
-                {pastPages > 1 && (
-                  <div className="flex items-center justify-center gap-3 mt-6">
-                    <button
-                      onClick={() => setPastSkip((s) => Math.max(0, s - limit))}
-                      disabled={pastSkip === 0}
-                      className="px-4 py-2 text-sm border border-slate-200 rounded-xl disabled:opacity-40 hover:bg-slate-50 transition-colors bg-white font-medium"
-                    >
-                      Previous
-                    </button>
-                    <span className="text-sm text-slate-600 font-medium">
-                      Page {pastPage} of {pastPages}
-                    </span>
-                    <button
-                      onClick={() => setPastSkip((s) => s + limit)}
-                      disabled={pastSkip + limit >= (pastMeetings?.total ?? 0)}
-                      className="px-4 py-2 text-sm border border-slate-200 rounded-xl disabled:opacity-40 hover:bg-slate-50 transition-colors bg-white font-medium"
-                    >
-                      Next
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
+                  {pastPages > 1 && (
+                    <div className="flex items-center justify-center gap-3 mt-6">
+                      <button
+                        onClick={() =>
+                          setPastSkip((s) => Math.max(0, s - limit))
+                        }
+                        disabled={pastSkip === 0}
+                        className="px-4 py-2 text-sm border border-slate-200 rounded-xl disabled:opacity-40 hover:bg-slate-50 transition-colors bg-white font-medium"
+                      >
+                        Previous
+                      </button>
+                      <span className="text-sm text-slate-600 font-medium">
+                        Page {pastPage} of {pastPages}
+                      </span>
+                      <button
+                        onClick={() => setPastSkip((s) => s + limit)}
+                        disabled={
+                          pastSkip + limit >= (pastMeetings?.total ?? 0)
+                        }
+                        className="px-4 py-2 text-sm border border-slate-200 rounded-xl disabled:opacity-40 hover:bg-slate-50 transition-colors bg-white font-medium"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
+                </>
+              ))}
           </div>
         )}
       </div>
-
-      {/* ── Modals ── */}
 
       {creatingTeacher && (
         <Modal
@@ -968,7 +1058,6 @@ export default function MeetingsPage() {
           />
         </Modal>
       )}
-
       {creatingAdmin && (
         <Modal
           title="Start Staff Meeting"
@@ -980,11 +1069,9 @@ export default function MeetingsPage() {
           />
         </Modal>
       )}
-
       {launchUrl && (
         <LaunchModal joinUrl={launchUrl} onClose={() => setLaunchUrl(null)} />
       )}
-
       {viewingMeeting && (
         <MeetingDetailModal
           meeting={viewingMeeting}
@@ -992,7 +1079,6 @@ export default function MeetingsPage() {
         />
       )}
 
-      {/* End confirmation */}
       {endingId !== null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div
@@ -1000,7 +1086,7 @@ export default function MeetingsPage() {
             onClick={() => setEndingId(null)}
           />
           <div className="relative bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm text-center space-y-4">
-            <div className="text-4xl">{/* Warning emoji removed */}</div>
+            <div className="text-4xl">️</div>
             <h3 className="font-semibold text-slate-800">End this meeting?</h3>
             <p className="text-sm text-slate-500">
               All participants will be removed and the session will be closed.

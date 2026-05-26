@@ -1,11 +1,12 @@
 import uuid
 import secrets
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
+from sqlalchemy.orm import joinedload
 
 from app.models.meeting import Meeting, MeetingType, MeetingStatus
 from app.models.people import Teacher, TeacherSubject, Student
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.services.bbb_service import create_bbb_meeting, get_join_url
 
 def _generate_passwords():
@@ -21,7 +22,6 @@ async def create_teacher_class_meeting(
     title: str,
     created_by_user_id: int,
 ) -> Meeting:
-    # Verify teacher actually teaches this class
     query = select(TeacherSubject).where(
         TeacherSubject.school_id == school_id,
         TeacherSubject.teacher_id == teacher_id,
@@ -128,7 +128,7 @@ async def end_meeting(
     if not meeting:
         raise ValueError("Meeting not found")
 
-    # Only the creator or admin can end
+
     if meeting.created_by_user_id != current_user.id and current_user.role not in ("SCHOOL_ADMIN", "SUPER_ADMIN", "SCHOOL_OWNER"):
         raise PermissionError("Not allowed to end this meeting")
 
@@ -159,8 +159,6 @@ async def get_active_meeting_for_class(
     return result.scalar_one_or_none()
 
 
-# app/services/meeting_service.py  — add this function
-
 async def list_meetings(
     db: AsyncSession,
     current_user: User,
@@ -170,41 +168,43 @@ async def list_meetings(
     meeting_type: MeetingType | None = None,
     search: str | None = None,
 ) -> dict:
-    from sqlalchemy import or_
 
-    query = select(Meeting).where(
-        Meeting.school_id == current_user.school_id
+    query = (
+        select(Meeting)
+        .options(joinedload(Meeting.created_by)) 
+        .where(Meeting.school_id == current_user.school_id)
     )
 
-
-    if current_user.role == "STUDENT":
+    if current_user.role == UserRole.STUDENT.value:
         student_result = await db.execute(
             select(Student).where(Student.user_id == current_user.id)
         )
         student = student_result.scalar_one_or_none()
-        if student:
-            query = query.where(
-                or_(
-                    Meeting.class_id == student.class_id,
-                    Meeting.meeting_type == MeetingType.ADMIN_TEACHERS,
-                )
-            )
+        if not student:
+            return {"items": [], "total": 0}
 
-    elif current_user.role == "TEACHER":
         query = query.where(
-            Meeting.created_by_user_id == current_user.id
+            Meeting.class_id == student.class_id,
+            Meeting.meeting_type == MeetingType.TEACHER_CLASS, 
+        )
+        if student.section_id:
+            query = query.where(Meeting.section_id == student.section_id)
+
+    elif current_user.role == UserRole.TEACHER.value:
+        query = query.where(
+            or_(
+                Meeting.created_by_user_id == current_user.id,
+                Meeting.meeting_type == MeetingType.ADMIN_TEACHERS,
+            )
         )
 
     if status:
         query = query.where(Meeting.status == status)
-
     if meeting_type:
         query = query.where(Meeting.meeting_type == meeting_type)
-
     if search:
         query = query.where(Meeting.title.ilike(f"%{search}%"))
 
-    # Total count
     count_result = await db.execute(
         select(func.count()).select_from(query.subquery())
     )

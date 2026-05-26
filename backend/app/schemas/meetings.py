@@ -2,6 +2,15 @@ from pydantic import BaseModel
 from datetime import datetime
 from app.models.meeting import MeetingType, MeetingStatus
 
+class CreatedByOut(BaseModel):
+    id: int
+    full_name: str
+    role: str
+
+    class Config:
+        from_attributes = True
+
+
 class MeetingListItemOut(BaseModel):
     id: int
     title: str
@@ -11,6 +20,7 @@ class MeetingListItemOut(BaseModel):
     section_id: int | None
     teacher_id: int | None
     created_by_user_id: int
+    created_by: CreatedByOut | None 
     created_at: datetime
     started_at: datetime | None
     ended_at: datetime | None
@@ -33,6 +43,24 @@ class TeacherClassOut(BaseModel):
     section_name: str | None
     subject_id: int
     subject_name: str
+
+    class Config:
+        from_attributes = True
+
+
+class TeacherMeetingCreate(BaseModel):
+    class_id: int
+    section_id: int | None = None
+    title: str
+
+
+class AdminMeetingCreate(BaseModel):
+    title: str
+
+
+class MeetingCreateOut(BaseModel):
+    meeting_id: int
+    join_url: str
 
     class Config:
         from_attributes = True

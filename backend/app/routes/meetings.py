@@ -13,36 +13,11 @@ from app.models.user import User, UserRole
 from app.models.people import Teacher, TeacherSubject, Student
 from app.models.meeting import Meeting, MeetingStatus, MeetingType
 from app.services import meeting_service
-from app.schemas.meetings import MeetingListOut, TeacherClassOut
+from app.schemas.meetings import MeetingListOut, TeacherClassOut, TeacherMeetingCreate, AdminMeetingCreate, MeetingCreateOut
 
 router = APIRouter(prefix="/meetings", tags=["Meetings"])
 
 
-# ── Schemas ───────────────────────────────────────────────────────────────────
-
-class TeacherMeetingCreate(BaseModel):
-    class_id: int
-    section_id: int | None = None
-    title: str
-
-
-class AdminMeetingCreate(BaseModel):
-    title: str
-
-
-class MeetingCreateOut(BaseModel):
-    meeting_id: int
-    join_url: str
-
-    class Config:
-        from_attributes = True
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# STATIC ROUTES FIRST — always before /{meeting_id}
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ── GET /meetings/stats ───────────────────────────────────────────────────────
 
 @router.get("/stats")
 async def meeting_stats(
@@ -68,8 +43,6 @@ async def meeting_stats(
     }
 
 
-# ── GET /meetings/active/class/{class_id} ─────────────────────────────────────
-
 @router.get("/active/class/{class_id}")
 async def get_active_class_meeting(
     class_id: int,
@@ -88,7 +61,6 @@ async def get_active_class_meeting(
     return {"live": True, "meeting_id": meeting.id, "title": meeting.title}
 
 
-# ── GET /meetings/ (list) ─────────────────────────────────────────────────────
 
 @router.get("/", response_model=MeetingListOut)
 async def list_meetings(
@@ -110,8 +82,6 @@ async def list_meetings(
         search=search,
     )
 
-
-# ── POST /meetings/teacher/class ──────────────────────────────────────────────
 
 @router.post("/teacher/class", response_model=MeetingCreateOut, status_code=201)
 async def teacher_create_class_meeting(
@@ -157,7 +127,6 @@ async def teacher_create_class_meeting(
     return {"meeting_id": meeting.id, "join_url": join_url}
 
 
-# ── POST /meetings/admin/teachers ─────────────────────────────────────────────
 
 @router.post("/admin/teachers", response_model=MeetingCreateOut, status_code=201)
 async def admin_create_teachers_meeting(
@@ -187,12 +156,6 @@ async def admin_create_teachers_meeting(
     return {"meeting_id": meeting.id, "join_url": join_url}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DYNAMIC ROUTES LAST — /{meeting_id} must come after all static routes
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ── GET /meetings/{meeting_id}/join ───────────────────────────────────────────
-
 @router.get("/{meeting_id}/join")
 async def join_meeting(
     meeting_id: int,
@@ -218,8 +181,6 @@ async def join_meeting(
 
     return {"join_url": join_url}
 
-
-# ── POST /meetings/{meeting_id}/end ───────────────────────────────────────────
 
 @router.post("/{meeting_id}/end", status_code=200)
 async def end_meeting(

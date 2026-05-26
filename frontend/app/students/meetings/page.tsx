@@ -37,9 +37,9 @@ interface JoinResponse {
   join_url: string;
 }
 
-const TYPE_META: Record<MeetingType, { label: string; icon: string }> = {
-  teacher_class: { label: "Class Session", icon: "🎓" },
-  admin_teachers: { label: "School Notice", icon: "📢" },
+const TYPE_META: Record<MeetingType, { label: string }> = {
+  teacher_class: { label: "Class Session" },
+  admin_teachers: { label: "School Notice" },
 };
 
 function fmt(dt: string | null) {
@@ -131,12 +131,10 @@ function LiveCard({
       <div className="p-5">
         {/* Live badge + type */}
         <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full">
-              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-              LIVE NOW
-            </span>
-          </div>
+          <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full">
+            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+            LIVE NOW
+          </span>
           <span className="text-xs text-slate-400 font-medium">
             {timeAgo(meeting.started_at ?? meeting.created_at)}
           </span>
@@ -150,7 +148,6 @@ function LiveCard({
         {/* Meta */}
         <div className="space-y-1 mb-5">
           <div className="flex items-center gap-2 text-sm text-slate-500">
-            <span>{tm.icon}</span>
             <span>{tm.label}</span>
             {meeting.class_name && (
               <>
@@ -163,15 +160,11 @@ function LiveCard({
             )}
           </div>
           {meeting.teacher_name && (
-            <div className="flex items-center gap-2 text-sm text-slate-500">
-              <span>👤</span>
-              <span>{meeting.teacher_name}</span>
-            </div>
+            <div className="text-sm text-slate-500">{meeting.teacher_name}</div>
           )}
           {meeting.record && (
-            <div className="flex items-center gap-2 text-xs text-slate-400">
-              <span>⏺</span>
-              <span>This session is being recorded</span>
+            <div className="text-xs text-slate-400">
+              This session is being recorded
             </div>
           )}
         </div>
@@ -188,7 +181,7 @@ function LiveCard({
               Opening...
             </span>
           ) : (
-            "Join Session →"
+            "Join Session"
           )}
         </button>
       </div>
@@ -211,11 +204,6 @@ function PastCard({
       className="group bg-white rounded-2xl border border-slate-200 p-5 cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all duration-200"
     >
       <div className="flex items-start gap-4">
-        {/* Icon */}
-        <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-lg shrink-0 group-hover:bg-slate-200 transition-colors">
-          {meeting.recording_url ? "🎬" : tm.icon}
-        </div>
-
         {/* Info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2 mb-1">
@@ -271,14 +259,14 @@ function PastDetailModal({
         {/* Badges */}
         <div className="flex flex-wrap gap-2">
           <span className="text-xs px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 font-medium">
-            {tm.icon} {tm.label}
+            {tm.label}
           </span>
           <span className="text-xs px-2.5 py-1 rounded-full bg-slate-100 text-slate-500 font-medium">
-            ✅ Ended
+            Ended
           </span>
           {meeting.record && (
             <span className="text-xs px-2.5 py-1 rounded-full bg-violet-100 text-violet-700 font-medium">
-              ⏺ Recorded
+              Recorded
             </span>
           )}
         </div>
@@ -335,22 +323,19 @@ function PastDetailModal({
         {/* Recording CTA */}
         {meeting.recording_url ? (
           <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="text-2xl">🎬</span>
-              <div>
-                <p className="text-sm font-semibold text-violet-900">
-                  Recording available
-                </p>
-                <p className="text-xs text-violet-600">
-                  Watch the full session at your own pace
-                </p>
-              </div>
+            <div>
+              <p className="text-sm font-semibold text-violet-900">
+                Recording available
+              </p>
+              <p className="text-xs text-violet-600 mt-0.5">
+                Watch the full session at your own pace
+              </p>
             </div>
             <button
               onClick={() => onJoinRecording(meeting.recording_url!)}
               className="w-full py-2.5 bg-violet-600 text-white rounded-xl text-sm font-medium hover:bg-violet-700 transition-colors"
             >
-              Watch Recording →
+              Watch Recording
             </button>
           </div>
         ) : (
@@ -370,7 +355,6 @@ function PastDetailModal({
 function EmptyState({ tab }: { tab: "live" | "past" }) {
   return (
     <div className="text-center py-24">
-      <div className="text-5xl mb-4">{tab === "live" ? "📡" : "🗓️"}</div>
       <p className="text-slate-600 text-lg font-medium mb-2">
         {tab === "live" ? "No live sessions right now" : "No past sessions yet"}
       </p>
@@ -468,12 +452,12 @@ export default function StudentMeetingsPage() {
   return (
     <AppShell>
       <div className="space-y-6">
-        {/* ── Header ── */}
+        {/* Header */}
         <div>
           <h1 className="text-2xl font-bold text-slate-900">My Classes</h1>
           {liveCount > 0 ? (
             <p className="text-sm text-emerald-600 font-medium mt-0.5">
-              🟢 {liveCount} live {liveCount === 1 ? "session" : "sessions"}{" "}
+              {liveCount} live {liveCount === 1 ? "session" : "sessions"}{" "}
               happening now
             </p>
           ) : (
@@ -483,7 +467,7 @@ export default function StudentMeetingsPage() {
           )}
         </div>
 
-        {/* ── Tabs ── */}
+        {/* Tabs */}
         <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
           {(
             [
@@ -513,7 +497,7 @@ export default function StudentMeetingsPage() {
           ))}
         </div>
 
-        {/* ── Live Tab ── */}
+        {/* Live Tab */}
         {activeTab === "live" && (
           <div className="space-y-4">
             {liveLoading && (
@@ -548,9 +532,7 @@ export default function StudentMeetingsPage() {
                 <EmptyState tab="live" />
               ) : (
                 <>
-                  {/* Alert banner when sessions exist */}
                   <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
-                    <span className="text-xl">🔔</span>
                     <p className="text-sm text-emerald-800">
                       <span className="font-semibold">
                         Class is in session!
@@ -574,7 +556,7 @@ export default function StudentMeetingsPage() {
           </div>
         )}
 
-        {/* ── Past Tab ── */}
+        {/* Past Tab */}
         {activeTab === "past" && (
           <div className="space-y-3">
             {pastLoading && (
@@ -607,14 +589,10 @@ export default function StudentMeetingsPage() {
                 <EmptyState tab="past" />
               ) : (
                 <>
-                  {/* Recording tip */}
-                  <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5">
-                    <span>🎬</span>
-                    <span>
-                      Sessions marked{" "}
-                      <span className="font-semibold text-violet-600">REC</span>{" "}
-                      have recordings you can watch anytime.
-                    </span>
+                  <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5">
+                    Sessions marked{" "}
+                    <span className="font-semibold text-violet-600">REC</span>{" "}
+                    have recordings you can watch anytime.
                   </div>
 
                   <div className="space-y-2">
@@ -627,7 +605,6 @@ export default function StudentMeetingsPage() {
                     ))}
                   </div>
 
-                  {/* Pagination */}
                   {pastPages > 1 && (
                     <div className="flex items-center justify-center gap-3 mt-4">
                       <button
@@ -655,7 +632,6 @@ export default function StudentMeetingsPage() {
         )}
       </div>
 
-      {/* ── Past meeting detail modal ── */}
       {viewingMeeting && (
         <PastDetailModal
           meeting={viewingMeeting}

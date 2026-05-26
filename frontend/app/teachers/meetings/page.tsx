@@ -71,8 +71,8 @@ const STATUS_META: Record<
 };
 
 const TYPE_META: Record<MeetingType, { label: string; icon: string }> = {
-  teacher_class: { label: "Class Meeting", icon: "🎓" },
-  admin_teachers: { label: "Staff Meeting", icon: "👥" },
+  teacher_class: { label: "Class Meeting", icon: "" },
+  admin_teachers: { label: "Staff Meeting", icon: "" },
 };
 
 function fmt(dt: string | null) {
@@ -249,15 +249,6 @@ function TeacherMeetingForm({
         )}
       </div>
 
-      {/* Info box */}
-      <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-xs text-emerald-700 space-y-1">
-        <p className="font-semibold">What happens when you start:</p>
-        <p>• The meeting goes live immediately on BigBlueButton</p>
-        <p>• You join as moderator (whiteboard, screen share, full controls)</p>
-        <p>• Students in this class can join as attendees</p>
-        <p>• Session is recorded automatically</p>
-      </div>
-
       {error && (
         <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">
           {error}
@@ -276,7 +267,7 @@ function TeacherMeetingForm({
           disabled={loading || !title.trim() || !selectedClass}
           className="flex-1 py-2.5 text-sm bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-50 transition-colors font-medium"
         >
-          {loading ? "Starting..." : "🚀 Start Meeting"}
+          {loading ? "Starting..." : "Start Meeting"}
         </button>
       </div>
     </div>
@@ -357,7 +348,7 @@ function AdminMeetingForm({
           disabled={loading || !title.trim()}
           className="flex-1 py-2.5 text-sm bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-colors font-medium"
         >
-          {loading ? "Starting..." : "🚀 Start Staff Meeting"}
+          {loading ? "Starting..." : "Start Staff Meeting"}
         </button>
       </div>
     </div>
@@ -447,7 +438,6 @@ function MeetingCard({
           )}
           {meeting.record && (
             <div className="col-span-2 flex items-center gap-1 text-slate-400">
-              <span>⏺</span>
               <span>Recorded</span>
             </div>
           )}
@@ -512,7 +502,7 @@ function MeetingDetailModal({
           </span>
           {meeting.record && (
             <span className="text-xs px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 font-medium">
-              ⏺ Recorded
+              Recorded
             </span>
           )}
         </div>
@@ -566,19 +556,26 @@ function LaunchModal({
   joinUrl: string;
   onClose: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
+
+  function copy() {
+    navigator.clipboard.writeText(joinUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
   return (
     <Modal title="Meeting Ready" onClose={onClose}>
       <div className="space-y-5 text-center">
-        <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto text-3xl">
-          🚀
+        <div className=" flex items-center justify-center mx-auto text-3xl">
+          {/* Emoji removed */}
         </div>
         <div>
           <p className="text-slate-800 font-semibold text-lg">
             Your meeting is live!
           </p>
           <p className="text-slate-500 text-sm mt-1">
-            Click below to enter the classroom. Share the meeting link with
-            students.
+            Click below to enter the classroom.
           </p>
         </div>
         <button
@@ -588,7 +585,7 @@ function LaunchModal({
           }}
           className="w-full py-3 bg-emerald-600 text-white rounded-xl font-semibold hover:bg-emerald-700 transition-colors"
         >
-          Enter Classroom →
+          Enter Classroom
         </button>
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-left">
           <p className="text-xs text-slate-500 mb-1 font-medium">
@@ -597,12 +594,18 @@ function LaunchModal({
           <p className="text-xs text-slate-700 break-all font-mono">
             {joinUrl}
           </p>
+          <button
+            onClick={copy}
+            className="text-xs px-3 py-1 border border-slate-200 rounded-lg hover:bg-white transition-colors text-slate-600"
+          >
+            {copied ? "Copied!" : "Copy link"}
+          </button>
         </div>
         <button
           onClick={onClose}
           className="w-full py-2 text-sm text-slate-500 hover:text-slate-700 transition-colors"
         >
-          Close
+          Dismiss
         </button>
       </div>
     </Modal>
@@ -749,7 +752,7 @@ export default function MeetingsPage() {
                   onClick={() => setCreatingTeacher(true)}
                   className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-xl hover:bg-emerald-700 transition-colors"
                 >
-                  🎓 Start Class Meeting
+                  Start Class Meeting
                 </button>
               )}
               {isAdmin && (
@@ -757,7 +760,7 @@ export default function MeetingsPage() {
                   onClick={() => setCreatingAdmin(true)}
                   className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-xl hover:bg-slate-700 transition-colors"
                 >
-                  👥 Staff Meeting
+                  Staff Meeting
                 </button>
               )}
             </div>
@@ -823,7 +826,7 @@ export default function MeetingsPage() {
               <>
                 {liveMeetings.items.length === 0 ? (
                   <div className="text-center py-24">
-                    <div className="text-5xl mb-4">📡</div>
+                    <div className="text-5xl mb-4">{/* Emoji removed */}</div>
                     <p className="text-slate-600 text-lg font-medium mb-2">
                       No live sessions right now
                     </p>
@@ -837,7 +840,7 @@ export default function MeetingsPage() {
                         onClick={() => setCreatingTeacher(true)}
                         className="px-5 py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-xl hover:bg-emerald-700 transition-colors"
                       >
-                        🎓 Start a Class Meeting
+                        Start a Class Meeting
                       </button>
                     )}
                     {isAdmin && (
@@ -845,7 +848,7 @@ export default function MeetingsPage() {
                         onClick={() => setCreatingAdmin(true)}
                         className="ml-3 px-5 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-xl hover:bg-slate-700 transition-colors"
                       >
-                        👥 Start Staff Meeting
+                        Start Staff Meeting
                       </button>
                     )}
                   </div>
@@ -900,7 +903,7 @@ export default function MeetingsPage() {
               <>
                 {pastMeetings.items.length === 0 ? (
                   <div className="text-center py-24">
-                    <div className="text-5xl mb-4">🗓️</div>
+                    <div className="text-5xl mb-4">{/* Emoji removed */}</div>
                     <p className="text-slate-600 text-lg font-medium">
                       No past meetings yet
                     </p>
@@ -997,7 +1000,7 @@ export default function MeetingsPage() {
             onClick={() => setEndingId(null)}
           />
           <div className="relative bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm text-center space-y-4">
-            <div className="text-4xl">⚠️</div>
+            <div className="text-4xl">{/* Warning emoji removed */}</div>
             <h3 className="font-semibold text-slate-800">End this meeting?</h3>
             <p className="text-sm text-slate-500">
               All participants will be removed and the session will be closed.

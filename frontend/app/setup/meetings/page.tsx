@@ -1,12 +1,18 @@
 "use client";
 
 import AppShell from "@/components/AppShell";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getSavedAuth } from "@/lib/api";
 import { apiFetch } from "@/lib/api";
 
 type MeetingType = "teacher_class" | "admin_teachers";
 type MeetingStatus = "scheduled" | "live" | "ended";
+
+interface CreatedByOut {
+  id: number;
+  full_name: string;
+  role: string;
+}
 
 interface MeetingOut {
   id: number;
@@ -17,6 +23,7 @@ interface MeetingOut {
   section_id: number | null;
   teacher_id: number | null;
   created_by_user_id: number;
+  created_by: CreatedByOut | null;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -70,18 +77,13 @@ const STATUS_META: Record<
   },
 };
 
-const TYPE_META: Record<
-  MeetingType,
-  { label: string; icon: string; color: string }
-> = {
+const TYPE_META: Record<MeetingType, { label: string; color: string }> = {
   teacher_class: {
     label: "Class Meeting",
-    icon: "🎓",
     color: "bg-violet-50 text-violet-700",
   },
   admin_teachers: {
     label: "Staff Meeting",
-    icon: "👥",
     color: "bg-blue-50 text-blue-700",
   },
 };
@@ -156,29 +158,25 @@ function StatsRow({
     {
       label: "Total Meetings",
       value: stats?.total_meetings ?? 0,
-      icon: "📋",
-      color: "bg-slate-50  border-slate-200",
+      color: "bg-slate-50 border-slate-200",
       text: "text-slate-700",
     },
     {
       label: "Live Now",
       value: stats?.live_now ?? 0,
-      icon: "🔴",
       color: "bg-emerald-50 border-emerald-200",
       text: "text-emerald-700",
     },
     {
       label: "Completed",
       value: stats?.total_ended ?? 0,
-      icon: "✅",
-      color: "bg-blue-50    border-blue-200",
+      color: "bg-blue-50 border-blue-200",
       text: "text-blue-700",
     },
     {
       label: "Recorded",
       value: stats?.recorded ?? 0,
-      icon: "⏺",
-      color: "bg-violet-50  border-violet-200",
+      color: "bg-violet-50 border-violet-200",
       text: "text-violet-700",
     },
   ];
@@ -194,13 +192,10 @@ function StatsRow({
             </div>
           ) : (
             <>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xl">{c.icon}</span>
-                <span className={`text-2xl font-bold ${c.text}`}>
-                  {c.value}
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 font-medium">{c.label}</p>
+              <span className={`text-2xl font-bold ${c.text}`}>{c.value}</span>
+              <p className="text-xs text-slate-500 font-medium mt-1">
+                {c.label}
+              </p>
             </>
           )}
         </div>
@@ -258,16 +253,6 @@ function StaffMeetingForm({
         />
       </div>
 
-      <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-700 space-y-1">
-        <p className="font-semibold">What happens:</p>
-        <p>• Meeting goes live immediately on BigBlueButton</p>
-        <p>
-          • You join as <strong>moderator</strong> (full controls)
-        </p>
-        <p>• All teachers in the school can join as attendees</p>
-        <p>• Session is recorded automatically</p>
-      </div>
-
       {error && (
         <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">
           {error}
@@ -286,7 +271,7 @@ function StaffMeetingForm({
           disabled={loading || !title.trim()}
           className="flex-1 py-2.5 text-sm bg-slate-900 text-white rounded-xl hover:bg-slate-700 disabled:opacity-50 transition-colors font-medium"
         >
-          {loading ? "Starting..." : "🚀 Start Staff Meeting"}
+          {loading ? "Starting..." : "Start Staff Meeting"}
         </button>
       </div>
     </div>
@@ -311,15 +296,12 @@ function LaunchModal({
   return (
     <Modal title="Meeting Ready" onClose={onClose}>
       <div className="space-y-5 text-center">
-        <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto text-3xl">
-          🚀
-        </div>
         <div>
           <p className="text-slate-800 font-semibold text-lg">
             Your meeting is live!
           </p>
           <p className="text-slate-500 text-sm mt-1">
-            Enter the classroom or share the link with participants.
+            Click below to enter the Meeting.
           </p>
         </div>
         <button
@@ -329,10 +311,10 @@ function LaunchModal({
           }}
           className="w-full py-3 bg-emerald-600 text-white rounded-xl font-semibold hover:bg-emerald-700 transition-colors"
         >
-          Enter Classroom →
+          Enter Meeting
         </button>
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-left space-y-2">
-          <p className="text-xs text-slate-500 font-medium">Join link</p>
+          <p className="text-xs text-slate-500 font-medium">Direct join link</p>
           <p className="text-xs text-slate-700 break-all font-mono leading-relaxed">
             {joinUrl}
           </p>
@@ -340,7 +322,7 @@ function LaunchModal({
             onClick={copy}
             className="text-xs px-3 py-1 border border-slate-200 rounded-lg hover:bg-white transition-colors text-slate-600"
           >
-            {copied ? "✓ Copied!" : "Copy link"}
+            {copied ? "Copied!" : "Copy link"}
           </button>
         </div>
         <button
@@ -382,11 +364,11 @@ function MeetingRow({
         isLive ? "border-emerald-200 bg-emerald-50/30" : "border-slate-100"
       }`}
     >
-      {/* Type icon */}
+      {/* Type pill */}
       <div
-        className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg shrink-0 ${tm.color}`}
+        className={`px-2.5 py-1 rounded-lg text-xs font-medium shrink-0 ${tm.color}`}
       >
-        {tm.icon}
+        {tm.label}
       </div>
 
       {/* Main info */}
@@ -403,10 +385,9 @@ function MeetingRow({
           </p>
         </div>
         <div className="flex items-center gap-3 mt-0.5 text-xs text-slate-400">
-          <span>{tm.label}</span>
           {meeting.class_name && (
             <span>
-              · {meeting.class_name}
+              {meeting.class_name}
               {meeting.section_name ? ` ${meeting.section_name}` : ""}
             </span>
           )}
@@ -482,11 +463,11 @@ function MeetingDetailModal({
           <span
             className={`text-xs px-2.5 py-1 rounded-full font-medium ${tm.color}`}
           >
-            {tm.icon} {tm.label}
+            {tm.label}
           </span>
           {meeting.record && (
             <span className="text-xs px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 font-medium">
-              ⏺ Recorded
+              Recorded
             </span>
           )}
         </div>
@@ -516,6 +497,19 @@ function MeetingDetailModal({
               {duration(meeting.started_at, meeting.ended_at)}
             </p>
           </div>
+          <div>
+            <span className="text-slate-400 text-xs uppercase tracking-wider font-semibold">
+              Created by
+            </span>
+            <p className="text-slate-800 font-medium mt-0.5">
+              {meeting.created_by?.full_name ?? "—"}
+            </p>
+            {meeting.created_by?.role && (
+              <p className="text-slate-400 text-xs mt-0.5 capitalize">
+                {meeting.created_by.role.toLowerCase().replace("_", " ")}
+              </p>
+            )}
+          </div>
           {(meeting.class_name || meeting.section_name) && (
             <div>
               <span className="text-slate-400 text-xs uppercase tracking-wider font-semibold">
@@ -542,7 +536,7 @@ function MeetingDetailModal({
         {meeting.recording_url && (
           <div className="bg-violet-50 border border-violet-200 rounded-xl p-4">
             <p className="text-xs font-semibold text-violet-700 mb-2">
-              ⏺ Recording Available
+              Recording Available
             </p>
             <a
               href={meeting.recording_url}
@@ -574,14 +568,11 @@ function FiltersBar({
     <div className="flex flex-wrap items-center gap-3">
       {/* Search */}
       <div className="relative">
-        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">
-          🔍
-        </span>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search meetings..."
-          className="pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-300 bg-white w-56"
+          className="pl-3 pr-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-300 bg-white w-56"
         />
       </div>
 
@@ -590,8 +581,8 @@ function FiltersBar({
         {(
           [
             ["", "All Types"],
-            ["teacher_class", "🎓 Class"],
-            ["admin_teachers", "👥 Staff"],
+            ["teacher_class", "Class"],
+            ["admin_teachers", "Staff"],
           ] as [MeetingType | "", string][]
         ).map(([val, label]) => (
           <button
@@ -620,14 +611,18 @@ export default function AdminMeetingsPage() {
   const [activeTab, setActiveTab] = useState<Tab>("live");
   const [typeFilter, setTypeFilter] = useState<MeetingType | "">("");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [skip, setSkip] = useState(0);
   const limit = 20;
 
   const [meetings, setMeetings] = useState<MeetingListOut | null>(null);
   const [stats, setStats] = useState<StatsOut | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [statsLoading, setStatsLoading] = useState(true);
   const [error, setError] = useState("");
+
+  const meetingsRef = useRef<MeetingListOut | null>(null);
 
   const [creatingStaff, setCreatingStaff] = useState(false);
   const [launchUrl, setLaunchUrl] = useState<string | null>(null);
@@ -635,6 +630,17 @@ export default function AdminMeetingsPage() {
   const [endingId, setEndingId] = useState<number | null>(null);
   const [joining, setJoining] = useState<number | null>(null);
   const [ending, setEnding] = useState<number | null>(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 350);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  useEffect(() => {
+    setSkip(0);
+    setMeetings(null);
+    meetingsRef.current = null;
+  }, [activeTab, typeFilter, debouncedSearch]);
 
   const fetchStats = useCallback(async () => {
     setStatsLoading(true);
@@ -648,7 +654,11 @@ export default function AdminMeetingsPage() {
   }, []);
 
   const fetchMeetings = useCallback(async () => {
-    setLoading(true);
+    if (!meetingsRef.current) {
+      setLoading(true);
+    } else {
+      setRefreshing(true);
+    }
     setError("");
     try {
       const params = new URLSearchParams({
@@ -658,20 +668,23 @@ export default function AdminMeetingsPage() {
       if (activeTab === "live") params.set("status", "live");
       if (activeTab === "past") params.set("status", "ended");
       if (typeFilter) params.set("meeting_type", typeFilter);
-      if (search.trim()) params.set("search", search.trim());
+      if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
 
       const data = await apiFetch<MeetingListOut>(`/meetings/?${params}`);
       setMeetings(data);
+      meetingsRef.current = data;
     } catch (e: any) {
       setError(e.message);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
-  }, [activeTab, typeFilter, search, skip]);
+  }, [activeTab, typeFilter, debouncedSearch, skip]);
 
   useEffect(() => {
     fetchStats();
   }, [fetchStats]);
+
   useEffect(() => {
     fetchMeetings();
   }, [fetchMeetings]);
@@ -681,10 +694,6 @@ export default function AdminMeetingsPage() {
     const interval = setInterval(fetchMeetings, 30000);
     return () => clearInterval(interval);
   }, [activeTab, fetchMeetings]);
-
-  useEffect(() => {
-    setSkip(0);
-  }, [activeTab, typeFilter, search]);
 
   async function handleJoin(meetingId: number) {
     setJoining(meetingId);
@@ -721,10 +730,7 @@ export default function AdminMeetingsPage() {
 
   const totalPages = meetings ? Math.ceil(meetings.total / limit) : 0;
   const currentPage = Math.floor(skip / limit) + 1;
-  const liveCount =
-    activeTab === "live"
-      ? (meetings?.items.length ?? 0)
-      : (stats?.live_now ?? 0);
+  const liveCount = stats?.live_now ?? 0;
 
   const TABS: [Tab, string][] = [
     ["live", "Live Now"],
@@ -735,7 +741,7 @@ export default function AdminMeetingsPage() {
   return (
     <AppShell>
       <div className="space-y-6">
-        {/* ── Header ── */}
+        {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Meetings</h1>
@@ -747,14 +753,14 @@ export default function AdminMeetingsPage() {
             onClick={() => setCreatingStaff(true)}
             className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-xl hover:bg-slate-700 transition-colors"
           >
-            👥 Start Staff Meeting
+            Start Staff Meeting
           </button>
         </div>
 
-        {/* ── Stats ── */}
+        {/* Stats */}
         <StatsRow stats={stats} loading={statsLoading} />
 
-        {/* ── Tabs ── */}
+        {/* Tabs */}
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
             {TABS.map(([tab, label]) => (
@@ -785,7 +791,7 @@ export default function AdminMeetingsPage() {
           />
         </div>
 
-        {/* ── List ── */}
+        {/* List */}
         <div className="space-y-2">
           {loading && (
             <div className="space-y-2">
@@ -811,16 +817,13 @@ export default function AdminMeetingsPage() {
           )}
 
           {!loading && !error && meetings && (
-            <>
+            <div
+              className={`space-y-2 transition-opacity duration-200 ${
+                refreshing ? "opacity-50" : "opacity-100"
+              }`}
+            >
               {meetings.items.length === 0 ? (
                 <div className="text-center py-24 bg-white rounded-2xl border border-slate-100">
-                  <div className="text-5xl mb-4">
-                    {activeTab === "live"
-                      ? "📡"
-                      : activeTab === "past"
-                        ? "🗓️"
-                        : "📋"}
-                  </div>
                   <p className="text-slate-600 text-lg font-medium mb-2">
                     {activeTab === "live"
                       ? "No live sessions right now"
@@ -838,15 +841,14 @@ export default function AdminMeetingsPage() {
                       onClick={() => setCreatingStaff(true)}
                       className="px-5 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-xl hover:bg-slate-700 transition-colors"
                     >
-                      👥 Start a Staff Meeting
+                      Start a Staff Meeting
                     </button>
                   )}
                 </div>
               ) : (
                 <>
-                  {/* Column headers */}
                   <div className="hidden md:flex items-center gap-4 px-5 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                    <div className="w-10 shrink-0" />
+                    <div className="w-24 shrink-0" />
                     <div className="flex-1">Meeting</div>
                     <div className="w-24 text-center">Status</div>
                     <div className="w-32 text-right">Actions</div>
@@ -867,7 +869,6 @@ export default function AdminMeetingsPage() {
                 </>
               )}
 
-              {/* Pagination */}
               {totalPages > 1 && (
                 <div className="flex items-center justify-between pt-4">
                   <p className="text-xs text-slate-400">
@@ -895,12 +896,12 @@ export default function AdminMeetingsPage() {
                   </div>
                 </div>
               )}
-            </>
+            </div>
           )}
         </div>
       </div>
 
-      {/* ── Modals ── */}
+      {/* Modals */}
 
       {creatingStaff && (
         <Modal
@@ -925,7 +926,6 @@ export default function AdminMeetingsPage() {
         />
       )}
 
-      {/* End confirmation */}
       {endingId !== null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div
@@ -933,7 +933,6 @@ export default function AdminMeetingsPage() {
             onClick={() => setEndingId(null)}
           />
           <div className="relative bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm text-center space-y-4">
-            <div className="text-4xl">⚠️</div>
             <h3 className="font-semibold text-slate-800">End this meeting?</h3>
             <p className="text-sm text-slate-500">
               All participants will be removed from the session immediately.

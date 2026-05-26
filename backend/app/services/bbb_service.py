@@ -60,3 +60,19 @@ async def end_bbb_meeting(meeting_id: str, moderator_pw: str) -> None:
     params["checksum"] = _checksum("end", params)
     async with httpx.AsyncClient() as client:
         await client.get(f"{settings.BBB_URL}/end", params=params)
+
+
+# async def get_recording(meeting_id: str) -> str | None:
+#     params = {"meetingId": meeting_id}
+#     params["checksum"] = _checksum("getRecordings", params)
+
+#     try:
+#         async with httpx.AsyncClient(timeout=BBB_TIMEOUT) as client:
+#             r = await client.get(f"{settings.BBB_URL}/getRecordings", params=params)
+#     except httpx.TimeoutException:
+#         return None
+    
+#     if r.status_code != 200:
+#         return None
+    
+#     parsed = xmltodict.parse(r.text)

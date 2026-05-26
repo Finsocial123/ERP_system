@@ -63,17 +63,7 @@ function StudentFeeView() {
   };
 
   useEffect(() => {
-    // Load Razorpay script
-    const script = document.createElement("script");
-    script.src = "https://checkout.razorpay.com/v1/checkout.js";
-    script.async = true;
-    document.body.appendChild(script);
-
     loadData();
-
-    return () => {
-      document.body.removeChild(script);
-    };
   }, []);
 
   const handlePayOnline = async (recordId: number) => {
@@ -83,7 +73,7 @@ function StudentFeeView() {
 
     try {
       // Step 1 — get order from backend
-      const order = await apiFetch("/fees/razorpay/create-order", {
+      const order = await apiFetch<any>("/fees/razorpay/create-order", {
         method: "POST",
         body: JSON.stringify({ student_fee_record_id: recordId }),
       });

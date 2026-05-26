@@ -979,18 +979,27 @@ def create_razorpay_order(
     db: Session = Depends(get_db),
 ):
     """Create a Razorpay order for fee payment."""
-    # Get and verify fee record
     record = _get_or_404(db, StudentFeeRecord, payload.student_fee_record_id, school_id, "Student fee record")
-    
+
+    # Ownership check — students/parents can only pay their own fee records
+    if current_user.role in (UserRole.STUDENT.value, UserRole.PARENT.value):
+        authorized_ids = _authorized_student_ids(db, school_id, current_user)
+        if record.student_id not in authorized_ids:
+            raise HTTPException(status_code=403, detail="You do not have permission to pay for this fee record")
+
     if record.status == "WAIVED":
         raise HTTPException(status_code=400, detail="Cannot collect payment for a waived record")
-    
+
     _recalculate_record(record)
-    
-    # Create Razorpay order
+
+    # Minimum amount check
+    amount_paise = int(record.balance_amount * 100)
+    if amount_paise < 100:
+        raise HTTPException(status_code=400, detail="Balance amount is too low for online payment (minimum ₹1)")
+
     client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
     order = client.order.create({
-        "amount": int(record.balance_amount * 100),  # Razorpay needs paise
+        "amount": amount_paise,
         "currency": "INR",
         "receipt": f"fee_{record.id}_{school_id}",
         "notes": {
@@ -998,7 +1007,7 @@ def create_razorpay_order(
             "school_id": str(school_id),
         },
     })
-    
+
     return RazorpayOrderResponse(
         order_id=order["id"],
         amount=order["amount"],
@@ -1018,7 +1027,7 @@ def verify_razorpay_payment(
     db: Session = Depends(get_db),
 ):
     """Verify Razorpay payment signature and create FeePayment record."""
-    # Step 1: Verify signature to prevent tampered payments
+    # Step 1 — Verify signature to prevent tampered payments
     client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
     try:
         client.utility.verify_payment_signature({
@@ -1028,23 +1037,47 @@ def verify_razorpay_payment(
         })
     except SignatureVerificationError:
         raise HTTPException(status_code=400, detail="Invalid payment signature")
-    
-    # Step 2: Get payment details and verify record
+
+    # Step 2 — Duplicate payment guard
+    existing_payment = (
+        db.query(FeePayment)
+        .filter(
+            FeePayment.school_id == school_id,
+            FeePayment.razorpay_payment_id == payload.razorpay_payment_id,
+        )
+        .first()
+    )
+    if existing_payment:
+        school = db.get(School, school_id)
+        return FeeReceiptRead(
+            payment=_payment_read(existing_payment),
+            record=_record_read(existing_payment.student_fee_record),
+            school_name=school.name if school else None,
+            school_code=school.school_code if school else None,
+        )
+
+    # Step 3 — Fetch fee record and verify ownership
     record = _get_or_404(db, StudentFeeRecord, payload.student_fee_record_id, school_id, "Student fee record")
-    
+
+    # Ownership check — students/parents can only verify payments for their own records
+    if current_user.role in (UserRole.STUDENT.value, UserRole.PARENT.value):
+        authorized_ids = _authorized_student_ids(db, school_id, current_user)
+        if record.student_id not in authorized_ids:
+            raise HTTPException(status_code=403, detail="You do not have permission to verify this payment")
+
     if record.status == "WAIVED":
         raise HTTPException(status_code=400, detail="Cannot collect payment for a waived record")
-    
+
     _recalculate_record(record)
-    
-    # Fetch payment details from Razorpay to get the actual amount
+
+    # Step 4 — Fetching actual amount from Razorpay
     payment_details = client.payment.fetch(payload.razorpay_payment_id)
-    amount = _money(payment_details["amount"] / 100)  # Convert from paise to rupees
-    
+    amount = _money(payment_details["amount"] / 100)  # paise → rupees
+
     if amount > record.balance_amount:
         raise HTTPException(status_code=400, detail=f"Payment cannot exceed pending balance ₹{_money(record.balance_amount):,.2f}")
-    
-    # Step 3: Create FeePayment record
+
+    # Step 5 — Create FeePayment record
     payment_date = date.today()
     payment = FeePayment(
         school_id=school_id,
@@ -1059,17 +1092,15 @@ def verify_razorpay_payment(
         razorpay_payment_id=payload.razorpay_payment_id,
         razorpay_signature=payload.razorpay_signature,
     )
-    
-    # Update fee record
+
     record.paid_amount = _money(record.paid_amount + payment.amount)
     _recalculate_record(record)
-    
+
     db.add(payment)
     db.commit()
     db.refresh(payment)
     db.refresh(record)
-    
-    # Return receipt
+
     school = db.get(School, school_id)
     return FeeReceiptRead(
         payment=_payment_read(payment),
@@ -1077,4 +1108,3 @@ def verify_razorpay_payment(
         school_name=school.name if school else None,
         school_code=school.school_code if school else None,
     )
-

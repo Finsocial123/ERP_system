@@ -23,6 +23,11 @@ class Settings(BaseSettings):
 
     TAVILY_API_KEY: str ="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"
 
+    
+    BBB_URL: str ="https://tensordock-bbb.freedynamicdns.net/bigbluebutton/"
+    BBB_SECRET: str =""
+
+
     # Cloudinary
     CLOUDINARY_CLOUD_NAME: str="dqbxkhtfu"
     CLOUDINARY_API_KEY: str="755599935885622"

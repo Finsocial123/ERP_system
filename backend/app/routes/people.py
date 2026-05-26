@@ -3,10 +3,11 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.schemas.meetings import TeacherClassOut
 from app.core.database import get_db
 from app.core.security import get_password_hash
 from app.core.utils import generate_temporary_password, normalize_login_id
-from app.dependencies.auth import current_school_id, require_school_admin
+from app.dependencies.auth import current_school_id, require_school_admin, get_current_user
 from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.school import School
@@ -446,6 +447,61 @@ def delete_class_teacher_assignment(assignment_id: int, current_user: User = Dep
     return {"message": "Class teacher assignment removed"}
 
 
+
+@router.delete("/teachers/subject-assignments/{assignment_id}", response_model=MessageResponse)
+def delete_teacher_subject_assignment(assignment_id: int, current_user: User = Depends(require_school_admin), db: Session = Depends(get_db)):
+    assignment = _get_or_404(db, TeacherSubject, assignment_id, current_user.school_id)
+    db.delete(assignment)
+    db.commit()
+    return {"message": "Teacher subject assignment removed"}
+
+
+@router.get("/teachers/me/classes", response_model=list[TeacherClassOut])
+def get_my_classes(
+    current_user: User = Depends(get_current_user),
+    school_id: int = Depends(current_school_id),
+    db: Session = Depends(get_db),
+):
+    teacher = (
+        db.query(Teacher)
+        .filter(
+            Teacher.user_id == current_user.id,
+            Teacher.school_id == school_id,
+            Teacher.is_active.is_(True),
+        )
+        .first()
+    )
+    if not teacher:
+        raise HTTPException(404, "No teacher profile found for this user")
+
+    assignments = (
+        db.query(TeacherSubject)
+        .filter(
+            TeacherSubject.teacher_id == teacher.id,
+            TeacherSubject.school_id == school_id,
+        )
+        .order_by(TeacherSubject.class_id, TeacherSubject.section_id)
+        .all()
+    )
+
+    return [
+        {
+            "class_id":     a.class_id,
+            "class_name":   a.school_class.name if a.school_class else f"Class {a.class_id}",
+            "section_id":   a.section_id,
+            "section_name": a.section.name if a.section else None,
+            "subject_id":   a.subject_id,
+            "subject_name": a.subject.name if a.subject else f"Subject {a.subject_id}",
+        }
+        for a in assignments
+    ]
+
+
+
+
+
+
+
 @router.get("/teachers/{teacher_id}", response_model=TeacherRead)
 def get_teacher(teacher_id: int, school_id: int = Depends(current_school_id), db: Session = Depends(get_db)):
     return _get_or_404(db, Teacher, teacher_id, school_id)
@@ -506,6 +562,9 @@ def activate_teacher(teacher_id: int, current_user: User = Depends(require_schoo
     db.refresh(teacher)
     return teacher
 
+# app/routes/teachers.py
+# Place this after /teachers/subject-assignments/{id} and before /teachers/{teacher_id}
+
 
 @router.delete("/teachers/{teacher_id}", response_model=MessageResponse)
 def delete_teacher(teacher_id: int, current_user: User = Depends(require_school_admin), db: Session = Depends(get_db)):
@@ -547,10 +606,3 @@ def assign_teacher_subject(
     db.refresh(assignment)
     return assignment
 
-
-@router.delete("/teachers/subject-assignments/{assignment_id}", response_model=MessageResponse)
-def delete_teacher_subject_assignment(assignment_id: int, current_user: User = Depends(require_school_admin), db: Session = Depends(get_db)):
-    assignment = _get_or_404(db, TeacherSubject, assignment_id, current_user.school_id)
-    db.delete(assignment)
-    db.commit()
-    return {"message": "Teacher subject assignment removed"}

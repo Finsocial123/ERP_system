@@ -36,51 +36,233 @@ type NavItem = {
 const ADMIN_ROLES = ["SUPER_ADMIN", "SCHOOL_OWNER", "SCHOOL_ADMIN"];
 
 const navItems: NavItem[] = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ADMIN_ROLES },
+  {
+    href: "/dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboard,
+    roles: ADMIN_ROLES,
+  },
   { href: "/students", label: "Students", icon: Users, roles: ADMIN_ROLES },
   { href: "/teachers", label: "Teachers", icon: UserRound, roles: ADMIN_ROLES },
-  { href: "/homework", label: "Homework", icon: ClipboardList, roles: ADMIN_ROLES },
-  { href: "/timetable", label: "Timetable", icon: CalendarCheck, roles: ADMIN_ROLES },
-  { href: "/exams", label: "Exams & Results", icon: GraduationCap, roles: ADMIN_ROLES },
-  { href: "/fees", label: "Fee Management", icon: CreditCard, roles: ADMIN_ROLES },
-  { href: "/attendance", label: "Attendance", icon: CalendarCheck, roles: ADMIN_ROLES },
+  {
+    href: "/homework",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/timetable",
+    label: "Timetable",
+    icon: CalendarCheck,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/exams",
+    label: "Exams & Results",
+    icon: GraduationCap,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/fees",
+    label: "Fee Management",
+    icon: CreditCard,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/attendance",
+    label: "Attendance",
+    icon: CalendarCheck,
+    roles: ADMIN_ROLES,
+  },
   { href: "/library", label: "Library", icon: Library, roles: ADMIN_ROLES },
   { href: "/reports", label: "Reports", icon: FileText, roles: ADMIN_ROLES },
-  { href: "/settings/school", label: "School Profile", icon: School, roles: ADMIN_ROLES },
-  { href: "/setup/academic-sessions", label: "Academic Sessions", icon: GraduationCap, roles: ADMIN_ROLES },
-  { href: "/setup/departments", label: "Departments", icon: Building2, roles: ADMIN_ROLES },
-  { href: "/setup/classes", label: "Classes", icon: Settings, roles: ADMIN_ROLES },
-  { href: "/setup/sections", label: "Sections", icon: Settings, roles: ADMIN_ROLES },
-  { href: "/setup/subjects", label: "Subjects", icon: BookOpen, roles: ADMIN_ROLES },
-  { href: "/setup/notice", label: "Notices", icon: NotebookIcon, roles: ADMIN_ROLES },
-  
+  {
+    href: "/settings/school",
+    label: "School Profile",
+    icon: School,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/academic-sessions",
+    label: "Academic Sessions",
+    icon: GraduationCap,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/departments",
+    label: "Departments",
+    icon: Building2,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/classes",
+    label: "Classes",
+    icon: Settings,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/sections",
+    label: "Sections",
+    icon: Settings,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/subjects",
+    label: "Subjects",
+    icon: BookOpen,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/notice",
+    label: "Notices",
+    icon: NotebookIcon,
+    roles: ADMIN_ROLES,
+  },
+  {
+    href: "/setup/meetings",
+    label: "Meetings",
+    icon: NotebookIcon,
+    roles: ADMIN_ROLES,
+  },
 
-  { href: "/teacher-dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["TEACHER"] },
-  { href: "/attendance", label: "Attendance", icon: CalendarCheck, roles: ["TEACHER"] },
-  { href: "/teacher-homework", label: "Homework", icon: ClipboardList, roles: ["TEACHER"] },
-  { href: "/teacher-timetable", label: "Timetable", icon: CalendarCheck, roles: ["TEACHER"] },
-  { href: "/teacher-exams", label: "Exams & Marks", icon: GraduationCap, roles: ["TEACHER"] },
-  { href: "/teachers/curriculum", label: "Curriculum", icon: NotebookIcon, roles: ["TEACHER"] },
-  { href: "/teachers/notice", label: "Notices", icon: NotebookIcon, roles: ["TEACHER"] },
+  {
+    href: "/teacher-dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboard,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/attendance",
+    label: "Attendance",
+    icon: CalendarCheck,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teacher-homework",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teacher-timetable",
+    label: "Timetable",
+    icon: CalendarCheck,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teacher-exams",
+    label: "Exams & Marks",
+    icon: GraduationCap,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teachers/curriculum",
+    label: "Curriculum",
+    icon: NotebookIcon,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teachers/notice",
+    label: "Notices",
+    icon: NotebookIcon,
+    roles: ["TEACHER"],
+  },
+  {
+    href: "/teachers/meetings",
+    label: "Meetings",
+    icon: NotebookIcon,
+    roles: ["TEACHER"],
+  },
   { href: "/library", label: "Library", icon: Library, roles: ["TEACHER"] },
 
-  { href: "/student-dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["STUDENT"] },
-  { href: "/attendance/my", label: "My Attendance", icon: CalendarCheck, roles: ["STUDENT"] },
-  { href: "/student-homework", label: "Homework", icon: ClipboardList, roles: ["STUDENT"] },
-  { href: "/student-timetable", label: "Timetable", icon: CalendarCheck, roles: ["STUDENT"] },
-  { href: "/student-exams", label: "Report Cards", icon: GraduationCap, roles: ["STUDENT"] },
-  { href: "/students/notice", label: "Notices", icon: NotebookIcon, roles: ["STUDENT"] },
+  {
+    href: "/student-dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboard,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/attendance/my",
+    label: "My Attendance",
+    icon: CalendarCheck,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/student-homework",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/student-timetable",
+    label: "Timetable",
+    icon: CalendarCheck,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/student-exams",
+    label: "Report Cards",
+    icon: GraduationCap,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/students/notice",
+    label: "Notices",
+    icon: NotebookIcon,
+    roles: ["STUDENT"],
+  },
+  {
+    href: "/students/meetings",
+    label: "Meetings",
+    icon: NotebookIcon,
+    roles: ["STUDENT"],
+  },
   { href: "/fees", label: "Fees", icon: CreditCard, roles: ["STUDENT"] },
   { href: "/library", label: "Library", icon: Library, roles: ["STUDENT"] },
 
-  { href: "/parent-dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["PARENT"] },
-  { href: "/parent-homework", label: "Homework", icon: ClipboardList, roles: ["PARENT"] },
-  { href: "/parent-timetable", label: "Timetable", icon: CalendarCheck, roles: ["PARENT"] },
-  { href: "/parent-exams", label: "Child Results", icon: GraduationCap, roles: ["PARENT"] },
-  { href: "/parents/notice", label: "Notices", icon: NotebookIcon, roles: ["PARENT"] },
-  { href: "/attendance/my", label: "Child Attendance", icon: CalendarCheck, roles: ["PARENT"] },
+  {
+    href: "/parent-dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboard,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parent-homework",
+    label: "Homework",
+    icon: ClipboardList,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parent-timetable",
+    label: "Timetable",
+    icon: CalendarCheck,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parent-exams",
+    label: "Child Results",
+    icon: GraduationCap,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parents/notice",
+    label: "Notices",
+    icon: NotebookIcon,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/attendance/my",
+    label: "Child Attendance",
+    icon: CalendarCheck,
+    roles: ["PARENT"],
+  },
   { href: "/fees", label: "Child Fees", icon: CreditCard, roles: ["PARENT"] },
-  { href: "/communication", label: "Communication", icon: NotebookIcon, roles: [...ADMIN_ROLES, "TEACHER", "STUDENT", "PARENT"] },
+  {
+    href: "/communication",
+    label: "Communication",
+    icon: NotebookIcon,
+    roles: [...ADMIN_ROLES, "TEACHER", "STUDENT", "PARENT"],
+  },
 ];
 
 function formatRole(value: string) {
@@ -110,9 +292,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     }
     const protectedPaths = new Set(navItems.map((item) => item.href));
     if (protectedPaths.has(pathname)) {
-      const canOpenPath = navItems.some((item) => item.href === pathname && item.roles.includes(saved.user.role));
+      const canOpenPath = navItems.some(
+        (item) =>
+          item.href === pathname && item.roles.includes(saved.user.role),
+      );
       if (!canOpenPath) {
-        router.replace(dashboardPathForRole(saved.user.role, Boolean(saved.user.must_change_password)));
+        router.replace(
+          dashboardPathForRole(
+            saved.user.role,
+            Boolean(saved.user.must_change_password),
+          ),
+        );
         return;
       }
     }
@@ -148,14 +338,33 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <div className="flex items-start justify-between gap-3">
             <button
               type="button"
-              onClick={() => router.replace(dashboardPathForRole(auth.user.role, Boolean(auth.user.must_change_password)))}
+              onClick={() =>
+                router.replace(
+                  dashboardPathForRole(
+                    auth.user.role,
+                    Boolean(auth.user.must_change_password),
+                  ),
+                )
+              }
               className="min-w-0 text-left"
             >
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">ERP Portal</p>
-              <h1 className="mt-1 truncate text-lg font-bold text-slate-900">{auth.school?.name || "School ERP"}</h1>
-              {auth.school?.school_code && <p className="mt-1 text-xs text-slate-500">Code: {auth.school.school_code}</p>}
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                ERP Portal
+              </p>
+              <h1 className="mt-1 truncate text-lg font-bold text-slate-900">
+                {auth.school?.name || "School ERP"}
+              </h1>
+              {auth.school?.school_code && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Code: {auth.school.school_code}
+                </p>
+              )}
             </button>
-            <button className="rounded-xl p-2 text-slate-500 hover:bg-slate-100 lg:hidden" onClick={() => setOpen(false)} aria-label="Close sidebar">
+            <button
+              className="rounded-xl p-2 text-slate-500 hover:bg-slate-100 lg:hidden"
+              onClick={() => setOpen(false)}
+              aria-label="Close sidebar"
+            >
               <X size={20} />
             </button>
           </div>
@@ -185,15 +394,27 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
         <div className="border-t border-slate-100 p-4">
           <div className="rounded-2xl bg-slate-50 p-3">
-            <p className="truncate text-sm font-semibold text-slate-900">{auth.user.full_name}</p>
-            <p className="mt-1 truncate text-xs text-slate-500">{formatRole(auth.user.role)}</p>
+            <p className="truncate text-sm font-semibold text-slate-900">
+              {auth.user.full_name}
+            </p>
+            <p className="mt-1 truncate text-xs text-slate-500">
+              {formatRole(auth.user.role)}
+            </p>
           </div>
         </div>
       </aside>
 
-      {open && <button className="fixed inset-0 z-30 bg-slate-900/30 lg:hidden" onClick={() => setOpen(false)} aria-label="Close menu overlay" />}
+      {open && (
+        <button
+          className="fixed inset-0 z-30 bg-slate-900/30 lg:hidden"
+          onClick={() => setOpen(false)}
+          aria-label="Close menu overlay"
+        />
+      )}
 
-      <div className={`transition-all duration-200 ${desktopSidebarOpen ? "lg:pl-72" : "lg:pl-0"}`}>
+      <div
+        className={`transition-all duration-200 ${desktopSidebarOpen ? "lg:pl-72" : "lg:pl-0"}`}
+      >
         <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur lg:px-8">
           <div className="flex items-center gap-3">
             <button
@@ -213,11 +434,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </button>
             <button
               type="button"
-              onClick={() => router.replace(dashboardPathForRole(auth.user.role, Boolean(auth.user.must_change_password)))}
+              onClick={() =>
+                router.replace(
+                  dashboardPathForRole(
+                    auth.user.role,
+                    Boolean(auth.user.must_change_password),
+                  ),
+                )
+              }
               className="hidden text-left md:block"
             >
-              <p className="text-sm font-semibold text-slate-900">{auth.user.full_name}</p>
-              <p className="text-xs text-slate-500">{formatRole(auth.user.role)} · {auth.user.login_id}</p>
+              <p className="text-sm font-semibold text-slate-900">
+                {auth.user.full_name}
+              </p>
+              <p className="text-xs text-slate-500">
+                {formatRole(auth.user.role)} · {auth.user.login_id}
+              </p>
             </button>
           </div>
 

@@ -25,6 +25,18 @@ class SchoolRegisterRequest(BaseModel):
         return value
 
 
+class SchoolRegistrationOtpResponse(BaseModel):
+    message: str
+    owner_email: EmailStr
+    expires_in_minutes: int
+    debug_otp: str | None = None
+
+
+class SchoolRegistrationVerifyRequest(BaseModel):
+    owner_email: EmailStr
+    otp: str = Field(min_length=4, max_length=10)
+
+
 class LoginRequest(BaseModel):
     school_code: str = Field(min_length=2, max_length=40)
     login_id: str | None = Field(default=None, min_length=1, max_length=255)
@@ -59,6 +71,13 @@ class ForgotPasswordResponse(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str = Field(min_length=20)
     new_password: str = Field(min_length=6, max_length=72)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password_bytes(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Password must be 72 bytes or less")
+        return value
 
 
 class SchoolPublic(BaseModel):

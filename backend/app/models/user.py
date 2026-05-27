@@ -23,6 +23,9 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     school_id: Mapped[int | None] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), nullable=True, index=True)
     full_name: Mapped[str] = mapped_column(String(150), nullable=False)
+
+    chat_sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
+
     email: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
     login_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)

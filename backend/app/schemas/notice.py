@@ -107,7 +107,7 @@ class NoticeCreate(BaseModel):
     content: Annotated[str, Field(min_length=1)]
     enhance: bool = False
     priority: NoticePriority = NoticePriority.NORMAL
-    status: NoticeStatus = NoticeStatus.DRAFT
+    status: NoticeStatus = NoticeStatus.PUBLISHED
     publish_at: datetime | None = None
     expires_at: datetime | None = None
     audience_roles: list[UserRole] = []

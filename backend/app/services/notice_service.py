@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import delete, func, select
@@ -10,6 +10,7 @@ from app.core.config import MODEL
 from app.models.notice import Notice, NoticeAudience, NoticeRead, NoticeStatus
 from app.models.user import User, UserRole
 from app.schemas.notice import NoticeCreate, NoticeListOut, NoticeOut, NoticeUpdate, NoticePriority
+
 
 # Roles allowed to create/manage notices
 NOTICE_MANAGER_ROLES = {
@@ -111,12 +112,13 @@ async def list_notices(
     skip: int = 0,
     limit: int = 20,
     status_filter: NoticeStatus | None = None,
-    prioriy_filter: NoticePriority | None = None,
+    priority_filter: NoticePriority | None = None,
     pinned_only: bool = False,
     exclude_self: bool = False,
     created_by_self: bool = False,
+    unread_only: bool = False
 ) -> NoticeListOut:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc) 
 
     base_query = (
         select(Notice)
@@ -139,16 +141,22 @@ async def list_notices(
     if status_filter:
         base_query = base_query.where(Notice.status == status_filter.value)
 
-    if prioriy_filter:
-        base_query = base_query.where(Notice.priority == prioriy_filter.value)
+    if priority_filter:
+        base_query = base_query.where(Notice.priority == priority_filter.value)
 
-    else:
-        if not _can_manage(current_user):
-            base_query = base_query.where(
-                Notice.status == NoticeStatus.PUBLISHED.value,
-                (Notice.publish_at.is_(None)) | (Notice.publish_at <= now),
-                (Notice.expires_at.is_(None)) | (Notice.expires_at > now),
-            )
+    if unread_only:
+        base_query = base_query.outerjoin(
+            NoticeRead,
+            (NoticeRead.notice_id == Notice.id) & (NoticeRead.user_id == current_user.id)
+        ).where(NoticeRead.id.is_(None))
+
+
+    if current_user.role not in ADMIN_VIEWER_ROLES and not created_by_self:
+        base_query = base_query.where(
+            Notice.status == NoticeStatus.PUBLISHED.value,
+            (Notice.publish_at.is_(None)) | (Notice.publish_at <= now),
+            (Notice.expires_at.is_(None)) | (Notice.expires_at > now),
+        )
 
     if pinned_only:
         base_query = base_query.where(Notice.is_pinned == True)
@@ -189,6 +197,8 @@ async def list_notices(
             Notice.school_id == current_user.school_id,
             Notice.status == NoticeStatus.PUBLISHED.value,
             (Notice.expires_at.is_(None)) | (Notice.expires_at > now),
+            (Notice.publish_at.is_(None)) | (Notice.publish_at
+  <= now),
             NoticeRead.id.is_(None),
             Notice.created_by != current_user.id,
         )

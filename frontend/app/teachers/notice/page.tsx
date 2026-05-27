@@ -317,8 +317,12 @@ function NoticeForm({
         content: form.content,
         priority: form.priority,
         status: form.status,
-        publish_at: form.publish_at || null,
-        expires_at: form.expires_at || null,
+        publish_at: form.publish_at
+          ? new Date(form.publish_at).toISOString()
+          : null,
+        expires_at: form.expires_at
+          ? new Date(form.expires_at).toISOString()
+          : null,
         audience_roles: form.audience_roles,
         enhance: form.enhance,
       };
@@ -923,6 +927,7 @@ export default function TeacherNotice() {
           unread_count: Math.max(0, prev.unread_count - 1),
         };
       });
+      setViewingReceived((prev) => (prev ? { ...prev, is_read: true } : null));
     } catch (e: any) {
       console.error("Failed to mark as read:", e.message);
     }

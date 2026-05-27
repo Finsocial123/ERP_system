@@ -66,9 +66,10 @@ async def list_notices(
     current_user: User = Depends(get_current_user),
     exclude_self: bool = Query(False),
     created_by_self: bool = Query(False),
+    unread_only: bool = Query(False),
 ):
     return await notice_service.list_notices(
-        db, current_user, skip, limit, status, priority, pinned_only, exclude_self, created_by_self
+        db, current_user, skip, limit, status, priority, pinned_only, exclude_self, created_by_self,  unread_only=unread_only
     )
 
 

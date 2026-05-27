@@ -93,15 +93,26 @@ function fmtDatetimeLocal(dt: string | null) {
   return d.toISOString().slice(0, 16);
 }
 
-function emptyForm() {
+interface NoticeFormState {
+  title: string;
+  content: string;
+  priority: NoticePriority;
+  status: NoticeStatus;
+  publish_at: string;
+  expires_at: string;
+  audience_roles: AudienceRole[];
+  enhance: boolean;
+}
+
+function emptyForm(): NoticeFormState {
   return {
     title: "",
     content: "",
-    priority: "NORMAL" as NoticePriority,
-    status: "DRAFT" as NoticeStatus,
+    priority: "NORMAL",
+    status: "DRAFT",
     publish_at: "",
     expires_at: "",
-    audience_roles: ["STUDENT"] as AudienceRole[],
+    audience_roles: ["STUDENT"],
     enhance: false,
   };
 }
@@ -266,7 +277,7 @@ function NoticeForm({
   onSave: () => void;
   onClose: () => void;
 }) {
-  const [form, setForm] = useState(() => {
+  const [form, setForm] = useState<NoticeFormState>(() => {
     if (initial) {
       return {
         title: initial.title,
@@ -283,6 +294,7 @@ function NoticeForm({
     }
     return emptyForm();
   });
+
   const [showAI, setShowAI] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -305,16 +317,22 @@ function NoticeForm({
     setError("");
     setLoading(true);
     try {
-      const body = {
+      const body: Record<string, any> = {
         title: form.title,
         content: form.content,
         priority: form.priority,
         status: form.status,
-        publish_at: form.publish_at || null,
-        expires_at: form.expires_at || null,
+        publish_at: form.publish_at
+          ? new Date(form.publish_at).toISOString()
+          : null,
+        expires_at: form.expires_at
+          ? new Date(form.expires_at).toISOString()
+          : null,
         audience_roles: form.audience_roles,
-        enhance: form.enhance,
       };
+      if (!initial) {
+        body.enhance = form.enhance;
+      }
       if (initial) {
         await apiFetch(`/notices/${initial.id}`, {
           method: "PATCH",
@@ -548,6 +566,14 @@ function NoticeCard({
             <h3 className="font-semibold text-slate-800 truncate">
               {notice.title}
             </h3>
+
+            {notice.status === "PUBLISHED" &&
+              notice.publish_at &&
+              new Date(notice.publish_at) > new Date() && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 font-medium">
+                  Scheduled
+                </span>
+              )}
             <p className="text-xs text-slate-400 mt-0.5">
               {notice.author?.full_name ?? "Unknown"} · {fmt(notice.created_at)}
             </p>
@@ -675,6 +701,13 @@ function NoticeViewModal({
           <div>
             <span className="text-slate-400 text-xs">Expires at</span>
             <p className="text-slate-700">{fmt(notice.expires_at)}</p>
+          </div>
+          <div>
+            <span className="text-slate-400 text-xs">Read by</span>
+            <p className="text-slate-700">
+              {notice.read_count}{" "}
+              {notice.read_count === 1 ? "person" : "people"}
+            </p>
           </div>
         </div>
 

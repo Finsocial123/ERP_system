@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.client import client
-from app.core.config import MODEL
+from app.core.config import settings
 from app.models.course import Course
 from app.models.lesson import Lesson
 from app.schemas.curriculum import CurriculumPlan, CurriculumRequest
@@ -14,7 +14,7 @@ from app.instructions import CURRICULUM_PROMPT
 
 async def generate_curriculum(request: CurriculumRequest) -> CurriculumPlan:
     response = await client.chat.completions.create(
-        model=MODEL,
+        model=settings.MODEL,
         messages=[
             {
                 "role": "system",

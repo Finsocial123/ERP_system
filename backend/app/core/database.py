@@ -51,3 +51,7 @@ AsyncSessionLocal = async_sessionmaker(
 async def get_async_db():
     async with AsyncSessionLocal() as db:
         yield db
+
+
+async def get_session_factory():
+    return AsyncSessionLocal

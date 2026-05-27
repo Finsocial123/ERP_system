@@ -287,16 +287,12 @@ export default function StudentNotices() {
         status: "PUBLISHED",
         pinned_only: "false",
       });
+
       if (priorityFilter) params.set("priority", priorityFilter);
+      if (showUnreadOnly) params.set("unread_only", "true");
 
       const result = await apiFetch<NoticeListOut>(`/notices/?${params}`);
-
-      if (showUnreadOnly) {
-        const unreadItems = result.items.filter((n) => !n.is_read);
-        setData({ ...result, items: unreadItems, total: unreadItems.length });
-      } else {
-        setData(result);
-      }
+      setData(result);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -325,6 +321,7 @@ export default function StudentNotices() {
           unread_count: Math.max(0, prev.unread_count - 1),
         };
       });
+      setViewing((prev) => (prev ? { ...prev, is_read: true } : null));
     } catch (e: any) {
       console.error("Failed to mark as read:", e.message);
     }

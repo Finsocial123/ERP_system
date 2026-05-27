@@ -86,7 +86,7 @@ function fmtTime(dt: string | null) {
   });
 }
 
-// Modal
+//modal
 
 function Modal({
   title,
@@ -119,7 +119,7 @@ function Modal({
   );
 }
 
-// Notice Card
+//notice card
 
 function NoticeCard({
   notice,
@@ -188,7 +188,7 @@ function NoticeCard({
   );
 }
 
-//Notice Modal
+//notice modal
 
 function NoticeViewModal({
   notice,
@@ -265,9 +265,9 @@ function NoticeViewModal({
   );
 }
 
-// Main
+// main
 
-export default function StudentNotices() {
+export default function ParentNotices() {
   const [data, setData] = useState<NoticeListOut | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -287,16 +287,12 @@ export default function StudentNotices() {
         status: "PUBLISHED",
         pinned_only: "false",
       });
+
       if (priorityFilter) params.set("priority", priorityFilter);
+      if (showUnreadOnly) params.set("unread_only", "true");
 
       const result = await apiFetch<NoticeListOut>(`/notices/?${params}`);
-
-      if (showUnreadOnly) {
-        const unreadItems = result.items.filter((n) => !n.is_read);
-        setData({ ...result, items: unreadItems, total: unreadItems.length });
-      } else {
-        setData(result);
-      }
+      setData(result);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -325,6 +321,7 @@ export default function StudentNotices() {
           unread_count: Math.max(0, prev.unread_count - 1),
         };
       });
+      setViewing((prev) => (prev ? { ...prev, is_read: true } : null));
     } catch (e: any) {
       console.error("Failed to mark as read:", e.message);
     }
@@ -410,7 +407,6 @@ export default function StudentNotices() {
           </label>
         </div>
 
-        {/* Content */}
         {loading && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             {Array.from({ length: 6 }).map((_, i) => (

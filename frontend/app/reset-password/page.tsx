@@ -43,8 +43,9 @@ export default function ResetPasswordPage() {
       <Card className="w-full max-w-md">
         <p className="text-sm font-semibold uppercase tracking-wide text-slate-400">School ERP</p>
         <h1 className="text-2xl font-bold text-slate-900">Reset Password</h1>
+        <p className="mt-1 text-sm text-slate-500">Use the secure reset link sent to your registered email.</p>
         <form onSubmit={submit} className="mt-6 space-y-4">
-          <div><Label>Reset Token</Label><Input value={token} onChange={(e) => setToken(e.target.value)} required /></div>
+          <div><Label>Reset Link Token</Label><Input value={token} onChange={(e) => setToken(e.target.value)} required /></div>
           <div><Label>New Password</Label><Input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={6} /></div>
           <div><Label>Confirm New Password</Label><Input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required minLength={6} /></div>
           {error && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}

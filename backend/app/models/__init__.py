@@ -6,6 +6,7 @@ from app.models.exam import Exam, ExamSubject, ExamMark
 from app.models.fee import FeeAssignment, FeeCategory, FeeExpense, FeePayment, FeeStructure, StudentFeeRecord
 from app.models.school import School
 from app.models.user import User
+from app.models.verification import PendingSchoolRegistration
 from app.models.communication import (
     Announcement,
     Circular,
@@ -19,6 +20,7 @@ from app.models.communication import (
 __all__ = [
     "School",
     "User",
+    "PendingSchoolRegistration",
     "AcademicSession",
     "Department",
     "SchoolClass",

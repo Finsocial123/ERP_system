@@ -306,19 +306,39 @@ def attendance_summary(
         q = q.filter(Student.section_id == section_id)
     students = q.order_by(Student.first_name).all()
 
+    student_ids = [s.id for s in students]
+    if not student_ids:
+        return []
+
+    # fetch ALL attendance records for ALL students in one query
+    from sqlalchemy import case as _case, func as _func
+    agg_rows = (
+        db.query(
+            StudentAttendance.student_id,
+            _func.count(StudentAttendance.id).label("total"),
+            _func.sum(_case((StudentAttendance.status == AttendanceStatus.PRESENT.value,  1), else_=0)).label("present"),
+            _func.sum(_case((StudentAttendance.status == AttendanceStatus.ABSENT.value,   1), else_=0)).label("absent"),
+            _func.sum(_case((StudentAttendance.status == AttendanceStatus.LEAVE.value,    1), else_=0)).label("leave"),
+            _func.sum(_case((StudentAttendance.status == AttendanceStatus.HALF_DAY.value, 1), else_=0)).label("half_day"),
+        )
+        .filter(
+            StudentAttendance.school_id == school_id,
+            StudentAttendance.student_id.in_(student_ids),
+            StudentAttendance.session_id == session_id,
+        )
+        .group_by(StudentAttendance.student_id)
+        .all()
+    )
+    agg_map = {row.student_id: row for row in agg_rows}
+
     summaries = []
     for s in students:
-        records = db.query(StudentAttendance).filter(
-            StudentAttendance.school_id == school_id,
-            StudentAttendance.student_id == s.id,
-            StudentAttendance.session_id == session_id,
-        ).all()
-
-        total    = len(records)
-        present  = sum(1 for r in records if r.status == AttendanceStatus.PRESENT.value)
-        absent   = sum(1 for r in records if r.status == AttendanceStatus.ABSENT.value)
-        leave    = sum(1 for r in records if r.status == AttendanceStatus.LEAVE.value)
-        half_day = sum(1 for r in records if r.status == AttendanceStatus.HALF_DAY.value)
+        row = agg_map.get(s.id)
+        total    = int(row.total    or 0) if row else 0
+        present  = int(row.present  or 0) if row else 0
+        absent   = int(row.absent   or 0) if row else 0
+        leave    = int(row.leave    or 0) if row else 0
+        half_day = int(row.half_day or 0) if row else 0
         effective = present + (half_day * 0.5)
         percentage = round((effective / total * 100), 1) if total > 0 else 0.0
 

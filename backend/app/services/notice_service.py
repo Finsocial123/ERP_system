@@ -10,6 +10,7 @@ from app.core.config import MODEL
 from app.models.notice import Notice, NoticeAudience, NoticeRead, NoticeStatus
 from app.models.user import User, UserRole
 from app.schemas.notice import NoticeCreate, NoticeListOut, NoticeOut, NoticeUpdate, NoticePriority
+from sqlalchemy.dialects.postgresql import insert
 
 
 # Roles allowed to create/manage notices
@@ -295,20 +296,28 @@ async def pin_notice(
     return result.scalar_one()
 
 async def mark_read(
-    db: AsyncSession, notice_id: int, current_user: User
+    db: AsyncSession,
+    notice_id: int,
+    current_user: User,
 ) -> dict:
-    """Idempotent — calling twice is safe."""
-    existing = await db.execute(
-        select(NoticeRead).where(
-            NoticeRead.notice_id == notice_id,
-            NoticeRead.user_id == current_user.id,
+    stmt = (
+        insert(NoticeRead)
+        .values(
+            notice_id=notice_id,
+            user_id=current_user.id,
+        )
+        .on_conflict_do_nothing(
+            index_elements=["notice_id", "user_id"]
         )
     )
-    if existing.scalar_one_or_none() is None:
-        db.add(NoticeRead(notice_id=notice_id, user_id=current_user.id))
-        await db.commit()
-    return {"notice_id": notice_id, "read": True}
 
+    await db.execute(stmt)
+    await db.commit()
+
+    return {
+        "notice_id": notice_id,
+        "read": True,
+    }
 
 async def delete_notice(
     db: AsyncSession, notice_id: int, current_user: User

@@ -6,7 +6,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
@@ -95,11 +95,13 @@ def _student_for_user(db: Session, school_id: int, user: User) -> Student | None
 
 
 def _children_for_parent(db: Session, school_id: int, user: User) -> list[Student]:
-    conditions = [ParentGuardian.user_id == user.id]
+    conditions = []
     if user.email:
         conditions.append(ParentGuardian.email == user.email)
     if user.phone:
         conditions.append(ParentGuardian.phone == user.phone)
+    if not conditions:
+        return []
 
     guardians = (
         db.query(ParentGuardian)
@@ -113,7 +115,7 @@ def _children_for_parent(db: Session, school_id: int, user: User) -> list[Studen
     return (
         db.query(Student)
         .filter(Student.school_id == school_id, Student.guardian_id.in_(guardian_ids), Student.is_active.is_(True))
-        .order_by(Student.first_name.asc())
+        .order_by(Student.id.desc())
         .all()
     )
 
@@ -158,25 +160,23 @@ def _student_query_for_assignment(db: Session, assignment: HomeworkAssignment):
 
 def _assignment_stats(db: Session, assignment: HomeworkAssignment) -> HomeworkStats:
     total_students = _student_query_for_assignment(db, assignment).count()
-    submitted = (
-        db.query(HomeworkSubmission)
+    # single query for all submission counts instead of one per status
+    from sqlalchemy import case, func as _func
+    counts = (
+        db.query(
+            _func.count(HomeworkSubmission.id).label("total"),
+            _func.sum(case((HomeworkSubmission.status == "SUBMITTED", 1), else_=0)).label("submitted"),
+            _func.sum(case((HomeworkSubmission.status == "CHECKED", 1), else_=0)).label("checked"),
+        )
         .filter(
             HomeworkSubmission.school_id == assignment.school_id,
             HomeworkSubmission.homework_id == assignment.id,
-            HomeworkSubmission.status == "SUBMITTED",
         )
-        .count()
+        .first()
     )
-    checked = (
-        db.query(HomeworkSubmission)
-        .filter(
-            HomeworkSubmission.school_id == assignment.school_id,
-            HomeworkSubmission.homework_id == assignment.id,
-            HomeworkSubmission.status == "CHECKED",
-        )
-        .count()
-    )
-    pending = max(total_students - submitted - checked, 0)
+    submitted = int(counts.submitted or 0)
+    checked   = int(counts.checked or 0)
+    pending   = max(total_students - submitted - checked, 0)
     return HomeworkStats(total_students=total_students, pending=pending, submitted=submitted, checked=checked)
 
 
@@ -352,7 +352,17 @@ def list_assignments(
         like = f"%{search.strip()}%"
         query = query.filter(or_(HomeworkAssignment.title.ilike(like), HomeworkAssignment.description.ilike(like)))
 
-    assignments = query.order_by(HomeworkAssignment.created_at.desc()).all()
+    assignments = (
+        query
+        .options(
+            joinedload(HomeworkAssignment.school_class),
+            joinedload(HomeworkAssignment.section),
+            joinedload(HomeworkAssignment.subject),
+            joinedload(HomeworkAssignment.teacher),
+        )
+        .order_by(HomeworkAssignment.created_at.desc())
+        .all()
+    )
     return [_assignment_payload(db, assignment) for assignment in assignments]
 
 
@@ -507,14 +517,52 @@ def list_student_homework(
     if not student:
         return []
 
-    query = db.query(HomeworkAssignment).filter(
-        HomeworkAssignment.school_id == school_id,
-        HomeworkAssignment.class_id == student.class_id,
-        HomeworkAssignment.is_active.is_(True),
-        or_(HomeworkAssignment.section_id.is_(None), HomeworkAssignment.section_id == student.section_id),
+    assignments = (
+        db.query(HomeworkAssignment)
+        .options(
+            joinedload(HomeworkAssignment.school_class),
+            joinedload(HomeworkAssignment.section),
+            joinedload(HomeworkAssignment.subject),
+            joinedload(HomeworkAssignment.teacher),
+        )
+        .filter(
+            HomeworkAssignment.school_id == school_id,
+            HomeworkAssignment.class_id == student.class_id,
+            HomeworkAssignment.is_active.is_(True),
+            or_(HomeworkAssignment.section_id.is_(None), HomeworkAssignment.section_id == student.section_id),
+        )
+        .order_by(HomeworkAssignment.due_date.asc(), HomeworkAssignment.created_at.desc())
+        .all()
     )
-    assignments = query.order_by(HomeworkAssignment.due_date.asc(), HomeworkAssignment.created_at.desc()).all()
-    rows = [_student_homework_payload(db, assignment, student) for assignment in assignments]
+    # pre-fetch all submissions for this student in one query
+    assignment_ids = [a.id for a in assignments]
+    submissions_map = {}
+    if assignment_ids:
+        submissions_map = {
+            s.homework_id: s
+            for s in db.query(HomeworkSubmission).filter(
+                HomeworkSubmission.school_id == school_id,
+                HomeworkSubmission.student_id == student.id,
+                HomeworkSubmission.homework_id.in_(assignment_ids),
+            ).all()
+        }
+
+    rows = []
+    for assignment in assignments:
+        submission = submissions_map.get(assignment.id)
+        base = _assignment_payload(db, assignment).model_dump()
+        row = StudentHomeworkRead(
+            **base,
+            submission_id=submission.id if submission else None,
+            submission_status=submission.status if submission else "PENDING",
+            submitted_at=submission.created_at if submission else None,
+            answer_text=submission.answer_text if submission else None,
+            submission_attachment_url=submission.attachment_url if submission else None,
+            submission_attachment_filename=submission.attachment_filename if submission else None,
+            teacher_feedback=submission.teacher_feedback if submission else None,
+            checked_at=submission.checked_at if submission else None,
+        )
+        rows.append(row)
     if status_filter:
         rows = [row for row in rows if row.submission_status == status_filter.upper()]
     return rows

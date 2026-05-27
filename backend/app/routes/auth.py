@@ -1,17 +1,27 @@
 from datetime import datetime, timedelta
 import hashlib
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import create_access_token, get_password_hash, verify_password
-from app.core.utils import build_school_code, generate_reset_token, normalize_login_id, normalize_school_code, slugify
+from app.core.utils import (
+    build_school_code,
+    generate_numeric_otp,
+    generate_reset_token,
+    normalize_login_id,
+    normalize_school_code,
+    slugify,
+)
 from app.dependencies.auth import get_current_user
 from app.models.school import School
 from app.models.user import User, UserRole
+from app.models.verification import PendingSchoolRegistration
 from app.schemas.auth import (
     AuthResponse,
     ChangePasswordRequest,
@@ -20,13 +30,16 @@ from app.schemas.auth import (
     LoginRequest,
     ResetPasswordRequest,
     SchoolRegisterRequest,
+    SchoolRegistrationOtpResponse,
+    SchoolRegistrationVerifyRequest,
 )
 from app.schemas.common import MessageResponse
+from app.utils.email import EmailNotConfiguredError, send_password_reset_email, send_school_registration_otp_email
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 GENERIC_LOGIN_ERROR = "Invalid school code, login ID, or password"
-GENERIC_RESET_MESSAGE = "If this account exists, password reset instructions have been generated."
+GENERIC_RESET_MESSAGE = "If this account exists, password reset instructions have been sent to the registered email."
 LOGIN_ROLE_GROUPS = {
     "ADMIN": {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value},
     "TEACHER": {UserRole.TEACHER.value},
@@ -35,8 +48,12 @@ LOGIN_ROLE_GROUPS = {
 }
 
 
+def _hash_value(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 def _hash_reset_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return _hash_value(token)
 
 
 def _school_by_code(db: Session, code: str) -> School | None:
@@ -73,8 +90,16 @@ def _find_user_for_login(db: Session, school_id: int, login_id: str) -> User | N
     )
 
 
-@router.post("/register-school", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-def register_school(payload: SchoolRegisterRequest, db: Session = Depends(get_db)):
+def _find_pending_registration(db: Session, owner_email: str) -> PendingSchoolRegistration | None:
+    return (
+        db.query(PendingSchoolRegistration)
+        .filter(PendingSchoolRegistration.owner_email == owner_email.lower())
+        .order_by(PendingSchoolRegistration.id.desc())
+        .first()
+    )
+
+
+def _create_school_and_owner(db: Session, payload: SchoolRegisterRequest) -> tuple[School, User]:
     owner_email = str(payload.owner_email).lower()
     existing_user = db.query(User).filter(User.email == owner_email).first()
     if existing_user:
@@ -115,12 +140,94 @@ def register_school(payload: SchoolRegisterRequest, db: Session = Depends(get_db
         must_change_password=False,
     )
     db.add(owner)
+    return school, owner
 
+
+def _build_reset_url(token: str) -> str:
+    frontend_base_url = settings.FRONTEND_BASE_URL.rstrip("/")
+    return f"{frontend_base_url}/reset-password?token={token}"
+
+
+@router.post("/register-school", response_model=SchoolRegistrationOtpResponse, status_code=status.HTTP_200_OK)
+def request_school_registration_otp(payload: SchoolRegisterRequest, db: Session = Depends(get_db)):
+    """Start school signup by sending an email OTP to the owner.
+
+    The school and owner user are created only after OTP verification succeeds.
+    """
+    owner_email = str(payload.owner_email).lower()
+    existing_user = db.query(User).filter(User.email == owner_email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Owner email is already registered")
+
+    if payload.school_code:
+        _generate_unique_school_code(db, payload.school_name, payload.school_code)
+
+    otp = generate_numeric_otp(6)
+    expires_at = datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
+
+    # Keep only the latest pending signup for this owner email.
+    db.query(PendingSchoolRegistration).filter(PendingSchoolRegistration.owner_email == owner_email).delete()
+    pending = PendingSchoolRegistration(
+        owner_email=owner_email,
+        otp_hash=_hash_value(otp),
+        payload_json=json.dumps(payload.model_dump(mode="json")),
+        expires_at=expires_at,
+        attempts=0,
+    )
+    db.add(pending)
+    db.commit()
+
+    message = "Verification OTP sent to owner email."
     try:
+        send_school_registration_otp_email(owner_email, otp, payload.school_name)
+    except EmailNotConfiguredError as exc:
+        if not settings.EMAIL_OTP_DEBUG:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        message = "OTP generated in debug mode. Configure SMTP in backend/.env to send real email."
+    except Exception as exc:  # noqa: BLE001 - return a clear setup error for local dev
+        if not settings.EMAIL_OTP_DEBUG:
+            raise HTTPException(status_code=500, detail="Failed to send verification email") from exc
+        message = "OTP generated in debug mode, but email sending failed. Check SMTP settings."
+
+    return SchoolRegistrationOtpResponse(
+        message=message,
+        owner_email=owner_email,
+        expires_in_minutes=settings.OTP_EXPIRE_MINUTES,
+        debug_otp=otp if settings.EMAIL_OTP_DEBUG else None,
+    )
+
+
+@router.post("/verify-school-registration", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+def verify_school_registration(payload: SchoolRegistrationVerifyRequest, db: Session = Depends(get_db)):
+    owner_email = str(payload.owner_email).lower()
+    pending = _find_pending_registration(db, owner_email)
+    if not pending:
+        raise HTTPException(status_code=400, detail="No pending school registration found for this email")
+
+    if pending.expires_at < datetime.utcnow():
+        db.delete(pending)
         db.commit()
-    except IntegrityError:
+        raise HTTPException(status_code=400, detail="OTP expired. Please register again to receive a new OTP.")
+
+    if pending.attempts >= settings.OTP_MAX_ATTEMPTS:
+        db.delete(pending)
+        db.commit()
+        raise HTTPException(status_code=400, detail="Too many invalid OTP attempts. Please register again.")
+
+    if pending.otp_hash != _hash_value(payload.otp.strip()):
+        pending.attempts += 1
+        db.commit()
+        remaining = max(settings.OTP_MAX_ATTEMPTS - pending.attempts, 0)
+        raise HTTPException(status_code=400, detail=f"Invalid OTP. {remaining} attempt(s) left.")
+
+    registration_payload = SchoolRegisterRequest(**json.loads(pending.payload_json))
+    try:
+        school, owner = _create_school_and_owner(db, registration_payload)
+        db.delete(pending)
+        db.commit()
+    except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=400, detail="School or owner already exists")
+        raise HTTPException(status_code=400, detail="School or owner already exists") from exc
 
     db.refresh(owner)
     db.refresh(school)
@@ -185,21 +292,30 @@ def change_password(payload: ChangePasswordRequest, current_user: User = Depends
 def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
     school = _school_by_code(db, payload.school_code)
     token: str | None = None
+    reset_url: str | None = None
 
     if school:
         user = _find_user_for_login(db, school.id, payload.login_id)
         if user and user.is_active:
             token = generate_reset_token()
+            reset_url = _build_reset_url(token)
             user.password_reset_token_hash = _hash_reset_token(token)
-            user.password_reset_expires_at = datetime.utcnow() + timedelta(minutes=30)
+            user.password_reset_expires_at = datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
             db.commit()
 
-    # In production you would email/SMS this token. For local development we return
-    # it so the feature can be tested without SMTP setup.
+            try:
+                send_password_reset_email(user.email, reset_url, user.full_name)
+            except EmailNotConfiguredError as exc:
+                if not settings.EMAIL_OTP_DEBUG:
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+            except Exception as exc:  # noqa: BLE001
+                if not settings.EMAIL_OTP_DEBUG:
+                    raise HTTPException(status_code=500, detail="Failed to send password reset email") from exc
+
     return ForgotPasswordResponse(
         message=GENERIC_RESET_MESSAGE,
-        reset_token=token,
-        reset_url=f"/reset-password?token={token}" if token else None,
+        reset_token=token if settings.EMAIL_OTP_DEBUG else None,
+        reset_url=reset_url if settings.EMAIL_OTP_DEBUG else None,
     )
 
 
@@ -208,7 +324,7 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
     token_hash = _hash_reset_token(payload.token)
     user = db.query(User).filter(User.password_reset_token_hash == token_hash).first()
     if not user or not user.password_reset_expires_at or user.password_reset_expires_at < datetime.utcnow():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset link")
 
     user.hashed_password = get_password_hash(payload.new_password)
     user.must_change_password = False

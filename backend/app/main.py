@@ -34,6 +34,7 @@ from app.models import (  # noqa: F401
     Teacher,
     TeacherSubject,
     User,
+    PendingSchoolRegistration,
     Announcement,
     Circular,
     Complaint,

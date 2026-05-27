@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, or_, func
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.dependencies.auth import current_school_id, get_current_user, require_school_admin
@@ -123,11 +123,13 @@ def _student_for_user(db: Session, school_id: int, user: User) -> Student | None
 
 
 def _children_for_parent(db: Session, school_id: int, user: User) -> list[Student]:
-    conditions = [ParentGuardian.user_id == user.id]
+    conditions = []
     if user.email:
         conditions.append(ParentGuardian.email == user.email)
     if user.phone:
         conditions.append(ParentGuardian.phone == user.phone)
+    if not conditions:
+        return []
 
     guardians = (
         db.query(ParentGuardian)
@@ -403,7 +405,20 @@ def list_entries(
         query = query.filter(TimetableEntry.teacher_id == teacher_id)
     if academic_session_id is not None:
         query = query.filter(TimetableEntry.academic_session_id == academic_session_id)
-    return [_entry_payload(entry) for entry in _ordered_entries(query).all()]
+    entries = (
+        _ordered_entries(query)
+        .options(
+            joinedload(TimetableEntry.school_class),
+            joinedload(TimetableEntry.section),
+            joinedload(TimetableEntry.day),
+            joinedload(TimetableEntry.period),
+            joinedload(TimetableEntry.subject),
+            joinedload(TimetableEntry.teacher),
+            joinedload(TimetableEntry.academic_session),
+        )
+        .all()
+    )
+    return [_entry_payload(entry) for entry in entries]
 
 
 @router.post("/entries", response_model=TimetableEntryRead, status_code=status.HTTP_201_CREATED)
@@ -485,7 +500,20 @@ def view_by_class(
     title = f"{school_class.name}{' - ' + section.name if section else ''} Timetable"
     periods = db.query(TimetablePeriod).filter(TimetablePeriod.school_id == school_id, TimetablePeriod.is_active.is_(True)).order_by(TimetablePeriod.period_number.asc()).all()
     days = db.query(TimetableDay).filter(TimetableDay.school_id == school_id, TimetableDay.is_active.is_(True)).order_by(TimetableDay.sort_order.asc()).all()
-    return TimetableGridResponse(mode="class", title=title, entries=[_entry_payload(entry) for entry in _ordered_entries(query).all()], periods=periods, days=days)
+    entries = (
+        _ordered_entries(query)
+        .options(
+            joinedload(TimetableEntry.school_class),
+            joinedload(TimetableEntry.section),
+            joinedload(TimetableEntry.day),
+            joinedload(TimetableEntry.period),
+            joinedload(TimetableEntry.subject),
+            joinedload(TimetableEntry.teacher),
+            joinedload(TimetableEntry.academic_session),
+        )
+        .all()
+    )
+    return TimetableGridResponse(mode="class", title=title, entries=[_entry_payload(e) for e in entries], periods=periods, days=days)
 
 
 @router.get("/view/teacher", response_model=TimetableGridResponse)
@@ -502,7 +530,20 @@ def view_by_teacher(
         query = query.filter(TimetableEntry.academic_session_id == academic_session_id)
     periods = db.query(TimetablePeriod).filter(TimetablePeriod.school_id == school_id, TimetablePeriod.is_active.is_(True)).order_by(TimetablePeriod.period_number.asc()).all()
     days = db.query(TimetableDay).filter(TimetableDay.school_id == school_id, TimetableDay.is_active.is_(True)).order_by(TimetableDay.sort_order.asc()).all()
-    return TimetableGridResponse(mode="teacher", title=f"{teacher.full_name} Timetable", entries=[_entry_payload(entry) for entry in _ordered_entries(query).all()], periods=periods, days=days)
+    entries = (
+        _ordered_entries(query)
+        .options(
+            joinedload(TimetableEntry.school_class),
+            joinedload(TimetableEntry.section),
+            joinedload(TimetableEntry.day),
+            joinedload(TimetableEntry.period),
+            joinedload(TimetableEntry.subject),
+            joinedload(TimetableEntry.teacher),
+            joinedload(TimetableEntry.academic_session),
+        )
+        .all()
+    )
+    return TimetableGridResponse(mode="teacher", title=f"{teacher.full_name} Timetable", entries=[_entry_payload(e) for e in entries], periods=periods, days=days)
 
 
 @router.get("/my-teacher", response_model=TimetableGridResponse)

@@ -8,8 +8,13 @@ from app.core.config import settings
 # sync engine
 engine = create_engine(
     settings.DATABASE_URL,
-    pool_pre_ping=True
+    pool_pre_ping=True,
+    pool_size=20,
+    max_overflow=10,
+    pool_recycle=3600,
+    echo=False,
 )
+
 
 SessionLocal = sessionmaker(
     autocommit=False,

@@ -40,3 +40,7 @@ def generate_temporary_password(length: int = 10) -> str:
 
 def generate_reset_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def generate_numeric_otp(length: int = 6) -> str:
+    return "".join(secrets.choice(string.digits) for _ in range(length))

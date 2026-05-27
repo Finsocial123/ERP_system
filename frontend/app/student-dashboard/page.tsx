@@ -6,7 +6,7 @@ export default function StudentDashboardPage() {
   return (
     <AppShell>
       <RoleDashboard />
-      <NoticeWidget />
+      {/* <NoticeWidget /> */}
     </AppShell>
   );
 }

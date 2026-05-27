@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getSavedAuth } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 type NoticePriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
@@ -36,6 +36,18 @@ const PRIORITY_ICONS: Record<NoticePriority, string> = {
   HIGH: "",
   URGENT: "",
 };
+
+const ADMIN_ROLES = ["SUPER_ADMIN", "SCHOOL_OWNER", "SCHOOL_ADMIN"];
+
+function noticePathForCurrentRole() {
+  const role = getSavedAuth()?.user?.role;
+
+  if (role === "TEACHER") return "/teachers/notice";
+  if (role === "PARENT") return "/parents/notice";
+  if (ADMIN_ROLES.includes(role ?? "")) return "/setup/notice";
+
+  return "/students/notice";
+}
 
 function fmt(dt: string) {
   const date = new Date(dt);
@@ -135,7 +147,7 @@ export default function NoticeWidget() {
           )}
         </div>
         <button
-          onClick={() => router.push("/students/notice")}
+          onClick={() => router.push(noticePathForCurrentRole())}
           className="text-sm text-blue-600 hover:text-blue-700 font-medium"
         >
           View all →
@@ -148,7 +160,7 @@ export default function NoticeWidget() {
             key={notice.id}
             onClick={() => {
               handleMarkRead(notice.id);
-              router.push("/student-dashboard/notices");
+              router.push(noticePathForCurrentRole());
             }}
             className={`group p-3 rounded-xl border cursor-pointer transition-all hover:shadow-md ${
               notice.is_read
@@ -192,7 +204,7 @@ export default function NoticeWidget() {
 
       {data.total > 5 && (
         <button
-          onClick={() => router.push("/students/notices")}
+          onClick={() => router.push(noticePathForCurrentRole())}
           className="w-full mt-3 py-2 text-sm text-slate-600 hover:text-slate-800 font-medium border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors"
         >
           See {data.total - 5} more notices

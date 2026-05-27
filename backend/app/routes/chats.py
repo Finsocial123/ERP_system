@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Annotated
 import uuid
 
@@ -8,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import settings
 from app.instructions import get_system_prompt
-from app.core.database import get_async_db, get_db, get_session_factory
+from app.core.database import get_async_db, get_session_factory
 from app.client import client
 from app.services.rag import retrieve_context
 from app.instructions import RAG_PROMPT_TEMPLATE
@@ -16,19 +17,40 @@ from app.services.context_manager import trim_history
 from app.services.tools.definitions import TOOLS
 from app.services.tools.executor import execute_tool
 from app.schemas.chats import ChatRequest
-from app import models
 from app.models.chats import ChatMessage, ChatRole, ChatSession
-from app.models.user import User, UserRole
-from app.dependencies.auth import get_current_user, require_roles
+from app.models.user import User
+from app.dependencies.auth import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/sessions",
     tags=["Chats"]
 )
 
+
+async def _get_session_or_404(session_id: str, db: AsyncSession) -> ChatSession:
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+    session = result.scalars().first()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    return session
+
+
+async def _update_session_title(gen_db: AsyncSession, session_id: str, title: str) -> None:
+    stmt = select(ChatSession).where(ChatSession.id == session_id).with_for_update()
+    session_to_update = (await gen_db.execute(stmt)).scalars().first()
+    if session_to_update and session_to_update.title == "New Chat":
+        session_to_update.title = title[:60]
+
+
 # Creates new session
 @router.post("/{user_id}/sessions", status_code=201)
-async def create_session(user_id: int, db: Annotated[AsyncSession, Depends(get_async_db)], current_user: User = Depends(get_current_user)):
+async def create_session(
+    user_id: int,
+    db: Annotated[AsyncSession, Depends(get_async_db)],
+    current_user: User = Depends(get_current_user),
+):
     if user_id != current_user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your session")
 
@@ -45,7 +67,11 @@ async def create_session(user_id: int, db: Annotated[AsyncSession, Depends(get_a
 
 # Get all user sessions
 @router.get("/{user_id}/sessions")
-async def get_sessions(user_id: int, db: Annotated[AsyncSession, Depends(get_async_db)], current_user: User = Depends(get_current_user)):
+async def get_sessions(
+    user_id: int,
+    db: Annotated[AsyncSession, Depends(get_async_db)],
+    current_user: User = Depends(get_current_user),
+):
     if user_id != current_user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your session")
 
@@ -64,22 +90,14 @@ async def delete_session(
     db: Annotated[AsyncSession, Depends(get_async_db)],
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(ChatSession).where(ChatSession.id == session_id)
-    )
-    session = result.scalars().first()
-
-    if not session:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    session = await _get_session_or_404(session_id, db)
 
     if session.user_id != current_user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your session")
 
-    # Delete associated messages first
     await db.execute(
         ChatMessage.__table__.delete().where(ChatMessage.session_id == session_id)
     )
-
     await db.delete(session)
     await db.commit()
 
@@ -93,12 +111,8 @@ async def get_session_messages(
     db: Annotated[AsyncSession, Depends(get_async_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
-    result = await db.execute(
-        select(ChatSession).where(ChatSession.id == session_id)
-    )
-    session = result.scalars().first()
-    if not session:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+    session = await _get_session_or_404(session_id, db)
+
     if session.user_id != current_user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your session")
 
@@ -119,14 +133,10 @@ async def send_message_stream(
     session_factory: Annotated[async_sessionmaker, Depends(get_session_factory)],
     current_user: User = Depends(get_current_user),
 ):
-    print(request)
-    result = await db.execute(
-        select(ChatSession).where(ChatSession.id == session_id)
-    )
-    session = result.scalars().first()
+    if not request.content or not request.content.strip():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Message content cannot be empty")
 
-    if not session:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    session = await _get_session_or_404(session_id, db)
 
     if session.user_id != current_user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your session")
@@ -140,23 +150,29 @@ async def send_message_stream(
             yield f"data: {json.dumps({'status': 'done'})}\n\n"
         return StreamingResponse(redirect_generator(), media_type="text/event-stream")
 
-    if request.enhance_prompt:
-        enhance_response = await client.chat.completions.create(
-            model=settings.MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a prompt enhancer. Rewrite the student's questions to be clearer, more specific, and more detailed. Return ONLY the rewritten question, nothing else."
-                },
-                {
-                    "role": "user",
-                    "content": request.content
-                }
-            ],
-            stream=False
-        )
-        enhanced_content = enhance_response.choices[0].message.content.strip()
-    else:
+    try:
+        if request.enhance_prompt:
+            enhance_response = await client.chat.completions.create(
+                model=settings.MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a prompt enhancer. Rewrite the student's questions to be clearer, more specific, and more detailed. Return ONLY the rewritten question, nothing else."
+                    },
+                    {
+                        "role": "user",
+                        "content": request.content
+                    }
+                ],
+                stream=False
+            )
+            enhanced_content = enhance_response.choices[0].message.content.strip()
+            if not enhanced_content:
+                enhanced_content = request.content
+        else:
+            enhanced_content = request.content
+    except Exception as e:
+        logger.warning(f"Prompt enhancement failed, falling back to original: {e}")
         enhanced_content = request.content
 
     user_msg = ChatMessage(
@@ -172,20 +188,27 @@ async def send_message_stream(
     # RAG pipeline
     context = None
     if request.lesson_id is not None:
-        context = await retrieve_context(
-            query=enhanced_content,
-            db=db,
-            lesson_id=request.lesson_id,
-            top_k=6
-        )
-        user_content = RAG_PROMPT_TEMPLATE.format(
-            context=context,
-            query=enhanced_content
-        )
+        try:
+            context = await retrieve_context(
+                query=enhanced_content,
+                db=db,
+                lesson_id=request.lesson_id,
+                top_k=6
+            )
+        except Exception as e:
+            logger.error(f"RAG retrieval failed for lesson_id={request.lesson_id}: {e}")
+
+        if context:
+            user_content = RAG_PROMPT_TEMPLATE.format(
+                context=context,
+                query=enhanced_content
+            )
+        else:
+            user_content = enhanced_content
     else:
         user_content = enhanced_content
 
-    print("CONTEXT:", context[:200] if context else "NO CONTEXT — lesson_id was not provided")
+    logger.debug("CONTEXT: %s", str(context)[:200] if context else "NO CONTEXT — lesson_id was not provided")
 
     # Build history
     result = await db.execute(
@@ -225,17 +248,17 @@ async def send_message_stream(
 
     messages = [{"role": "system", "content": system_prompt}] + trimmed_history
 
-    print("MESSAGES:", json.dumps(messages, indent=2))
-
-    full_response = []
+    logger.debug("MESSAGES: %s", json.dumps(messages, indent=2))
 
     async def event_generator():
+        # prevent shared state across concurrent requests from different users
+        full_response = []
+
         async with session_factory() as gen_db:
             try:
                 if request.enhance_prompt:
                     yield f"data: {json.dumps({'enhanced_prompt': enhanced_content})}\n\n"
 
-                # Build tools list based on web search toggle
                 active_tools = TOOLS if request.web_search else []
 
                 first_response = await client.chat.completions.create(
@@ -306,13 +329,7 @@ async def send_message_stream(
                     )
                     gen_db.add(final_assistant_msg)
 
-                    stmt = select(ChatSession).where(
-                        ChatSession.id == session_id
-                    ).with_for_update()
-                    session_to_update = (await gen_db.execute(stmt)).scalars().first()
-                    if session_to_update and session_to_update.title == "New Chat":
-                        session_to_update.title = enhanced_content[:60]
-
+                    await _update_session_title(gen_db, session_id, enhanced_content)
                     await gen_db.commit()
 
                     yield f"data: {json.dumps({'status': 'done'})}\n\n"
@@ -338,20 +355,14 @@ async def send_message_stream(
                     )
                     gen_db.add(final_assistant_msg)
 
-                    stmt = select(ChatSession).where(
-                        ChatSession.id == session_id
-                    ).with_for_update()
-                    session_to_update = (await gen_db.execute(stmt)).scalars().first()
-                    if session_to_update and session_to_update.title == "New Chat":
-                        session_to_update.title = enhanced_content[:60]
-
+                    await _update_session_title(gen_db, session_id, enhanced_content)
                     await gen_db.commit()
 
                     yield f"data: {json.dumps({'status': 'done'})}\n\n"
 
             except Exception as e:
                 await gen_db.rollback()
-                print(f"[chat error] session={session_id} error={e}")
+                logger.error(f"[chat error] session={session_id} error={e}", exc_info=True)
                 yield f"data: {json.dumps({'error': 'Something went wrong. Please try again.'})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

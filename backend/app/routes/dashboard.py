@@ -309,17 +309,61 @@ def _student_for_user(db: Session, school_id: int, user: User) -> Student | None
     )
 
 
-def _children_for_parent(db: Session, school_id: int, user: User) -> list[Student]:
-    guardians_query = db.query(ParentGuardian).filter(ParentGuardian.school_id == school_id, ParentGuardian.is_active.is_(True))
-    conditions = []
-    if user.email:
-        conditions.append(ParentGuardian.email == user.email)
-    if user.phone:
-        conditions.append(ParentGuardian.phone == user.phone)
-    if not conditions:
+def _parent_identifiers(user: User) -> set[str]:
+    return {str(item).strip().lower() for item in (user.email, user.login_id) if item and str(item).strip()}
+
+
+def _guardians_for_parent_user(db: Session, school_id: int, user: User) -> list[ParentGuardian]:
+    """Safely resolve guardian records for a parent dashboard.
+
+    Never match by phone number. Shared/demo phone numbers caused each parent to
+    see the total school student count. If old data linked multiple guardians to
+    one parent user, keep only records whose guardian email matches this login.
+    """
+    identifiers = _parent_identifiers(user)
+
+    linked = (
+        db.query(ParentGuardian)
+        .filter(
+            ParentGuardian.school_id == school_id,
+            ParentGuardian.user_id == user.id,
+            ParentGuardian.is_active.is_(True),
+        )
+        .order_by(ParentGuardian.id.asc())
+        .all()
+    )
+    if linked:
+        email_matched = [
+            guardian
+            for guardian in linked
+            if guardian.email and guardian.email.strip().lower() in identifiers
+        ]
+        if email_matched:
+            return email_matched
+
+        no_email_linked = [guardian for guardian in linked if not guardian.email]
+        if len(linked) == 1 and no_email_linked:
+            return linked
+
         return []
 
-    guardians = guardians_query.filter(or_(*conditions)).all()
+    if not identifiers:
+        return []
+
+    return (
+        db.query(ParentGuardian)
+        .filter(
+            ParentGuardian.school_id == school_id,
+            ParentGuardian.is_active.is_(True),
+            func.lower(ParentGuardian.email).in_(identifiers),
+        )
+        .order_by(ParentGuardian.id.asc())
+        .all()
+    )
+
+
+def _children_for_parent(db: Session, school_id: int, user: User) -> list[Student]:
+    guardians = _guardians_for_parent_user(db, school_id, user)
     guardian_ids = [guardian.id for guardian in guardians]
     if not guardian_ids:
         return []

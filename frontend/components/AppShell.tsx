@@ -42,6 +42,7 @@ const navItems: NavItem[] = [
     icon: LayoutDashboard,
     roles: ADMIN_ROLES,
   },
+  { href: "/profile", label: "My Profile", icon: UserRound, roles: ADMIN_ROLES },
   { href: "/students", label: "Students", icon: Users, roles: ADMIN_ROLES },
   { href: "/teachers", label: "Teachers", icon: UserRound, roles: ADMIN_ROLES },
   {
@@ -131,6 +132,7 @@ const navItems: NavItem[] = [
     icon: LayoutDashboard,
     roles: ["TEACHER"],
   },
+  { href: "/profile", label: "My Profile", icon: UserRound, roles: ["TEACHER"] },
   {
     href: "/attendance",
     label: "Attendance",
@@ -181,6 +183,7 @@ const navItems: NavItem[] = [
     icon: LayoutDashboard,
     roles: ["STUDENT"],
   },
+  { href: "/profile", label: "My Profile", icon: UserRound, roles: ["STUDENT"] },
   {
     href: "/attendance/my",
     label: "My Attendance",
@@ -226,6 +229,7 @@ const navItems: NavItem[] = [
     icon: LayoutDashboard,
     roles: ["PARENT"],
   },
+  { href: "/profile", label: "My Profile", icon: UserRound, roles: ["PARENT"] },
   {
     href: "/parent-homework",
     label: "Homework",

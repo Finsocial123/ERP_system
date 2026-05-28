@@ -83,8 +83,14 @@ def _ensure_login_id_available(db: Session, school_id: int, login_id: str, exclu
 
 
 def _parent_login_candidates(guardian: ParentGuardian, fallback_seed: str) -> list[str]:
+    """Build safe parent login candidates.
+
+    Do not use phone number as a parent login identifier. In demo/real data,
+    many guardians can share a placeholder or family phone number, and using it
+    can wrongly link multiple guardians to the same parent user.
+    """
     candidates: list[str] = []
-    for value in (guardian.email, guardian.phone, f"{fallback_seed}-PARENT", f"PARENT-{fallback_seed}"):
+    for value in (guardian.email, f"{fallback_seed}-PARENT", f"PARENT-{fallback_seed}"):
         if value and str(value).strip():
             normalized = normalize_login_id(str(value))
             if normalized and normalized not in candidates:
@@ -605,4 +611,11 @@ def assign_teacher_subject(
     _commit_or_duplicate(db, "This teacher-subject assignment already exists")
     db.refresh(assignment)
     return assignment
+
+# Compatibility registration: app.main already includes people.router in every build.
+# Including the separate profile router here guarantees /profile works even if
+# an older main.py is still being used during patch application.
+from app.routes import profile as profile_routes  # noqa: E402
+
+router.include_router(profile_routes.router)
 

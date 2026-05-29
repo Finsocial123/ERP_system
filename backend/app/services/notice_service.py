@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.client import client
-from app.core.config import settings
+from app.core.config import settings, MODEL
 from app.models.notice import Notice, NoticeAudience, NoticeRead, NoticeStatus
 from app.models.user import User, UserRole
 from app.schemas.notice import NoticeCreate, NoticeListOut, NoticeOut, NoticeUpdate, NoticePriority
@@ -400,7 +400,7 @@ async def generate_notice_content(description: str, current_user: User) -> str:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
 
     response = await client.chat.completions.create(
-        model=MODEL,
+        model=settings.MODEL,
         messages=[
             {
                 "role": "system",

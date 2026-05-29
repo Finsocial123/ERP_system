@@ -5,11 +5,13 @@ import { AlertTriangle, CalendarDays, CheckCircle2, Clock, RefreshCw, TrendingUp
 
 import AppShell from "@/components/AppShell";
 import { Card, Label } from "@/components/ui";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getSavedAuth } from "@/lib/api";
 import type { AcademicSession } from "@/types";
 
 type AttendanceRecord = {
   id: number;
+  student_id: number;
+  student_name?: string | null;
   date: string;
   status: string;
   note?: string | null;
@@ -37,6 +39,18 @@ function groupByMonth(records: AttendanceRecord[]) {
   return map;
 }
 
+function groupByStudent(records: AttendanceRecord[]) {
+  const map = new Map<number, { name: string; records: AttendanceRecord[] }>();
+  for (const r of records) {
+    const name = r.student_name || `Student ${r.student_id}`;
+    if (!map.has(r.student_id)) {
+      map.set(r.student_id, { name, records: [] });
+    }
+    map.get(r.student_id)!.records.push(r);
+  }
+  return map;
+}
+
 function monthLabel(key: string) {
   const [y, m] = key.split("-");
   return new Date(Number(y), Number(m) - 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
@@ -48,8 +62,12 @@ export default function MyAttendancePage() {
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [isParent, setIsParent] = useState(false);
 
   useEffect(() => {
+    const auth = getSavedAuth();
+    setIsParent(auth?.user.role === "PARENT");
+
     apiFetch<AcademicSession[]>("/academic-sessions")
       .then((s) => {
         setSessions(s);
@@ -92,15 +110,17 @@ export default function MyAttendancePage() {
   const pct      = total > 0 ? Math.round((effective / total) * 100 * 10) / 10 : 0;
   const lowAtt   = total > 0 && pct < 75;
 
-  const grouped = groupByMonth(records);
+  const grouped = isParent ? groupByStudent(records) : groupByMonth(records);
 
   return (
     <AppShell>
       <div className="space-y-6">
         {/* Header */}
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">My Attendance</h1>
-          <p className="mt-1 text-sm text-slate-500">View your attendance record for the selected session</p>
+          <h1 className="text-2xl font-bold text-slate-900">{isParent ? "Child Attendance" : "My Attendance"}</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            {isParent ? "View your children's attendance record for the selected session" : "View your attendance record for the selected session"}
+          </p>
         </div>
 
         {error && (
@@ -138,8 +158,8 @@ export default function MyAttendancePage() {
           </div>
         </Card>
 
-        {/* Stat cards */}
-        {total > 0 && (
+        {/* Stat cards - only for students */}
+        {!isParent && total > 0 && (
           <>
             {lowAtt && (
               <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
@@ -177,14 +197,88 @@ export default function MyAttendancePage() {
           </>
         )}
 
-        {/* Month-wise records */}
+        {/* Month-wise or Student-wise records */}
         {records.length === 0 && !loading && sessionId && (
           <Card>
             <p className="py-8 text-center text-sm text-slate-400">No attendance records found for this session.</p>
           </Card>
         )}
 
-        {grouped.size > 0 && Array.from(grouped.entries()).map(([monthKey, monthRecords]) => {
+        {isParent && grouped.size > 0 && Array.from(grouped.entries()).map(([studentId, { name, records: studentRecords }]) => {
+          const studentRecordsByMonth = groupByMonth(studentRecords);
+          const sTotal   = studentRecords.length;
+          const sPresent = studentRecords.filter((r) => r.status === "PRESENT").length;
+          const sHalfDay = studentRecords.filter((r) => r.status === "HALF_DAY").length;
+          const sEffective = sPresent + sHalfDay * 0.5;
+          const sPct     = sTotal > 0 ? Math.round((sEffective / sTotal) * 100 * 10) / 10 : 0;
+          const sLowAtt  = sTotal > 0 && sPct < 75;
+
+          return (
+            <div key={studentId} className="space-y-4 rounded-xl border border-slate-200 p-4 bg-white">
+              {/* Student header */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="font-semibold text-slate-900">{name}</h2>
+                  <p className="text-sm text-slate-500 mt-1">{sTotal} total records</p>
+                </div>
+                <div className={`text-2xl font-bold ${sLowAtt ? "text-amber-600" : sPct >= 90 ? "text-emerald-600" : "text-slate-700"}`}>
+                  {sPct}%
+                </div>
+              </div>
+
+              {/* Month-wise details */}
+              <div className="space-y-4">
+                {Array.from(studentRecordsByMonth.entries()).map(([monthKey, monthRecords]) => {
+                  const mTotal   = monthRecords.length;
+                  const mPresent = monthRecords.filter((r) => r.status === "PRESENT").length;
+                  const mPct     = mTotal > 0 ? Math.round((mPresent / mTotal) * 100) : 0;
+
+                  return (
+                    <div key={monthKey} className="space-y-2">
+                      {/* Month header */}
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-semibold text-slate-700">{monthLabel(monthKey)}</h3>
+                        <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                          mPct < 75
+                            ? "bg-amber-100 text-amber-700"
+                            : mPct >= 90
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-slate-100 text-slate-600"
+                        }`}>
+                          {mPresent}/{mTotal} present · {mPct}%
+                        </span>
+                      </div>
+
+                      <Card className="overflow-hidden p-0">
+                        <div className="divide-y divide-slate-100">
+                          {monthRecords.map((r) => {
+                            const meta = STATUS_META[r.status] ?? STATUS_META["ABSENT"];
+                            const Icon = meta.icon;
+                            return (
+                              <div key={r.id} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition">
+                                <div className={`h-2 w-2 rounded-full flex-shrink-0 ${meta.dot}`} />
+                                <p className="flex-1 text-sm text-slate-700">{formatDate(r.date)}</p>
+                                <span className={`flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${meta.color}`}>
+                                  <Icon size={11} />
+                                  {meta.label}
+                                </span>
+                                {r.note && (
+                                  <p className="text-xs text-slate-400 italic truncate max-w-[120px]">{r.note}</p>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </Card>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+
+        {!isParent && grouped.size > 0 && Array.from(grouped.entries()).map(([monthKey, monthRecords]) => {
           const mTotal   = monthRecords.length;
           const mPresent = monthRecords.filter((r) => r.status === "PRESENT").length;
           const mPct     = mTotal > 0 ? Math.round((mPresent / mTotal) * 100) : 0;

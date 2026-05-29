@@ -6,6 +6,7 @@ import { CheckCircle2, FileText, PlayCircle, RefreshCcw } from "lucide-react";
 
 import { AppSection } from "@/components/CrudManager";
 import { Button, Card, Input } from "@/components/ui";
+import CourseLessonChat from "@/components/courses/CourseLessonChat";
 import { apiFetch, fileUrl } from "@/lib/api";
 import type { CourseProgress, LMSCourse, LMSLesson } from "@/types";
 
@@ -199,6 +200,10 @@ export default function CoursePortal({ mode }: Props) {
                           <a className="inline-flex items-center gap-2 rounded-xl bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700" href={fileUrl(lesson.pdf_url)} target="_blank"><FileText size={16} /> Open PDF</a>
                         )}
                       </div>
+
+                      {mode === "student" && (
+                        <CourseLessonChat lesson={lesson} courseTitle={selected.title} />
+                      )}
                     </div>
                   );
                 })}

@@ -45,18 +45,14 @@ async def _update_session_title(gen_db: AsyncSession, session_id: str, title: st
 
 
 # Creates new session
-@router.post("/{user_id}/sessions", status_code=201)
+@router.post("/sessions", status_code=201)
 async def create_session(
-    user_id: int,
     db: Annotated[AsyncSession, Depends(get_async_db)],
     current_user: User = Depends(get_current_user),
 ):
-    if user_id != current_user.id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your session")
-
     session = ChatSession(
         id=str(uuid.uuid4()),
-        user_id=user_id,
+        user_id=current_user.id,
         title="New Chat"
     )
     db.add(session)
@@ -66,18 +62,17 @@ async def create_session(
 
 
 # Get all user sessions
-@router.get("/{user_id}/sessions")
+@router.get("/sessions")
 async def get_sessions(
-    user_id: int,
     db: Annotated[AsyncSession, Depends(get_async_db)],
     current_user: User = Depends(get_current_user),
 ):
-    if user_id != current_user.id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your session")
+    # if user_id != current_user.id:
+    #     raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your session")
 
     result = await db.execute(
         select(ChatSession)
-        .where(ChatSession.user_id == user_id)
+        .where(ChatSession.user_id == current_user.id)
         .order_by(ChatSession.created_at.desc())
     )
     return list(result.scalars().all())

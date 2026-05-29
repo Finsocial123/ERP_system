@@ -21,6 +21,9 @@ import {
   UserRound,
   Users,
   X,
+  Video,
+  Album,
+  Presentation,
 } from "lucide-react";
 
 import { clearAuth, dashboardPathForRole, getSavedAuth } from "@/lib/api";
@@ -42,7 +45,12 @@ const navItems: NavItem[] = [
     icon: LayoutDashboard,
     roles: ADMIN_ROLES,
   },
-  { href: "/profile", label: "My Profile", icon: UserRound, roles: ADMIN_ROLES },
+  {
+    href: "/profile",
+    label: "My Profile",
+    icon: UserRound,
+    roles: ADMIN_ROLES,
+  },
   { href: "/students", label: "Students", icon: Users, roles: ADMIN_ROLES },
   { href: "/teachers", label: "Teachers", icon: UserRound, roles: ADMIN_ROLES },
   {
@@ -122,7 +130,7 @@ const navItems: NavItem[] = [
   {
     href: "/setup/meetings",
     label: "Meetings",
-    icon: NotebookIcon,
+    icon: Video,
     roles: ADMIN_ROLES,
   },
 
@@ -132,7 +140,12 @@ const navItems: NavItem[] = [
     icon: LayoutDashboard,
     roles: ["TEACHER"],
   },
-  { href: "/profile", label: "My Profile", icon: UserRound, roles: ["TEACHER"] },
+  {
+    href: "/profile",
+    label: "My Profile",
+    icon: UserRound,
+    roles: ["TEACHER"],
+  },
   {
     href: "/attendance",
     label: "Attendance",
@@ -160,7 +173,7 @@ const navItems: NavItem[] = [
   {
     href: "/teachers/curriculum",
     label: "Curriculum",
-    icon: NotebookIcon,
+    icon: Album,
     roles: ["TEACHER"],
   },
   {
@@ -172,7 +185,7 @@ const navItems: NavItem[] = [
   {
     href: "/teachers/meetings",
     label: "Meetings",
-    icon: NotebookIcon,
+    icon: Video,
     roles: ["TEACHER"],
   },
   { href: "/library", label: "Library", icon: Library, roles: ["TEACHER"] },
@@ -183,7 +196,12 @@ const navItems: NavItem[] = [
     icon: LayoutDashboard,
     roles: ["STUDENT"],
   },
-  { href: "/profile", label: "My Profile", icon: UserRound, roles: ["STUDENT"] },
+  {
+    href: "/profile",
+    label: "My Profile",
+    icon: UserRound,
+    roles: ["STUDENT"],
+  },
   {
     href: "/attendance/my",
     label: "My Attendance",
@@ -217,7 +235,7 @@ const navItems: NavItem[] = [
   {
     href: "/students/meetings",
     label: "Meetings",
-    icon: NotebookIcon,
+    icon: Video,
     roles: ["STUDENT"],
   },
   { href: "/fees", label: "Fees", icon: CreditCard, roles: ["STUDENT"] },
@@ -264,7 +282,7 @@ const navItems: NavItem[] = [
   {
     href: "/communication",
     label: "Communication",
-    icon: NotebookIcon,
+    icon: Presentation,
     roles: [...ADMIN_ROLES, "TEACHER", "STUDENT", "PARENT"],
   },
 ];

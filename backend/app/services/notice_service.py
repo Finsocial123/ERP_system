@@ -400,7 +400,7 @@ async def generate_notice_content(description: str, current_user: User) -> str:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
 
     response = await client.chat.completions.create(
-        model=MODEL,
+        model=settings.MODEL,
         messages=[
             {
                 "role": "system",

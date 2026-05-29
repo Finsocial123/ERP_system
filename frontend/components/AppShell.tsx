@@ -52,6 +52,12 @@ const navItems: NavItem[] = [
     roles: ADMIN_ROLES,
   },
   {
+    href: "/courses",
+    label: "LMS Courses",
+    icon: BookOpen,
+    roles: ADMIN_ROLES,
+  },
+  {
     href: "/timetable",
     label: "Timetable",
     icon: CalendarCheck,
@@ -146,6 +152,12 @@ const navItems: NavItem[] = [
     roles: ["TEACHER"],
   },
   {
+    href: "/teacher-courses",
+    label: "LMS Courses",
+    icon: BookOpen,
+    roles: ["TEACHER"],
+  },
+  {
     href: "/teacher-timetable",
     label: "Timetable",
     icon: CalendarCheck,
@@ -197,6 +209,12 @@ const navItems: NavItem[] = [
     roles: ["STUDENT"],
   },
   {
+    href: "/student-courses",
+    label: "My Courses",
+    icon: BookOpen,
+    roles: ["STUDENT"],
+  },
+  {
     href: "/student-timetable",
     label: "Timetable",
     icon: CalendarCheck,
@@ -234,6 +252,12 @@ const navItems: NavItem[] = [
     href: "/parent-homework",
     label: "Homework",
     icon: ClipboardList,
+    roles: ["PARENT"],
+  },
+  {
+    href: "/parent-courses",
+    label: "Child Courses",
+    icon: BookOpen,
     roles: ["PARENT"],
   },
   {

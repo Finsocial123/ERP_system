@@ -36,6 +36,16 @@ def run_startup_migrations(engine) -> None:
     _add_column(engine, "users", "locked_until", "locked_until TIMESTAMP")
     _add_column(engine, "parent_guardians", "user_id", "user_id INTEGER")
 
+    # LMS integration: make legacy courses ERP-aware without breaking old dev DBs.
+    _add_column(engine, "courses", "school_id", "school_id INTEGER")
+    _add_column(engine, "courses", "class_id", "class_id INTEGER")
+    _add_column(engine, "courses", "section_id", "section_id INTEGER")
+    _add_column(engine, "courses", "subject_id", "subject_id INTEGER")
+    _add_column(engine, "courses", "academic_session_id", "academic_session_id INTEGER")
+    _add_column(engine, "courses", "status", "status VARCHAR(30) DEFAULT 'PUBLISHED'")
+    _add_column(engine, "courses", "is_active", "is_active BOOLEAN DEFAULT TRUE")
+    _add_column(engine, "courses", "updated_at", "updated_at TIMESTAMP")
+
     _add_column(engine, "exam_subjects", "start_time", "start_time TIME")
     _add_column(engine, "exam_subjects", "end_time", "end_time TIME")
     _add_column(engine, "exam_subjects", "room", "room VARCHAR(120)")

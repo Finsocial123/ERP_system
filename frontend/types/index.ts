@@ -797,3 +797,123 @@
       children: ProfileMiniStudent[];
     } | null;
   };
+
+  export type CourseMetaItem = {
+    id: number;
+    name: string;
+    extra?: string | null;
+  };
+
+  export type CourseMeta = {
+    classes: CourseMetaItem[];
+    sections: CourseMetaItem[];
+    subjects: CourseMetaItem[];
+    teachers: CourseMetaItem[];
+    current_academic_session_id?: number | null;
+  };
+
+  export type LMSCourse = {
+    id: number;
+    title: string;
+    description?: string | null;
+    thumbnail_url?: string | null;
+    school_id?: number | null;
+    class_id?: number | null;
+    section_id?: number | null;
+    subject_id?: number | null;
+    academic_session_id?: number | null;
+    teacher_id: number;
+    teacher_name?: string | null;
+    class_name?: string | null;
+    section_name?: string | null;
+    subject_name?: string | null;
+    academic_session_name?: string | null;
+    status: string;
+    is_active: boolean;
+    lessons_count: number;
+    enrolled_students_count: number;
+    progress?: number | null;
+    student_id?: number | null;
+    student_name?: string | null;
+    admission_no?: string | null;
+    created_at: string;
+    updated_at?: string | null;
+  };
+
+  export type LMSLesson = {
+    id: number;
+    title: string;
+    description?: string | null;
+    order: number;
+    video_url?: string | null;
+    pdf_url?: string | null;
+    external_video_link?: string | null;
+    course_id: number;
+    language?: string | null;
+    created_at: string;
+  };
+
+  export type LessonProgressItem = {
+    lesson_id: number;
+    title: string;
+    order: number;
+    completed: boolean;
+    completed_at?: string | null;
+    has_video: boolean;
+    has_trackable_video?: boolean;
+    watched_seconds?: number;
+    video_duration_seconds?: number;
+    required_watch_seconds?: number;
+    watch_percentage?: number;
+    can_mark_complete?: boolean;
+  };
+
+  export type CourseProgress = {
+    course_id: number;
+    overall_progress: number;
+    total_lessons: number;
+    completed_lessons: number;
+    lessons: LessonProgressItem[];
+  };
+
+
+  export type LMSStudentLessonProgress = {
+    lesson_id: number;
+    title: string;
+    order: number;
+    completed: boolean;
+    completed_at?: string | null;
+    has_video: boolean;
+    watched_seconds?: number;
+    video_duration_seconds?: number;
+    watch_percentage?: number;
+  };
+
+  export type LMSStudentProgress = {
+    enrollment_id: number;
+    student_user_id: number;
+    student_id?: number | null;
+    student_name: string;
+    student_email?: string | null;
+    admission_no?: string | null;
+    roll_number?: string | null;
+    progress: number;
+    status: string;
+    total_lessons: number;
+    completed_lessons: number;
+    pending_lessons: number;
+    enrolled_at?: string | null;
+    last_activity_at?: string | null;
+    lessons: LMSStudentLessonProgress[];
+  };
+
+  export type LMSCourseProgressReport = {
+    course: LMSCourse;
+    total_students: number;
+    average_progress: number;
+    completed_students: number;
+    in_progress_students: number;
+    not_started_students: number;
+    total_lessons: number;
+    students: LMSStudentProgress[];
+  };

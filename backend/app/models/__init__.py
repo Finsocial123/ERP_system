@@ -7,6 +7,13 @@ from app.models.fee import FeeAssignment, FeeCategory, FeeExpense, FeePayment, F
 from app.models.school import School
 from app.models.user import User
 from app.models.verification import PendingSchoolRegistration
+from app.models.course import Course
+from app.models.lesson import Lesson
+from app.models.enrollment import Enrollment
+from app.models.progress import LessonProgress
+from app.models.video_watch_progress import VideoWatchProgress
+from app.models.assignment import Assignment
+from app.models.submission import Submission
 from app.models.communication import (
     Announcement,
     Circular,
@@ -52,4 +59,11 @@ __all__ = [
     "InAppNotificationRead",
     "SchoolEvent",
     "SupportTicket",
+    "Course",
+    "Lesson",
+    "Enrollment",
+    "LessonProgress",
+    "VideoWatchProgress",
+    "Assignment",
+    "Submission",
 ]

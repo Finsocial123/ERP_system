@@ -16,6 +16,7 @@ from app.utils.cloudinary import delete_file, upload_file
 
 from typing import Annotated
 from app.models.lesson import Lesson, LessonChunk
+from app.schemas.assignment import QuizRequest
 from app.models.course import Course
 from app.services.embedder import chunk_and_embed_lesson
 from app.services.extractor import extract_text_from_pdf
@@ -23,11 +24,15 @@ from app.services.transcriber import transcribe_video
 from app.services.frame_analyzer import analyze_video_frames
 from app.services.embedder import embed_visual_frames
 from app.services.tools.summarizer import summarize_lesson
+from app.services.tools.quiz_generator import generate_quiz
+
 import asyncio
 from functools import partial
 import cloudinary
 import cloudinary.uploader
 from sqlalchemy import select
+import json
+
 
 router = APIRouter(prefix="/lessons", tags=["LMS Lessons"])
 
@@ -300,6 +305,7 @@ def delete_lesson(
 
 
 #summary
+
 @router.post('/{lesson_id}/course/{course_id}/{source}/summary')
 async def generate_lesson_summary(
     course_id: int, 
@@ -353,3 +359,57 @@ async def generate_lesson_summary(
     
     return summary
 
+
+#quiz generator
+
+@router.post("/api/course/{course_id}/lessons/{lesson_id}/quiz")
+async def generate_lesson_quiz(
+    course_id: int,
+    lesson_id: int,
+    request: QuizRequest,
+    db: Annotated[AsyncSession, Depends(get_async_db)]
+):
+
+    result = await db.execute(select(Course).where(course_id == Course.id))
+    course = result.scalars().first()
+
+    if not course:
+        raise HTTPException(status_code=404, description="Course not found")
+
+    result = (await db.execute(
+        select(Lesson)
+        .where(
+            Lesson.id == lesson_id,
+            Lesson.course_id == course_id
+        )
+    ))
+    lesson = result.scalars().first()
+
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found in this course")
+    
+    chunk_count = (await db.execute(
+        select(LessonChunk)
+        .where(LessonChunk.lesson_id == lesson_id)
+        .limit(1)
+    )).scalars().first()
+    if not chunk_count:
+        raise HTTPException(
+            status_code=422,
+            detail="No content found for this lesson. Upload a PDF or video first."
+        )
+
+    try:
+        quiz = await generate_quiz(
+            lesson_id=lesson_id,
+            num_questions=request.num_questions,
+            difficulty=request.difficulty,
+            db=db,
+            include_answers=True
+        )
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Failed to parse quiz response")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return quiz

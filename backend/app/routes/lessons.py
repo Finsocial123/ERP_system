@@ -19,7 +19,10 @@ from app.services.transcriber import transcribe_video
 from app.services.frame_analyzer import analyze_video_frames
 from app.services.embedder import embed_visual_frames
 from app.services.tools.summarizer import summarize_lesson
-
+import asyncio
+from functools import partial
+import cloudinary
+import cloudinary.uploader
 
 
 router = APIRouter(prefix="/lessons", tags=["LMS Lessons"])
@@ -83,7 +86,8 @@ async def create_lesson(
         if len(video_bytes) > MAX_VIDEO_SIZE:
             raise HTTPException(status_code=400, detail="File too large. Max 500MB")
         
-        result = upload_file(BytesIO(video_bytes), folder="lms/videos", resource_type="video")
+        result = await asyncio.to_thread(partial(upload_file, BytesIO(video_bytes), folder="lms/videos", resource_type="video"))
+
         video_url = result["url"]
         video_public_id = result["public_id"]
 
@@ -92,6 +96,9 @@ async def create_lesson(
             transcript = result["text"]
             segments = result["segments"]
         except Exception as e:
+            await asyncio.to_thread(
+                partial(cloudinary.uploader.destroy, video_public_id, resource_type="video")
+            )
             raise HTTPException(status_code=422, detail=f"Transcription failed: {str(e)}")
         if not transcript:
             raise HTTPException(status_code=422, detail="Could not transcribe video")
@@ -103,7 +110,11 @@ async def create_lesson(
 
     if pdf and pdf.filename:
         pdf_bytes = await pdf.read()
-        result = upload_file(BytesIO(pdf_bytes), folder="lms/pdfs", resource_type="raw")
+        
+        result = await asyncio.to_thread(
+            partial(upload_file, BytesIO(pdf_bytes), folder="lms/pdfs", resource_type="raw")
+        )
+
         pdf_url = result["url"]
         pdf_public_id = result["public_id"]
         pdf_text = extract_text_from_pdf(pdf_bytes)

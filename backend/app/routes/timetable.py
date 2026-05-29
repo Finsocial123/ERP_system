@@ -12,6 +12,7 @@ from app.models.academic import AcademicSession, SchoolClass, Section, Subject
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.timetable import TimetableDay, TimetableEntry, TimetablePeriod
 from app.models.user import User, UserRole
+from app.utils.parent_scope import children_for_parent
 from app.schemas.common import MessageResponse
 from app.schemas.timetable import (
     TimetableDayCreate,
@@ -123,29 +124,7 @@ def _student_for_user(db: Session, school_id: int, user: User) -> Student | None
 
 
 def _children_for_parent(db: Session, school_id: int, user: User) -> list[Student]:
-    conditions = []
-    if user.email:
-        conditions.append(ParentGuardian.email == user.email)
-    if user.phone:
-        conditions.append(ParentGuardian.phone == user.phone)
-    if not conditions:
-        return []
-
-    guardians = (
-        db.query(ParentGuardian)
-        .filter(ParentGuardian.school_id == school_id, ParentGuardian.is_active.is_(True), or_(*conditions))
-        .all()
-    )
-    guardian_ids = [guardian.id for guardian in guardians]
-    if not guardian_ids:
-        return []
-
-    return (
-        db.query(Student)
-        .filter(Student.school_id == school_id, Student.guardian_id.in_(guardian_ids), Student.is_active.is_(True))
-        .order_by(Student.first_name.asc())
-        .all()
-    )
+    return children_for_parent(db, school_id, user)
 
 
 def _validate_entry_scope(

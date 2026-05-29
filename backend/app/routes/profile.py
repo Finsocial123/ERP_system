@@ -429,11 +429,61 @@ def _build_teacher_profile(db: Session, user: User, maps: dict[str, dict[int, An
     }
 
 
+def _active_parent_count(db: Session, school_id: int) -> int:
+    """Count real active parent accounts/guardian records for active students only.
+
+    ParentGuardian rows can stay in the database after a student is deleted or
+    deactivated. Counting every guardian row makes the profile card show more
+    parents than the currently admitted students. This count only includes
+    guardians connected to at least one active student. Linked parent users are
+    counted once even when the same parent has multiple children.
+    """
+    linked_parent_users = (
+        db.query(func.count(func.distinct(ParentGuardian.user_id)))
+        .join(Student, Student.guardian_id == ParentGuardian.id)
+        .join(User, User.id == ParentGuardian.user_id)
+        .filter(
+            ParentGuardian.school_id == school_id,
+            ParentGuardian.is_active.is_(True),
+            ParentGuardian.user_id.isnot(None),
+            Student.school_id == school_id,
+            Student.is_active.is_(True),
+            User.school_id == school_id,
+            User.role == UserRole.PARENT.value,
+            User.is_active.is_(True),
+        )
+        .scalar()
+    )
+    unlinked_guardians = (
+        db.query(func.count(func.distinct(ParentGuardian.id)))
+        .join(Student, Student.guardian_id == ParentGuardian.id)
+        .filter(
+            ParentGuardian.school_id == school_id,
+            ParentGuardian.is_active.is_(True),
+            ParentGuardian.user_id.is_(None),
+            Student.school_id == school_id,
+            Student.is_active.is_(True),
+        )
+        .scalar()
+    )
+    return int(linked_parent_users or 0) + int(unlinked_guardians or 0)
+
+
 def _build_admin_profile(db: Session, school_id: int, maps: dict[str, dict[int, Any]]) -> dict[str, Any]:
-    classes = list(maps["classes"].values())
-    sections = list(maps["sections"].values())
-    students = db.query(Student).filter(Student.school_id == school_id).order_by(Student.first_name.asc()).all()
-    teachers = db.query(Teacher).filter(Teacher.school_id == school_id).order_by(Teacher.full_name.asc()).all()
+    classes = [item for item in maps["classes"].values() if item.is_active]
+    sections = [item for item in maps["sections"].values() if item.is_active]
+    students = (
+        db.query(Student)
+        .filter(Student.school_id == school_id, Student.is_active.is_(True))
+        .order_by(Student.first_name.asc())
+        .all()
+    )
+    teachers = (
+        db.query(Teacher)
+        .filter(Teacher.school_id == school_id, Teacher.is_active.is_(True))
+        .order_by(Teacher.full_name.asc())
+        .all()
+    )
     teacher_subjects = db.query(TeacherSubject).filter(TeacherSubject.school_id == school_id).all()
     class_teachers = db.query(ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id).all()
 
@@ -507,6 +557,7 @@ def _build_admin_profile(db: Session, school_id: int, maps: dict[str, dict[int, 
                 "is_active": item.is_active,
             }
             for item in maps["subjects"].values()
+            if item.is_active
         ],
     }
 
@@ -538,11 +589,11 @@ def get_my_profile(
     elif current_user.role in ADMIN_ROLES:
         response["role_data"] = _build_admin_profile(db, current_user.school_id, maps)
         response["summary"] = {
-            "students": db.query(Student).filter(Student.school_id == current_user.school_id).count(),
-            "teachers": db.query(Teacher).filter(Teacher.school_id == current_user.school_id).count(),
-            "parents": db.query(ParentGuardian).filter(ParentGuardian.school_id == current_user.school_id).count(),
-            "classes": db.query(SchoolClass).filter(SchoolClass.school_id == current_user.school_id).count(),
-            "subjects": db.query(Subject).filter(Subject.school_id == current_user.school_id).count(),
+            "students": db.query(Student).filter(Student.school_id == current_user.school_id, Student.is_active.is_(True)).count(),
+            "teachers": db.query(Teacher).filter(Teacher.school_id == current_user.school_id, Teacher.is_active.is_(True)).count(),
+            "parents": _active_parent_count(db, current_user.school_id),
+            "classes": db.query(SchoolClass).filter(SchoolClass.school_id == current_user.school_id, SchoolClass.is_active.is_(True)).count(),
+            "subjects": db.query(Subject).filter(Subject.school_id == current_user.school_id, Subject.is_active.is_(True)).count(),
         }
 
     return response

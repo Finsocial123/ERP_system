@@ -65,7 +65,7 @@ async def create_lesson(
     pdf: Optional[UploadFile] = File(None),
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(*MANAGER_ROLES)),
-    db: Session = Depends(get_async_db),
+    db: AsyncSession = Depends(get_async_db),
 ):
     course = get_course_or_404(db, school_id, course_id)
     ensure_can_manage_course(db, school_id, current_user, course)
@@ -110,7 +110,7 @@ async def create_lesson(
 
     if pdf and pdf.filename:
         pdf_bytes = await pdf.read()
-        
+
         result = await asyncio.to_thread(
             partial(upload_file, BytesIO(pdf_bytes), folder="lms/pdfs", resource_type="raw")
         )

@@ -11,9 +11,12 @@ from app.core.database import get_db, get_async_db
 from app.dependencies.auth import current_school_id, require_roles
 from app.models.lesson import Lesson
 from app.models.user import User
-from app.services.lms_access import ALL_LMS_ROLES, MANAGER_ROLES, ensure_can_manage_course, ensure_can_view_course, get_course_or_404
+from app.services.lms_access import ALL_LMS_ROLES, MANAGER_ROLES, ensure_can_manage_course, ensure_can_view_course, get_course_or_404, async_get_course_or_404, async_ensure_can_manage_course
 from app.utils.cloudinary import delete_file, upload_file
 
+from typing import Annotated
+from app.models.lesson import Lesson, LessonChunk
+from app.models.course import Course
 from app.services.embedder import chunk_and_embed_lesson
 from app.services.extractor import extract_text_from_pdf
 from app.services.transcriber import transcribe_video
@@ -24,7 +27,7 @@ import asyncio
 from functools import partial
 import cloudinary
 import cloudinary.uploader
-
+from sqlalchemy import select
 
 router = APIRouter(prefix="/lessons", tags=["LMS Lessons"])
 
@@ -54,6 +57,16 @@ def _get_lesson_or_404(db: Session, lesson_id: int) -> Lesson:
     return lesson
 
 
+async def _async_get_lesson_or_404(db: AsyncSession, lesson_id: int) -> Lesson:
+    result = await db.execute(
+        select(Lesson).where(Lesson.id == lesson_id)
+    )
+    lesson = result.scalars().first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    return lesson
+
+
 @router.post("/{course_id}")
 async def create_lesson(
     course_id: int,
@@ -68,8 +81,9 @@ async def create_lesson(
     current_user: User = Depends(require_roles(*MANAGER_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    course = get_course_or_404(db, school_id, course_id)
-    ensure_can_manage_course(db, school_id, current_user, course)
+    # course = get_course_or_404(db, school_id, course_id)
+    course = await async_get_course_or_404(db, school_id, course_id)
+    await async_ensure_can_manage_course(db, school_id, current_user, course)
 
     video_url = None
     video_bytes = None
@@ -281,3 +295,61 @@ def delete_lesson(
     db.delete(lesson)
     db.commit()
     return {"message": "Lesson deleted successfully"}
+
+
+
+
+#summary
+@router.post('/{lesson_id}/course/{course_id}/{source}/summary')
+async def generate_lesson_summary(
+    course_id: int, 
+    lesson_id: int,
+    source: str,
+    db: Annotated[AsyncSession, Depends(get_async_db)]
+):
+    
+    result = await db.execute(
+        select(Course)
+        .where(Course.id == course_id))
+    
+    course = result.scalars().first()
+
+    if not course:
+        raise HTTPException(status_code=404, description="Course not found")
+    
+    result = await db.execute(
+        select(Lesson)
+        .where(Lesson.id == lesson_id, Lesson.course_id == course_id)
+    )
+
+    lesson = result.scalars().first()
+
+    if not lesson:
+        HTTPException(status_code=404, detail="Lesson not found")
+
+    result = (await db.execute(
+        select(LessonChunk)
+        .where(LessonChunk.lesson_id == lesson_id)
+        .limit(1)
+    ))
+
+    chunks_exits = result.scalars().first()
+    if not chunks_exits:
+        raise HTTPException(
+            status_code=422,
+            detail="No content for this lesson. Upload a PDF or Video first"
+        )
+
+    try:
+        summary = await summarize_lesson(
+            lesson_id=lesson_id,
+            lesson_order=lesson.order,
+            lesson_title=lesson.title,
+            source=source,
+            db=db
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    return summary
+

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import select, or_, func
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.academic import AcademicSession, SchoolClass, Section, Subject
 from app.models.course import Course
@@ -198,6 +199,10 @@ def get_course_or_404(db: Session, school_id: int, course_id: int) -> Course:
     return course
 
 
+
+
+
+
 def can_manage_course(db: Session, school_id: int, user: User, course: Course) -> bool:
     if course.school_id != school_id:
         return False
@@ -250,3 +255,126 @@ def ensure_enrollment_for_user_student(db: Session, school_id: int, user: User, 
         db.commit()
         db.refresh(enrollment)
     return enrollment
+
+
+
+
+
+
+#async variant
+
+async def async_get_course_or_404(db: AsyncSession, school_id: int, course_id: int) -> Course:
+    result = await db.execute(
+        select(Course).where(
+            Course.id == course_id,
+            Course.school_id == school_id,
+            Course.is_active.is_(True)
+        )
+    )
+    course = result.scalars().first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return course
+
+async def async_teacher_for_user(db: AsyncSession, school_id: int, user: User) -> Teacher | None:
+    result = await db.execute(
+        select(Teacher).where(
+            Teacher.school_id == school_id,
+            Teacher.user_id == user.id
+        )
+    )
+    teacher = result.scalars().first()
+    if teacher:
+        return teacher
+
+    conditions = []
+    if user.email:
+        conditions.append(Teacher.email == user.email)
+    if user.phone:
+        conditions.append(Teacher.phone == user.phone)
+    if user.login_id:
+        conditions.append(Teacher.employee_id == user.login_id)
+    if not conditions:
+        return None
+
+    result = await db.execute(
+        select(Teacher).where(
+            Teacher.school_id == school_id,
+            Teacher.is_active.is_(True),
+            or_(*conditions)
+        )
+    )
+    return result.scalars().first()
+
+
+async def async_teacher_has_scope(
+    db: AsyncSession,
+    school_id: int,
+    teacher: Teacher,
+    class_id: int,
+    section_id: int | None,
+    subject_id: int | None
+) -> bool:
+    subject_count_result = await db.execute(
+        select(func.count()).select_from(TeacherSubject).where(
+            TeacherSubject.school_id == school_id,
+            TeacherSubject.teacher_id == teacher.id,
+        )
+    )
+    subject_count = subject_count_result.scalar()
+
+    class_count_result = await db.execute(
+        select(func.count()).select_from(ClassTeacherAssignment).where(
+            ClassTeacherAssignment.school_id == school_id,
+            ClassTeacherAssignment.teacher_id == teacher.id,
+        )
+    )
+    class_count = class_count_result.scalar()
+
+    if (subject_count + class_count) == 0:
+        return True
+
+    subject_match_query = (
+        select(TeacherSubject).where(
+            TeacherSubject.school_id == school_id,
+            TeacherSubject.teacher_id == teacher.id,
+            or_(TeacherSubject.class_id == class_id, TeacherSubject.class_id.is_(None)),
+            or_(TeacherSubject.section_id == section_id, TeacherSubject.section_id.is_(None)),
+        )
+    )
+    if subject_id is not None:
+        subject_match_query = subject_match_query.where(TeacherSubject.subject_id == subject_id)
+
+    subject_result = await db.execute(subject_match_query)
+    if subject_result.scalars().first():
+        return True
+
+    class_result = await db.execute(
+        select(ClassTeacherAssignment).where(
+            ClassTeacherAssignment.school_id == school_id,
+            ClassTeacherAssignment.teacher_id == teacher.id,
+            ClassTeacherAssignment.class_id == class_id,
+            or_(ClassTeacherAssignment.section_id == section_id, ClassTeacherAssignment.section_id.is_(None)),
+        )
+    )
+    return bool(class_result.scalars().first())
+
+
+async def async_can_manage_course(db: AsyncSession, school_id: int, user: User, course: Course) -> bool:
+    if course.school_id != school_id:
+        return False
+    if user.role in ADMIN_ROLES:
+        return True
+    if user.role != UserRole.TEACHER.value:
+        return False
+    if course.teacher_id == user.id:
+        return True
+    teacher = await async_teacher_for_user(db, school_id, user)
+    if not teacher or course.class_id is None:
+        return False
+    return await async_teacher_has_scope(db, school_id, teacher, course.class_id, course.section_id, course.subject_id)
+
+
+async def async_ensure_can_manage_course(db: AsyncSession, school_id: int, user: User, course: Course) -> None:
+    if not await async_can_manage_course(db, school_id, user, course):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can manage only your assigned LMS courses")

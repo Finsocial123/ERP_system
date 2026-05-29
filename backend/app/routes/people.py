@@ -297,7 +297,7 @@ def update_student(student_id: int, payload: StudentUpdate, current_user: User =
             guardian = ParentGuardian(school_id=school_id, **guardian_values)
             db.add(guardian)
             db.flush()
-            student.guardian_id = guardian.id
+            student.guardian = guardian
 
     if payload.create_parent_login:
         if not student.guardian:

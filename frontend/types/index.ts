@@ -917,3 +917,21 @@
     total_lessons: number;
     students: LMSStudentProgress[];
   };
+
+  export type ChatSession = {
+    id: string;
+    title?: string | null;
+    user_id?: number | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+  };
+
+  export type ChatMessage = {
+    id: number | string;
+    role: "user" | "assistant" | "system" | "tool" | string;
+    content?: string | null;
+    created_at?: string | null;
+    session_id?: string | null;
+    user_id?: number | null;
+    is_enhanced?: boolean;
+  };

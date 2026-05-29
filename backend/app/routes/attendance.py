@@ -7,7 +7,7 @@ from app.core.database import get_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
 from app.models.academic import AcademicSession, SchoolClass, Section
 from app.models.attendance import AttendanceStatus, StudentAttendance
-from app.models.people import ClassTeacherAssignment, Student, Teacher
+from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher
 from app.models.user import User, UserRole
 from app.schemas.attendance import (
     AttendanceRead,
@@ -389,20 +389,78 @@ def my_attendance(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Check if user is a student
     student = db.query(Student).filter(
         Student.user_id == current_user.id,
         Student.school_id == school_id,
     ).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student profile not found for this user")
-
-    return (
-        db.query(StudentAttendance)
-        .filter(
-            StudentAttendance.school_id == school_id,
-            StudentAttendance.student_id == student.id,
-            StudentAttendance.session_id == session_id,
+    
+    if student:
+        # Student viewing their own attendance
+        return (
+            db.query(StudentAttendance)
+            .filter(
+                StudentAttendance.school_id == school_id,
+                StudentAttendance.student_id == student.id,
+                StudentAttendance.session_id == session_id,
+            )
+            .order_by(StudentAttendance.date.desc())
+            .all()
         )
-        .order_by(StudentAttendance.date.desc())
-        .all()
+    
+    # Check if user is a parent
+    if current_user.role == UserRole.PARENT.value:
+        # Get all children linked to this parent
+        parent_guardians = (
+            db.query(ParentGuardian)
+            .filter(
+                ParentGuardian.school_id == school_id,
+                ParentGuardian.user_id == current_user.id,
+                ParentGuardian.is_active.is_(True),
+            )
+            .all()
+        )
+        
+        if not parent_guardians:
+            return []
+        
+        guardian_ids = [pg.id for pg in parent_guardians]
+        children = (
+            db.query(Student)
+            .filter(
+                Student.school_id == school_id,
+                Student.guardian_id.in_(guardian_ids),
+                Student.is_active.is_(True),
+            )
+            .all()
+        )
+        
+        if not children:
+            return []
+        
+        child_ids = [child.id for child in children]
+        
+        # Get attendance records for all children with student info
+        records = (
+            db.query(StudentAttendance)
+            .filter(
+                StudentAttendance.school_id == school_id,
+                StudentAttendance.student_id.in_(child_ids),
+                StudentAttendance.session_id == session_id,
+            )
+            .order_by(StudentAttendance.date.desc())
+            .all()
+        )
+        
+        # Populate student_name from the relationship
+        for record in records:
+            if record.student:
+                record.student_name = f"{record.student.first_name} {record.student.last_name or ''}".strip()
+        
+        return records
+    
+    # If neither student nor parent, raise error
+    raise HTTPException(
+        status_code=403,
+        detail="You don't have permission to access this resource"
     )

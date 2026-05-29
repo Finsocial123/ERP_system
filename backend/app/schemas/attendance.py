@@ -25,6 +25,7 @@ class AttendanceUpdate(BaseModel):
 class AttendanceRead(BaseModel):
     id: int
     student_id: int
+    student_name: str | None = None  # Populated for parents viewing children's attendance
     class_id: int
     section_id: int | None = None
     session_id: int

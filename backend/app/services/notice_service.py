@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.client import client
-from app.core.config import settings
+from app.core.config import settings, MODEL
 from app.models.notice import Notice, NoticeAudience, NoticeRead, NoticeStatus
 from app.models.user import User, UserRole
 from app.schemas.notice import NoticeCreate, NoticeListOut, NoticeOut, NoticeUpdate, NoticePriority

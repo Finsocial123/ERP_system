@@ -13,6 +13,15 @@ from app.models.user import User
 from app.services.lms_access import ALL_LMS_ROLES, MANAGER_ROLES, ensure_can_manage_course, ensure_can_view_course, get_course_or_404
 from app.utils.cloudinary import delete_file, upload_file
 
+from app.services.embedder import chunk_and_embed_lesson
+from app.services.extractor import extract_text_from_pdf
+from app.services.transcriber import transcribe_video
+from app.services.frame_analyzer import analyze_video_frames
+from app.services.embedder import embed_visual_frames
+from app.services.tools.summarizer import summarize_lesson
+
+
+
 router = APIRouter(prefix="/lessons", tags=["LMS Lessons"])
 
 ALLOWED_VIDEO_TYPES = {"video/mp4", "video/webm", "video/quicktime"}
@@ -60,23 +69,43 @@ async def create_lesson(
 
     video_url = None
     video_public_id = None
+    transcript = None
+    segments = []
+
+
     if video and video.filename:
         video_bytes = await video.read()
+
         if video.content_type not in ALLOWED_VIDEO_TYPES:
             raise HTTPException(status_code=400, detail="Invalid video format")
+        
         if len(video_bytes) > MAX_VIDEO_SIZE:
             raise HTTPException(status_code=400, detail="File too large. Max 500MB")
+        
         result = upload_file(BytesIO(video_bytes), folder="lms/videos", resource_type="video")
         video_url = result["url"]
         video_public_id = result["public_id"]
 
+        try:
+            result = await transcribe_video(video_bytes)
+            transcript = result["text"]
+            segments = result["segments"]
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Transcription failed: {str(e)}")
+        if not transcript:
+            raise HTTPException(status_code=422, detail="Could not transcribe video")
+        
+
     pdf_url = None
     pdf_public_id = None
+    pdf_text = None
+
     if pdf and pdf.filename:
         pdf_bytes = await pdf.read()
         result = upload_file(BytesIO(pdf_bytes), folder="lms/pdfs", resource_type="raw")
         pdf_url = result["url"]
         pdf_public_id = result["public_id"]
+        pdf_text = extract_text_from_pdf(pdf_bytes)
 
     lesson = Lesson(
         title=title.strip(),
@@ -91,10 +120,60 @@ async def create_lesson(
         course_id=course_id,
     )
     db.add(lesson)
-    db.commit()
-    db.refresh(lesson)
+    await db.commit()
+    await db.refresh(lesson)
 
-    return {**_lesson_payload(lesson), "message": "Lesson created successfully"}
+    transcript_chunks = 0   
+    pdf_chunks = 0
+    visual_chunks = 0
+
+    if transcript:
+        transcript_chunks = await chunk_and_embed_lesson(
+            lesson_id=lesson.id,
+            text=transcript,
+            source="transcript",
+            db=db,
+            segments=segments
+        )
+
+    if video_bytes:
+        try:
+            print(f"Analyzing visual content from video for lesson {lesson.id}...")
+            frames = await analyze_video_frames(
+                video_bytes=video_bytes,
+                interval_seconds=15,
+                max_frames=30
+            )
+            if frames:
+                visual_chunks = await embed_visual_frames(
+                    lesson_id=lesson.id,
+                    frames=frames,
+                    db=db
+                )
+                print(f"Created {visual_chunks} visual chunks")
+        except Exception as e:
+            print(f"Visual analysis failed (non-critical): {e}")
+
+    if pdf_text:
+        pdf_chunks = await chunk_and_embed_lesson(
+            lesson_id=lesson.id,
+            text=pdf_text,
+            source="notes",
+            db=db
+            # no segments for PDF
+        )
+
+    return {
+        "lesson_id": lesson.id,
+        "video_url": video_url,
+        "pdf_url": pdf_url,
+        "transcript_preview": transcript[:200] if transcript else None,
+        "pdf_preview": pdf_text[:200] if pdf_text else None,
+        "transcript_chunks": transcript_chunks,
+        "pdf_chunks": pdf_chunks,
+        "visual_chunks": visual_chunks,
+        "message": "Lesson created successfully",
+    }
 
 
 @router.get("/course/{course_id}")

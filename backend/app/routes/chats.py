@@ -45,7 +45,7 @@ async def _update_session_title(gen_db: AsyncSession, session_id: str, title: st
 
 
 # Creates new session
-@router.post("/sessions", status_code=201)
+@router.post("", status_code=201)
 async def create_session(
     db: Annotated[AsyncSession, Depends(get_async_db)],
     current_user: User = Depends(get_current_user),
@@ -62,7 +62,7 @@ async def create_session(
 
 
 # Get all user sessions
-@router.get("/sessions")
+@router.get("")
 async def get_sessions(
     db: Annotated[AsyncSession, Depends(get_async_db)],
     current_user: User = Depends(get_current_user),

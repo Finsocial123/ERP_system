@@ -12,7 +12,9 @@ from app.models.lesson import Lesson
 from app.models.progress import LessonProgress
 from app.models.user import User
 from app.models.video_watch_progress import VideoWatchProgress
-from app.utils.dependencies import require_role
+from app.dependencies.auth import current_school_id, require_roles
+from app.models.user import UserRole
+from app.services.lms_access import ensure_enrollment_for_user_student
 
 router = APIRouter(
     prefix="/progress",
@@ -65,19 +67,24 @@ def get_lesson_or_404(lesson_id: int, db: Session) -> Lesson:
     return lesson
 
 
-def ensure_student_enrolled(student_id: int, course_id: int, db: Session) -> Enrollment:
+def ensure_student_enrolled(student_id: int, course_id: int, db: Session, school_id: int | None = None, current_user: User | None = None) -> Enrollment:
     enrollment = db.query(Enrollment).filter(
         Enrollment.student_id == student_id,
         Enrollment.course_id == course_id
     ).first()
 
-    if not enrollment:
-        raise HTTPException(
-            status_code=403,
-            detail="You are not enrolled in this course"
-        )
+    if enrollment:
+        return enrollment
 
-    return enrollment
+    if school_id is not None and current_user is not None:
+        course = db.query(Course).filter(Course.id == course_id, Course.school_id == school_id, Course.is_active.is_(True)).first()
+        if course:
+            return ensure_enrollment_for_user_student(db, school_id, current_user, course)
+
+    raise HTTPException(
+        status_code=403,
+        detail="You are not enrolled in this course"
+    )
 
 
 def recalculate_course_progress(
@@ -116,11 +123,12 @@ def recalculate_course_progress(
 @router.get("/{lesson_id}/watch")
 def get_video_watch_progress(
     lesson_id: int,
+    school_id: int = Depends(current_school_id),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["student"]))
+    current_user: User = Depends(require_roles(UserRole.STUDENT))
 ):
     lesson = get_lesson_or_404(lesson_id, db)
-    ensure_student_enrolled(current_user.id, lesson.course_id, db)
+    ensure_student_enrolled(current_user.id, lesson.course_id, db, school_id, current_user)
 
     record = db.query(VideoWatchProgress).filter(
         VideoWatchProgress.student_id == current_user.id,
@@ -134,11 +142,12 @@ def get_video_watch_progress(
 def track_video_watch_progress(
     lesson_id: int,
     payload: VideoWatchPayload,
+    school_id: int = Depends(current_school_id),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["student"]))
+    current_user: User = Depends(require_roles(UserRole.STUDENT))
 ):
     lesson = get_lesson_or_404(lesson_id, db)
-    ensure_student_enrolled(current_user.id, lesson.course_id, db)
+    ensure_student_enrolled(current_user.id, lesson.course_id, db, school_id, current_user)
 
     if not lesson.video_url and not lesson.external_video_link:
         return {
@@ -227,13 +236,14 @@ def track_video_watch_progress(
 @router.post("/{lesson_id}/complete")
 def mark_lesson_complete(
     lesson_id: int,
+    school_id: int = Depends(current_school_id),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["student"]))
+    current_user: User = Depends(require_roles(UserRole.STUDENT))
 ):
     lesson = get_lesson_or_404(lesson_id, db)
 
     # check student is enrolled
-    ensure_student_enrolled(current_user.id, lesson.course_id, db)
+    ensure_student_enrolled(current_user.id, lesson.course_id, db, school_id, current_user)
 
     # Uploaded video lessons require real credited watch time before completion.
     # External embeds are not forced unless watch data exists, because browsers cannot
@@ -299,10 +309,12 @@ def mark_lesson_complete(
 @router.delete("/{lesson_id}/complete")
 def mark_lesson_incomplete(
     lesson_id: int,
+    school_id: int = Depends(current_school_id),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["student"]))
+    current_user: User = Depends(require_roles(UserRole.STUDENT))
 ):
     lesson = get_lesson_or_404(lesson_id, db)
+    ensure_student_enrolled(current_user.id, lesson.course_id, db, school_id, current_user)
 
     record = db.query(LessonProgress).filter(
         LessonProgress.student_id == current_user.id,
@@ -332,15 +344,16 @@ def mark_lesson_incomplete(
 @router.get("/course/{course_id}")
 def get_course_progress(
     course_id: int,
+    school_id: int = Depends(current_school_id),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["student"]))
+    current_user: User = Depends(require_roles(UserRole.STUDENT))
 ):
-    course = db.query(Course).filter(Course.id == course_id).first()
+    course = db.query(Course).filter(Course.id == course_id, Course.school_id == school_id, Course.is_active.is_(True)).first()
 
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    enrollment = ensure_student_enrolled(current_user.id, course_id, db)
+    enrollment = ensure_student_enrolled(current_user.id, course_id, db, school_id, current_user)
 
     lessons = db.query(Lesson).filter(
         Lesson.course_id == course_id

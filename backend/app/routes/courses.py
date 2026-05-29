@@ -1,231 +1,503 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from __future__ import annotations
+
 from typing import Optional
 
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from sqlalchemy import or_
+from sqlalchemy.orm import Session, joinedload
+
 from app.core.database import get_db
+from app.dependencies.auth import current_school_id, get_current_user, require_roles
+from app.models.academic import SchoolClass, Section, Subject
 from app.models.course import Course
 from app.models.enrollment import Enrollment
 from app.models.lesson import Lesson
+from app.models.people import Student, Teacher, TeacherSubject
 from app.models.progress import LessonProgress
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.video_watch_progress import VideoWatchProgress
-from app.schemas.course import CourseOut
-from app.utils.dependencies import get_current_user, require_role
-from app.utils.cloudinary import upload_file, delete_file
-
-router = APIRouter(
-    prefix="/courses",
-    tags=["Courses"]
+from app.schemas.common import MessageResponse
+from app.schemas.course import CourseMetaItem, CourseMetaResponse, CourseOut
+from app.services.lms_access import (
+    ALL_LMS_ROLES,
+    ADMIN_ROLES,
+    MANAGER_ROLES,
+    can_manage_course,
+    children_for_parent,
+    current_session,
+    ensure_can_manage_course,
+    ensure_can_view_course,
+    ensure_enrollment_for_user_student,
+    full_student_name,
+    get_course_or_404,
+    course_matches_student,
+    student_for_user,
+    teacher_for_user,
+    teacher_has_scope,
+    validate_course_scope,
+    validate_same_school,
 )
+from app.utils.cloudinary import upload_file
+
+router = APIRouter(prefix="/courses", tags=["LMS Courses"])
+
+COURSE_STATUSES = {"DRAFT", "PUBLISHED", "ARCHIVED"}
 
 
-def build_course_out(course: Course) -> dict:
-    return {
-        "id": course.id,
-        "title": course.title,
-        "description": course.description,
-        "thumbnail_url": course.thumbnail_url,
-        "teacher_id": course.teacher_id,
-        "teacher_name": course.teacher.name if course.teacher else None,
-        "created_at": course.created_at
-    }
+def _safe_status(value: str | None) -> str:
+    status_value = (value or "PUBLISHED").strip().upper()
+    if status_value not in COURSE_STATUSES:
+        raise HTTPException(status_code=400, detail="Course status must be DRAFT, PUBLISHED, or ARCHIVED")
+    return status_value
 
 
-# Create course
-@router.post("/")
-def create_course(
-    title: str = Form(...),
-    description: Optional[str] = Form(None),
-    thumbnail: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["teacher", "admin"]))
-):
-    thumbnail_url = None
+def _teacher_name(db: Session, school_id: int, teacher_user: User | None) -> str | None:
+    if not teacher_user:
+        return None
+    teacher = db.query(Teacher).filter(Teacher.school_id == school_id, Teacher.user_id == teacher_user.id).first()
+    return teacher.full_name if teacher else teacher_user.full_name
 
-    if thumbnail:
-        result = upload_file(
-            thumbnail.file,
-            folder="lms/thumbnails",
-            resource_type="image"
+
+def _course_payload(db: Session, course: Course, progress: float | None = None, student: Student | None = None) -> CourseOut:
+    lessons_count = db.query(Lesson).filter(Lesson.course_id == course.id).count()
+    enrolled_count = db.query(Enrollment).filter(Enrollment.course_id == course.id).count()
+    return CourseOut(
+        id=course.id,
+        title=course.title,
+        description=course.description,
+        thumbnail_url=course.thumbnail_url,
+        school_id=course.school_id,
+        class_id=course.class_id,
+        section_id=course.section_id,
+        subject_id=course.subject_id,
+        academic_session_id=course.academic_session_id,
+        teacher_id=course.teacher_id,
+        teacher_name=_teacher_name(db, course.school_id or 0, course.teacher),
+        class_name=course.school_class.name if course.school_class else None,
+        section_name=course.section.name if course.section else None,
+        subject_name=course.subject.name if course.subject else None,
+        academic_session_name=course.academic_session.name if course.academic_session else None,
+        status=course.status or "PUBLISHED",
+        is_active=bool(course.is_active),
+        lessons_count=lessons_count,
+        enrolled_students_count=enrolled_count,
+        progress=progress,
+        student_id=student.id if student else None,
+        student_name=full_student_name(student) if student else None,
+        admission_no=student.admission_no if student else None,
+        created_at=course.created_at,
+        updated_at=course.updated_at,
+    )
+
+
+def _base_course_query(db: Session, school_id: int):
+    return (
+        db.query(Course)
+        .options(
+            joinedload(Course.teacher),
+            joinedload(Course.school_class),
+            joinedload(Course.section),
+            joinedload(Course.subject),
+            joinedload(Course.academic_session),
         )
+        .filter(Course.school_id == school_id, Course.is_active.is_(True))
+    )
+
+
+def _teacher_allowed_query(db: Session, school_id: int, user: User):
+    teacher = teacher_for_user(db, school_id, user)
+    query = _base_course_query(db, school_id).filter(Course.teacher_id == user.id)
+    if not teacher:
+        return query
+
+    # Include courses that match assigned class/subject scope, even if an admin created them.
+    scoped_course_ids: set[int] = {course.id for course in query.all()}
+    for course in _base_course_query(db, school_id).all():
+        if course.class_id and teacher_has_scope(db, school_id, teacher, course.class_id, course.section_id, course.subject_id):
+            scoped_course_ids.add(course.id)
+    return _base_course_query(db, school_id).filter(Course.id.in_(scoped_course_ids or {-1}))
+
+
+def _student_course_rows(db: Session, school_id: int, user: User) -> list[CourseOut]:
+    student = student_for_user(db, school_id, user)
+    if not student or not student.class_id:
+        return []
+
+    courses = (
+        _base_course_query(db, school_id)
+        .filter(
+            Course.class_id == student.class_id,
+            Course.status == "PUBLISHED",
+            or_(Course.section_id.is_(None), Course.section_id == student.section_id),
+        )
+        .order_by(Course.created_at.desc())
+        .all()
+    )
+    rows: list[CourseOut] = []
+    for course in courses:
+        enrollment = ensure_enrollment_for_user_student(db, school_id, user, course)
+        rows.append(_course_payload(db, course, progress=float(enrollment.progress or 0), student=student))
+    return rows
+
+
+def _parent_course_rows(db: Session, school_id: int, user: User) -> list[CourseOut]:
+    rows: list[CourseOut] = []
+    for child in children_for_parent(db, school_id, user):
+        if not child.user_id or not child.class_id:
+            continue
+        courses = (
+            _base_course_query(db, school_id)
+            .filter(
+                Course.class_id == child.class_id,
+                Course.status == "PUBLISHED",
+                or_(Course.section_id.is_(None), Course.section_id == child.section_id),
+            )
+            .order_by(Course.created_at.desc())
+            .all()
+        )
+        for course in courses:
+            enrollment = db.query(Enrollment).filter(Enrollment.student_id == child.user_id, Enrollment.course_id == course.id).first()
+            progress = float(enrollment.progress or 0) if enrollment else 0
+            rows.append(_course_payload(db, course, progress=progress, student=child))
+    return rows
+
+
+@router.get("/meta", response_model=CourseMetaResponse)
+def courses_meta(
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    class_query = db.query(SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True)).order_by(SchoolClass.name.asc())
+    section_query = db.query(Section).filter(Section.school_id == school_id, Section.is_active.is_(True)).order_by(Section.name.asc())
+    subject_query = db.query(Subject).filter(Subject.school_id == school_id, Subject.is_active.is_(True)).order_by(Subject.name.asc())
+
+    if current_user.role == UserRole.TEACHER.value:
+        teacher = teacher_for_user(db, school_id, current_user)
+        if teacher:
+            teacher_subjects = db.query(TeacherSubject).filter_by(school_id=school_id, teacher_id=teacher.id).all()
+            class_ids = {item.class_id for item in teacher_subjects if item.class_id is not None}
+            section_ids = {item.section_id for item in teacher_subjects if item.section_id is not None}
+            subject_ids = {item.subject_id for item in teacher_subjects if item.subject_id is not None}
+            if class_ids:
+                class_query = class_query.filter(SchoolClass.id.in_(class_ids))
+                subject_query = subject_query.filter(or_(Subject.class_id.in_(class_ids), Subject.class_id.is_(None)))
+            if section_ids:
+                section_query = section_query.filter(Section.id.in_(section_ids))
+            if subject_ids:
+                subject_query = subject_query.filter(Subject.id.in_(subject_ids))
+
+    session = current_session(db, school_id)
+    teachers = (
+        db.query(Teacher)
+        .filter(Teacher.school_id == school_id, Teacher.is_active.is_(True), Teacher.user_id.isnot(None))
+        .order_by(Teacher.full_name.asc())
+        .all()
+    )
+
+    return CourseMetaResponse(
+        classes=[CourseMetaItem(id=item.id, name=item.name, extra=item.code) for item in class_query.all()],
+        sections=[CourseMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in section_query.all()],
+        subjects=[CourseMetaItem(id=item.id, name=item.name, extra=item.code) for item in subject_query.all()],
+        # id is User.id because Course.teacher_id points to users.id.
+        teachers=[CourseMetaItem(id=int(item.user_id), name=item.full_name, extra=item.employee_id) for item in teachers if item.user_id],
+        current_academic_session_id=session.id if session else None,
+    )
+
+
+@router.get("/student/my", response_model=list[CourseOut])
+def list_my_student_courses(
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(UserRole.STUDENT)),
+    db: Session = Depends(get_db),
+):
+    return _student_course_rows(db, school_id, current_user)
+
+
+@router.get("/parent/children", response_model=list[CourseOut])
+def list_parent_child_courses(
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(UserRole.PARENT)),
+    db: Session = Depends(get_db),
+):
+    return _parent_course_rows(db, school_id, current_user)
+
+
+@router.get("/", response_model=list[CourseOut])
+def get_all_courses(
+    search: Optional[str] = Query(None),
+    class_id: Optional[int] = Query(None),
+    section_id: Optional[int] = Query(None),
+    subject_id: Optional[int] = Query(None),
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    if current_user.role == UserRole.TEACHER.value:
+        query = _teacher_allowed_query(db, school_id, current_user)
+    else:
+        query = _base_course_query(db, school_id)
+
+    if search:
+        like = f"%{search.strip()}%"
+        query = query.filter(or_(Course.title.ilike(like), Course.description.ilike(like)))
+    if class_id is not None:
+        query = query.filter(Course.class_id == class_id)
+    if section_id is not None:
+        query = query.filter(Course.section_id == section_id)
+    if subject_id is not None:
+        query = query.filter(Course.subject_id == subject_id)
+
+    courses = query.order_by(Course.created_at.desc()).all()
+    return [_course_payload(db, course) for course in courses]
+
+
+@router.get("/my-created", response_model=list[CourseOut])
+def get_my_created_courses(
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    courses = _base_course_query(db, school_id).filter(Course.teacher_id == current_user.id).order_by(Course.created_at.desc()).all()
+    return [_course_payload(db, course) for course in courses]
+
+
+@router.post("/", response_model=CourseOut, status_code=status.HTTP_201_CREATED)
+def create_course(
+    title: str = Form(..., min_length=2, max_length=255),
+    description: Optional[str] = Form(None),
+    class_id: int = Form(...),
+    section_id: Optional[int] = Form(None),
+    subject_id: Optional[int] = Form(None),
+    teacher_id: Optional[int] = Form(None),
+    status_value: str = Form("PUBLISHED", alias="status"),
+    thumbnail: Optional[UploadFile] = File(None),
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    validate_course_scope(db, school_id, class_id, section_id, subject_id)
+    session = current_session(db, school_id)
+
+    assigned_teacher_user_id = current_user.id
+    if current_user.role == UserRole.TEACHER.value:
+        teacher = teacher_for_user(db, school_id, current_user)
+        if not teacher:
+            raise HTTPException(status_code=403, detail="Teacher profile not found for this login")
+        if not teacher_has_scope(db, school_id, teacher, class_id, section_id, subject_id):
+            raise HTTPException(status_code=403, detail="Teacher is not assigned to this class/section/subject")
+    elif teacher_id is not None:
+        teacher_user = db.query(User).filter(User.id == teacher_id, User.school_id == school_id, User.role == UserRole.TEACHER.value).first()
+        if not teacher_user:
+            raise HTTPException(status_code=404, detail="Selected teacher user not found for this school")
+        assigned_teacher_user_id = teacher_user.id
+
+    thumbnail_url = None
+    if thumbnail and thumbnail.filename:
+        result = upload_file(thumbnail.file, folder="lms/thumbnails", resource_type="image")
         thumbnail_url = result["url"]
 
     course = Course(
-        title=title,
-        description=description,
+        school_id=school_id,
+        class_id=class_id,
+        section_id=section_id,
+        subject_id=subject_id,
+        academic_session_id=session.id if session else None,
+        title=title.strip(),
+        description=description.strip() if description else None,
         thumbnail_url=thumbnail_url,
-        teacher_id=current_user.id
+        teacher_id=assigned_teacher_user_id,
+        status=_safe_status(status_value),
+        is_active=True,
     )
-
     db.add(course)
     db.commit()
     db.refresh(course)
-
-    return {
-        "message": "Course created successfully",
-        "course_id": course.id
-    }
+    return _course_payload(db, course)
 
 
-# Get all courses with optional search
-@router.get("/")
-def get_all_courses(
-    search: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
-):
-    query = db.query(Course)
-
-    if search:
-        query = query.filter(
-            or_(
-                Course.title.ilike(f"%{search}%"),
-                Course.description.ilike(f"%{search}%")
-            )
-        )
-
-    courses = query.all()
-    return [build_course_out(c) for c in courses]
-
-
-# Get courses created by the logged-in teacher/admin
-@router.get("/my-created")
-def get_my_created_courses(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["teacher", "admin"]))
-):
-    courses = db.query(Course).filter(
-        Course.teacher_id == current_user.id
-    ).all()
-
-    return [build_course_out(c) for c in courses]
-
-
-# Get single course
-@router.get("/{course_id}")
+@router.get("/{course_id}", response_model=CourseOut)
 def get_course(
     course_id: int,
-    db: Session = Depends(get_db)
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*ALL_LMS_ROLES)),
+    db: Session = Depends(get_db),
 ):
-    course = db.query(Course).filter(Course.id == course_id).first()
+    course = get_course_or_404(db, school_id, course_id)
+    ensure_can_view_course(db, school_id, current_user, course)
+    progress = None
+    student = None
+    if current_user.role == UserRole.STUDENT.value:
+        student = student_for_user(db, school_id, current_user)
+        enrollment = db.query(Enrollment).filter(Enrollment.student_id == current_user.id, Enrollment.course_id == course.id).first()
+        progress = float(enrollment.progress or 0) if enrollment else 0
+    return _course_payload(db, course, progress=progress, student=student)
 
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
 
-    return build_course_out(course)
-
-
-# Update course
-@router.put("/{course_id}")
+@router.put("/{course_id}", response_model=CourseOut)
 def update_course(
     course_id: int,
     title: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
+    class_id: Optional[int] = Form(None),
+    section_id: Optional[int] = Form(None),
+    subject_id: Optional[int] = Form(None),
+    teacher_id: Optional[int] = Form(None),
+    status_value: Optional[str] = Form(None, alias="status"),
     thumbnail: Optional[UploadFile] = File(None),
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["teacher", "admin"]))
 ):
-    course = db.query(Course).filter(Course.id == course_id).first()
+    course = get_course_or_404(db, school_id, course_id)
+    ensure_can_manage_course(db, school_id, current_user, course)
 
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
+    next_class_id = class_id if class_id is not None else course.class_id
+    next_section_id = section_id if section_id is not None else course.section_id
+    next_subject_id = subject_id if subject_id is not None else course.subject_id
+    if next_class_id is None:
+        raise HTTPException(status_code=400, detail="Class is required")
+    validate_course_scope(db, school_id, next_class_id, next_section_id, next_subject_id)
 
-    if current_user.role != "admin" and course.teacher_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not your course")
+    if current_user.role == UserRole.TEACHER.value:
+        teacher = teacher_for_user(db, school_id, current_user)
+        if not teacher or not teacher_has_scope(db, school_id, teacher, next_class_id, next_section_id, next_subject_id):
+            raise HTTPException(status_code=403, detail="Teacher is not assigned to this class/section/subject")
+    elif teacher_id is not None:
+        teacher_user = db.query(User).filter(User.id == teacher_id, User.school_id == school_id, User.role == UserRole.TEACHER.value).first()
+        if not teacher_user:
+            raise HTTPException(status_code=404, detail="Selected teacher user not found for this school")
+        course.teacher_id = teacher_user.id
 
-    if title:
-        course.title = title
-
+    if title is not None:
+        course.title = title.strip()
     if description is not None:
-        course.description = description
+        course.description = description.strip() if description else None
+    course.class_id = next_class_id
+    course.section_id = next_section_id
+    course.subject_id = next_subject_id
+    if status_value is not None:
+        course.status = _safe_status(status_value)
 
-    if thumbnail:
-        result = upload_file(
-            thumbnail.file,
-            folder="lms/thumbnails",
-            resource_type="image"
-        )
+    if thumbnail and thumbnail.filename:
+        result = upload_file(thumbnail.file, folder="lms/thumbnails", resource_type="image")
         course.thumbnail_url = result["url"]
 
     db.commit()
     db.refresh(course)
+    return _course_payload(db, course)
 
-    return {"message": "Course updated successfully"}
 
-
-# Delete course
-@router.delete("/{course_id}")
+@router.delete("/{course_id}", response_model=MessageResponse)
 def delete_course(
     course_id: int,
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["teacher", "admin"]))
 ):
-    course = db.query(Course).filter(Course.id == course_id).first()
-
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
-
-    if current_user.role != "admin" and course.teacher_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not your course")
-
-    db.delete(course)
+    course = get_course_or_404(db, school_id, course_id)
+    ensure_can_manage_course(db, school_id, current_user, course)
+    course.is_active = False
+    course.status = "ARCHIVED"
     db.commit()
+    return {"message": "Course archived successfully"}
 
-    return {"message": "Course deleted successfully"}
+
+@router.post("/{course_id}/sync-enrollments", response_model=MessageResponse)
+def sync_course_enrollments(
+    course_id: int,
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    course = get_course_or_404(db, school_id, course_id)
+    ensure_can_manage_course(db, school_id, current_user, course)
+    if not course.class_id:
+        raise HTTPException(status_code=400, detail="Course class is missing")
+
+    query = db.query(Student).filter(Student.school_id == school_id, Student.class_id == course.class_id, Student.is_active.is_(True), Student.user_id.isnot(None))
+    if course.section_id is not None:
+        query = query.filter(Student.section_id == course.section_id)
+
+    created = 0
+    for student in query.all():
+        existing = db.query(Enrollment).filter(Enrollment.student_id == student.user_id, Enrollment.course_id == course.id).first()
+        if not existing:
+            db.add(Enrollment(student_id=student.user_id, course_id=course.id, progress=0))
+            created += 1
+    db.commit()
+    return {"message": f"Enrollment sync complete. Created {created} new enrollment(s)."}
 
 
-# Get students enrolled in a course with full course-specific progress report (teacher/admin)
-def build_student_course_progress_report(course_id: int, db: Session) -> list[dict]:
-    lessons = db.query(Lesson).filter(
-        Lesson.course_id == course_id
-    ).order_by(Lesson.order.asc(), Lesson.id.asc()).all()
+def build_student_course_progress_report(course_id: int, school_id: int, db: Session) -> list[dict]:
+    """Build a course progress report with bulk queries.
 
+    This avoids one query per student/lesson and keeps the report fast even when
+    a class has many students and lessons.
+    """
+    lessons = db.query(Lesson).filter(Lesson.course_id == course_id).order_by(Lesson.order.asc(), Lesson.id.asc()).all()
     lesson_ids = [lesson.id for lesson in lessons]
     total_lessons = len(lessons)
 
-    enrollments = db.query(Enrollment).filter(
-        Enrollment.course_id == course_id
-    ).order_by(Enrollment.enrolled_at.desc()).all()
+    enrollments = db.query(Enrollment).filter(Enrollment.course_id == course_id).order_by(Enrollment.enrolled_at.asc()).all()
+    student_user_ids = [enrollment.student_id for enrollment in enrollments]
+    if not student_user_ids:
+        return []
 
-    student_ids = [enrollment.student_id for enrollment in enrollments]
+    users = {
+        user.id: user
+        for user in db.query(User).filter(User.id.in_(student_user_ids)).all()
+    }
+    students = {
+        student.user_id: student
+        for student in db.query(Student).filter(
+            Student.school_id == school_id,
+            Student.user_id.in_(student_user_ids),
+        ).all()
+        if student.user_id is not None
+    }
 
     progress_map = {}
     watch_map = {}
-
-    if student_ids and lesson_ids:
+    if lesson_ids:
         progress_map = {
             (record.student_id, record.lesson_id): record
             for record in db.query(LessonProgress).filter(
-                LessonProgress.student_id.in_(student_ids),
+                LessonProgress.student_id.in_(student_user_ids),
                 LessonProgress.lesson_id.in_(lesson_ids),
             ).all()
         }
-
         watch_map = {
             (record.student_id, record.lesson_id): record
             for record in db.query(VideoWatchProgress).filter(
-                VideoWatchProgress.student_id.in_(student_ids),
+                VideoWatchProgress.student_id.in_(student_user_ids),
                 VideoWatchProgress.lesson_id.in_(lesson_ids),
             ).all()
         }
 
     result = []
-
     for enrollment in enrollments:
-        student = db.query(User).filter(User.id == enrollment.student_id).first()
-        if not student:
+        user = users.get(enrollment.student_id)
+        student = students.get(enrollment.student_id)
+        if not user:
             continue
 
         lesson_reports = []
         completed_lessons = 0
+        last_activity_at = None
 
         for lesson in lessons:
-            progress_record = progress_map.get((student.id, lesson.id))
-            watch_record = watch_map.get((student.id, lesson.id))
+            progress_record = progress_map.get((user.id, lesson.id))
+            watch_record = watch_map.get((user.id, lesson.id))
             completed = bool(progress_record.completed) if progress_record else False
-
             if completed:
                 completed_lessons += 1
+                if progress_record.completed_at and (last_activity_at is None or progress_record.completed_at > last_activity_at):
+                    last_activity_at = progress_record.completed_at
+
+            watched_seconds = round(float(watch_record.watched_seconds or 0), 2) if watch_record else 0
+            video_duration_seconds = round(float(watch_record.video_duration_seconds or 0), 2) if watch_record else 0
+            watch_percentage = round(min((watched_seconds / video_duration_seconds) * 100, 100), 2) if video_duration_seconds else 0
 
             lesson_reports.append({
                 "lesson_id": lesson.id,
@@ -234,75 +506,78 @@ def build_student_course_progress_report(course_id: int, db: Session) -> list[di
                 "completed": completed,
                 "completed_at": progress_record.completed_at if progress_record else None,
                 "has_video": bool(lesson.video_url or lesson.external_video_link),
-                "watched_seconds": round(watch_record.watched_seconds, 2) if watch_record else 0,
-                "video_duration_seconds": round(watch_record.video_duration_seconds, 2) if watch_record else 0,
+                "watched_seconds": watched_seconds,
+                "video_duration_seconds": video_duration_seconds,
+                "watch_percentage": watch_percentage,
             })
 
-        calculated_progress = (
-            round((completed_lessons / total_lessons) * 100, 2)
-            if total_lessons > 0
-            else round(float(enrollment.progress or 0), 2)
-        )
-
-        # Keep the stored enrollment percentage in sync when lessons were added/removed
-        # after the student's last completion update.
+        calculated_progress = round((completed_lessons / total_lessons) * 100, 2) if total_lessons else 0
         if round(float(enrollment.progress or 0), 2) != calculated_progress:
             enrollment.progress = calculated_progress
 
+        if total_lessons == 0:
+            status_label = "NO_LESSONS"
+        elif calculated_progress >= 100:
+            status_label = "COMPLETED"
+        elif calculated_progress > 0:
+            status_label = "IN_PROGRESS"
+        else:
+            status_label = "NOT_STARTED"
+
         result.append({
             "enrollment_id": enrollment.id,
-            "student_id": student.id,
-            "student_name": student.name,
-            "student_email": student.email,
+            "student_user_id": user.id,
+            "student_id": student.id if student else None,
+            "student_name": full_student_name(student) if student else user.full_name,
+            "student_email": user.email,
+            "admission_no": student.admission_no if student else None,
+            "roll_number": student.roll_number if student else None,
             "progress": calculated_progress,
+            "status": status_label,
             "total_lessons": total_lessons,
             "completed_lessons": completed_lessons,
             "pending_lessons": max(total_lessons - completed_lessons, 0),
             "enrolled_at": enrollment.enrolled_at,
+            "last_activity_at": last_activity_at,
             "lessons": lesson_reports,
         })
 
     db.commit()
-
-    return result
-
-
-def ensure_course_report_access(course_id: int, current_user: User, db: Session) -> Course:
-    course = db.query(Course).filter(Course.id == course_id).first()
-
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
-
-    if current_user.role != "admin" and course.teacher_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not your course")
-
-    return course
+    return sorted(result, key=lambda item: ((item.get("roll_number") or ""), (item.get("student_name") or "").lower()))
 
 
 @router.get("/{course_id}/students")
 def get_enrolled_students(
     course_id: int,
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["teacher", "admin"]))
 ):
-    ensure_course_report_access(course_id, current_user, db)
-    return build_student_course_progress_report(course_id, db)
+    course = get_course_or_404(db, school_id, course_id)
+    ensure_can_manage_course(db, school_id, current_user, course)
+    return build_student_course_progress_report(course_id, school_id, db)
 
 
 @router.get("/{course_id}/students/progress")
 def get_course_students_progress_report(
     course_id: int,
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["teacher", "admin"]))
 ):
-    course = ensure_course_report_access(course_id, current_user, db)
-    students = build_student_course_progress_report(course_id, db)
-
+    course = get_course_or_404(db, school_id, course_id)
+    ensure_can_manage_course(db, school_id, current_user, course)
+    students = build_student_course_progress_report(course_id, school_id, db)
+    completed_students = sum(1 for student in students if student["status"] == "COMPLETED")
+    in_progress_students = sum(1 for student in students if student["status"] == "IN_PROGRESS")
+    not_started_students = sum(1 for student in students if student["status"] == "NOT_STARTED")
     return {
-        "course": build_course_out(course),
+        "course": _course_payload(db, course),
         "total_students": len(students),
-        "average_progress": round(
-            sum(student["progress"] for student in students) / len(students), 2
-        ) if students else 0,
+        "average_progress": round(sum(student["progress"] for student in students) / len(students), 2) if students else 0,
+        "completed_students": completed_students,
+        "in_progress_students": in_progress_students,
+        "not_started_students": not_started_students,
+        "total_lessons": students[0]["total_lessons"] if students else db.query(Lesson).filter(Lesson.course_id == course_id).count(),
         "students": students,
     }

@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db
+from app.core.database import get_db, get_async_db
 from app.dependencies.auth import current_school_id, require_roles
 from app.models.lesson import Lesson
 from app.models.user import User
@@ -62,12 +62,13 @@ async def create_lesson(
     pdf: Optional[UploadFile] = File(None),
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(*MANAGER_ROLES)),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_async_db),
 ):
     course = get_course_or_404(db, school_id, course_id)
     ensure_can_manage_course(db, school_id, current_user, course)
 
     video_url = None
+    video_bytes = None
     video_public_id = None
     transcript = None
     segments = []

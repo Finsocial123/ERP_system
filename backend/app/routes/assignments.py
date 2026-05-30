@@ -37,7 +37,7 @@ def create_assignment(
     course_id: int,
     data: AssignmentCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["teacher", "admin"]))
+    current_user: User = Depends(require_role(["TEACHER", "ADMIN"]))
 ):
     course = db.query(Course).filter(Course.id == course_id).first()
 
@@ -87,7 +87,7 @@ def update_assignment(
     assignment_id: int,
     data: AssignmentUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["teacher", "admin"]))
+    current_user: User = Depends(require_role(["TEACHER", "ADMIN"]))
 ):
     assignment = db.query(Assignment).filter(
         Assignment.id == assignment_id
@@ -122,7 +122,7 @@ def update_assignment(
 def delete_assignment(
     assignment_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["teacher", "admin"]))
+    current_user: User = Depends(require_role(["TEACHER", "ADMIN"]))
 ):
     assignment = db.query(Assignment).filter(
         Assignment.id == assignment_id
@@ -149,7 +149,7 @@ def submit_assignment(
     assignment_id: int,
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["student"]))
+    current_user: User = Depends(require_role(["STUDENT"]))
 ):
     assignment = db.query(Assignment).filter(
         Assignment.id == assignment_id
@@ -225,7 +225,7 @@ def submit_assignment(
 def get_submissions(
     assignment_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["teacher", "admin"]))
+    current_user: User = Depends(require_role(["TEACHER", "ADMIN"]))
 ):
     assignment = db.query(Assignment).filter(
         Assignment.id == assignment_id
@@ -266,7 +266,7 @@ def grade_submission(
     submission_id: int,
     data: GradeSubmission,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["teacher", "admin"]))
+    current_user: User = Depends(require_role(["TEACHER", "ADMIN"]))
 ):
     if data.grade < 0 or data.grade > 100:
         raise HTTPException(
@@ -304,7 +304,7 @@ def grade_submission(
 def get_my_submission(
     assignment_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(["student"]))
+    current_user: User = Depends(require_role(["STUDENT"]))
 ):
     submission = db.query(Submission).filter(
         Submission.student_id == current_user.id,

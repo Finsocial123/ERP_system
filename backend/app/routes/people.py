@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.schemas.meetings import TeacherClassOut
 from app.core.database import get_db
@@ -482,6 +482,11 @@ def get_my_classes(
 
     assignments = (
         db.query(TeacherSubject)
+        .options(
+            joinedload(TeacherSubject.school_class),
+            joinedload(TeacherSubject.section),
+            joinedload(TeacherSubject.subject),
+        )
         .filter(
             TeacherSubject.teacher_id == teacher.id,
             TeacherSubject.school_id == school_id,
@@ -489,6 +494,7 @@ def get_my_classes(
         .order_by(TeacherSubject.class_id, TeacherSubject.section_id)
         .all()
     )
+
 
     return [
         {

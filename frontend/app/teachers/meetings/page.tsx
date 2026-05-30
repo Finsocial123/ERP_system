@@ -261,7 +261,13 @@ function TeacherMeetingForm({
 
   useEffect(() => {
     apiFetch<ClassOption[]>("/teachers/me/classes")
-      .then((raw) => setClasses(deduplicateClasses(raw)))
+      // .then((raw) => setClasses(deduplicateClasses(raw)))
+      .then((raw) => {
+        console.log("raw classes:", raw); // see what API returns
+        const deduped = deduplicateClasses(raw);
+        console.log("deduped:", deduped); // see what renders
+        setClasses(deduped);
+      })
       .catch((e) => setError(e.message))
       .finally(() => setClassesLoading(false));
   }, []);
@@ -343,7 +349,11 @@ function TeacherMeetingForm({
                 >
                   <div className="font-medium">
                     {cls.class_name}
-                    {cls.section_name ? ` — ${cls.section_name}` : ""}
+                    {cls.section_name ? (
+                      <span className="ml-1 px-1.5 py-0.5 bg-current/10 rounded text-xs font-bold">
+                        {cls.section_name}
+                      </span>
+                    ) : null}
                   </div>
                   <div
                     className={`text-xs mt-0.5 ${isSelected ? "text-slate-300" : "text-slate-400"}`}
@@ -463,6 +473,7 @@ function AdminMeetingForm({
 function MeetingCard({
   meeting,
   currentUserId,
+  currentUserRole,
   onJoin,
   onEnd,
   onView,
@@ -471,6 +482,7 @@ function MeetingCard({
 }: {
   meeting: MeetingOut;
   currentUserId: number;
+  currentUserRole: string;
   onJoin: (id: number) => void;
   onEnd: (id: number) => void;
   onView: (m: MeetingOut) => void;
@@ -482,6 +494,12 @@ function MeetingCard({
   const isLive = meeting.status === "live";
   const isEnded = meeting.status === "ended";
   const isOwner = meeting.created_by_user_id === currentUserId;
+  // FIX: guard End button — only teachers/admins who own the meeting can end it
+  const canEnd =
+    isOwner &&
+    ["TEACHER", "SCHOOL_ADMIN", "SCHOOL_OWNER", "SUPER_ADMIN"].includes(
+      currentUserRole,
+    );
 
   return (
     <div
@@ -504,7 +522,7 @@ function MeetingCard({
             <p className="text-xs text-slate-400">
               {tm.label}
               {meeting.class_name
-                ? ` · ${meeting.class_name}${meeting.section_name ? ` ${meeting.section_name}` : ""}`
+                ? ` · ${meeting.class_name}${meeting.section_name ?? ""}`
                 : ""}
             </p>
           </div>
@@ -555,7 +573,8 @@ function MeetingCard({
               {joining === meeting.id ? "Opening..." : "Join Meeting"}
             </button>
           )}
-          {isLive && isOwner && (
+          {/* FIX: use canEnd instead of isOwner alone */}
+          {isLive && canEnd && (
             <button
               onClick={() => onEnd(meeting.id)}
               disabled={ending === meeting.id}
@@ -641,7 +660,7 @@ function MeetingDetailModal({
               </span>
               <p className="text-slate-800 font-medium mt-0.5">
                 {meeting.class_name}
-                {meeting.section_name ? ` — ${meeting.section_name}` : ""}
+                {meeting.section_name ?? ""}
               </p>
             </div>
           )}
@@ -734,6 +753,8 @@ export default function MeetingsPage() {
   const [liveError, setLiveError] = useState("");
   const [pastError, setPastError] = useState("");
   const [pastSkip, setPastSkip] = useState(0);
+  // FIX: version counter to force past tab refresh after ending a meeting
+  const [pastVersion, setPastVersion] = useState(0);
   const limit = 12;
 
   const [creatingTeacher, setCreatingTeacher] = useState(false);
@@ -780,9 +801,12 @@ export default function MeetingsPage() {
   useEffect(() => {
     fetchLive();
   }, [fetchLive]);
+
+  // FIX: pastVersion added so switching to past tab after ending a meeting always refreshes
   useEffect(() => {
     if (activeTab === "past") fetchPast();
-  }, [activeTab, fetchPast]);
+  }, [activeTab, fetchPast, pastVersion]);
+
   useEffect(() => {
     if (activeTab !== "live") return;
     const interval = setInterval(fetchLive, 30000);
@@ -805,13 +829,15 @@ export default function MeetingsPage() {
     setEnding(meetingId);
     try {
       await apiFetch(`/meetings/${meetingId}/end`, { method: "POST" });
-      setEndingId(null);
       fetchLive();
-      if (activeTab === "past") fetchPast();
+      // FIX: bump pastVersion so past tab refreshes when user switches to it
+      setPastVersion((v) => v + 1);
     } catch (e: any) {
       alert(e.message);
     } finally {
+      // FIX: always close modal in finally, even on error
       setEnding(null);
+      setEndingId(null);
     }
   }
 
@@ -951,6 +977,7 @@ export default function MeetingsPage() {
                       key={m.id}
                       meeting={m}
                       currentUserId={currentUserId}
+                      currentUserRole={currentUserRole}
                       onJoin={handleJoin}
                       onEnd={(id) => setEndingId(id)}
                       onView={setViewingMeeting}
@@ -1008,6 +1035,7 @@ export default function MeetingsPage() {
                         key={m.id}
                         meeting={m}
                         currentUserId={currentUserId}
+                        currentUserRole={currentUserRole}
                         onJoin={handleJoin}
                         onEnd={(id) => setEndingId(id)}
                         onView={setViewingMeeting}

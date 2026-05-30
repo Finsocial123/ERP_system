@@ -39,8 +39,8 @@ class MeetingListOut(BaseModel):
 class TeacherClassOut(BaseModel):
     class_id: int
     class_name: str
-    section_id: int | None
-    section_name: str | None
+    section_id: int | None = None  
+    section_name: str | None = None
     subject_id: int
     subject_name: str
 

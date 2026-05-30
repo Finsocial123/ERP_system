@@ -349,14 +349,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   <p style={{ fontSize: "0.65rem", color: "#475569", margin: "2px 0 0" }}>#{auth.school.school_code}</p>
                 )}
               </button>
-              <button
-                className="as-icon-btn"
-                style={{ background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.08)", color: "#64748b" }}
-                onClick={() => setMobileOpen(false)}
-                aria-label="Close"
-              >
-                <X size={16} />
-              </button>
+              
             </div>
           </div>
 

@@ -1,105 +1,265 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Bot, Loader2, Plus, RefreshCw, Send, X } from "lucide-react";
-import { createChatSession, getChatMessages, streamLessonChatMessage } from "@/lib/chatApi";
-import type { ChatMessage, LMSLesson } from "@/types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Bot,
+  ChevronLeft,
+  Clock,
+  History,
+  Loader2,
+  MessageCircle,
+  Plus,
+  RefreshCw,
+  Send,
+  Trash2,
+  X,
+} from "lucide-react";
+import {
+  createChatSession,
+  getChatMessages,
+  getChatSessions,
+  streamLessonChatMessage,
+} from "@/lib/chatApi";
+import { apiFetch } from "@/lib/api";
+import type { ChatMessage, ChatSession, LMSLesson } from "@/types";
 
+/* ─── Types ─── */
 type LocalMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  created_at?: string | null;
 };
 
 type Props = {
   lesson: LMSLesson;
   courseTitle?: string;
-  /** When true the component renders fully expanded (no toggle button) */
   embedded?: boolean;
 };
 
+/* ─── Helpers ─── */
 function storageKey(lessonId: number) {
   return `erp_lms_lesson_chat_session_${lessonId}`;
 }
 
 function normalizeMessages(rows: ChatMessage[]): LocalMessage[] {
   return rows
-    .filter((row) => row.role === "user" || row.role === "assistant")
-    .map((row): LocalMessage => ({ id: String(row.id), role: row.role === "assistant" ? "assistant" : "user", content: row.content || "" }))
-    .filter((row) => row.content.trim().length > 0);
+    .filter((r) => r.role === "user" || r.role === "assistant")
+    .map(
+      (r): LocalMessage => ({
+        id: String(r.id),
+        role: r.role === "assistant" ? "assistant" : "user",
+        content: r.content || "",
+        created_at: r.created_at ?? null,
+      }),
+    )
+    .filter((r) => r.content.trim().length > 0);
 }
 
-export default function CourseLessonChat({ lesson, courseTitle, embedded = false }: Props) {
+function formatSessionTime(iso?: string | null): string {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    if (diffMins < 1) return "just now";
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+
+function SessionTitle({ session }: { session: ChatSession }) {
+  const title =
+    session.title && session.title !== "New Chat"
+      ? session.title
+      : "New conversation";
+  return <>{title}</>;
+}
+
+/* ─── Main component ─── */
+export default function CourseLessonChat({
+  lesson,
+  courseTitle,
+  embedded = false,
+}: Props) {
   const [open, setOpen] = useState(embedded);
+  const [view, setView] = useState<"chat" | "history">("chat");
+
+  /* Chat state */
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [question, setQuestion] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+
+  /* Session history state */
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [loadingSession, setLoadingSession] = useState<string | null>(null);
+
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
+  /* ── Auto-scroll ── */
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, sending, open]);
+  }, [messages, sending]);
 
-  useEffect(() => {
-    if (!open || typeof window === "undefined") return;
-    const savedSessionId = localStorage.getItem(storageKey(lesson.id));
-    if (!savedSessionId || savedSessionId === sessionId) return;
-    setLoadingHistory(true);
-    setError("");
-    setSessionId(savedSessionId);
-    getChatMessages(savedSessionId)
-      .then((rows) => setMessages(normalizeMessages(rows)))
-      .catch(() => { localStorage.removeItem(storageKey(lesson.id)); setSessionId(null); setMessages([]); })
-      .finally(() => setLoadingHistory(false));
-  }, [lesson.id, open, sessionId]);
-
-  // Reset when lesson changes
+  /* ── Load current session messages on mount/lesson change ── */
   useEffect(() => {
     setMessages([]);
     setSessionId(null);
     setQuestion("");
     setError("");
+    setView("chat");
   }, [lesson.id]);
 
+  useEffect(() => {
+    if (!open || typeof window === "undefined") return;
+    const saved = localStorage.getItem(storageKey(lesson.id));
+    if (!saved || saved === sessionId) return;
+    setLoadingHistory(true);
+    setSessionId(saved);
+    getChatMessages(saved)
+      .then((rows) => setMessages(normalizeMessages(rows)))
+      .catch(() => {
+        localStorage.removeItem(storageKey(lesson.id));
+        setSessionId(null);
+        setMessages([]);
+      })
+      .finally(() => setLoadingHistory(false));
+  }, [lesson.id, open, sessionId]);
+
+  /* ── Load sessions for history panel ── */
+  const loadSessions = useCallback(async () => {
+    setLoadingSessions(true);
+    try {
+      const rows = await getChatSessions();
+      setSessions(rows);
+    } catch {
+      /* silently ignore */
+    } finally {
+      setLoadingSessions(false);
+    }
+  }, []);
+
+  const openHistory = () => {
+    setView("history");
+    loadSessions();
+  };
+
+  /* ── Session actions ── */
   const resetChat = () => {
-    if (typeof window !== "undefined") localStorage.removeItem(storageKey(lesson.id));
-    setSessionId(null); setMessages([]); setQuestion(""); setError("");
+    if (typeof window !== "undefined")
+      localStorage.removeItem(storageKey(lesson.id));
+    setSessionId(null);
+    setMessages([]);
+    setQuestion("");
+    setError("");
   };
 
   const ensureSession = async () => {
     if (sessionId) return sessionId;
     const session = await createChatSession();
     setSessionId(session.id);
-    if (typeof window !== "undefined") localStorage.setItem(storageKey(lesson.id), session.id);
+    if (typeof window !== "undefined")
+      localStorage.setItem(storageKey(lesson.id), session.id);
     return session.id;
   };
 
+  const loadSessionMessages = async (sid: string) => {
+    setLoadingSession(sid);
+    try {
+      const rows = await getChatMessages(sid);
+      const normalized = normalizeMessages(rows);
+      setSessionId(sid);
+      setMessages(normalized);
+      if (typeof window !== "undefined")
+        localStorage.setItem(storageKey(lesson.id), sid);
+      setView("chat");
+    } catch {
+      setError("Failed to load session.");
+    } finally {
+      setLoadingSession(null);
+    }
+  };
+
+  const deleteSession = async (sid: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDeletingId(sid);
+    try {
+      await apiFetch(`/sessions/${sid}`, { method: "DELETE" });
+      setSessions((prev) => prev.filter((s) => s.id !== sid));
+      if (sid === sessionId) {
+        resetChat();
+        setView("chat");
+      }
+    } catch {
+      /* silently ignore */
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  /* ── Send message ── */
   const submitQuestion = async () => {
     const clean = question.trim();
     if (!clean || sending) return;
-    setSending(true); setError(""); setQuestion("");
-    const userMsg: LocalMessage = { id: `user-${Date.now()}`, role: "user", content: clean };
+    setSending(true);
+    setError("");
+    setQuestion("");
+    const userMsg: LocalMessage = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      content: clean,
+    };
     const assistantId = `assistant-${Date.now()}`;
-    const assistantMsg: LocalMessage = { id: assistantId, role: "assistant", content: "" };
+    const assistantMsg: LocalMessage = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+    };
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     try {
       const sid = await ensureSession();
       let answer = "";
       await streamLessonChatMessage({
-        sessionId: sid, content: clean, lessonId: lesson.id,
-        language: lesson.language || "en", webSearch: false, enhancePrompt: false,
+        sessionId: sid,
+        content: clean,
+        lessonId: lesson.id,
+        language: lesson.language || "en",
+        webSearch: false,
+        enhancePrompt: false,
         callbacks: {
           onToken: (token) => {
             answer += token;
-            setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, content: answer } : m));
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId ? { ...m, content: answer } : m,
+              ),
+            );
           },
         },
       });
       if (!answer.trim()) {
-        setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, content: "I could not generate a response. Please try again." } : m));
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  content: "I could not generate a response. Please try again.",
+                }
+              : m,
+          ),
+        );
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to send question");
@@ -109,154 +269,717 @@ export default function CourseLessonChat({ lesson, courseTitle, embedded = false
     }
   };
 
-  // ── Standalone / legacy mode (toggle button) ──
-  if (!embedded) {
-    return (
-      <div style={{ borderRadius: 14, border: "1px solid #e2e8f0", background: "#f8fafc", marginTop: 12 }}>
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          style={{ display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 14px", background: "none", border: "none", cursor: "pointer" }}
-        >
-          <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.8125rem", fontWeight: 600, color: "#0f172a" }}>
-            <span style={{ borderRadius: 8, background: "#0f172a", padding: "5px 6px", display: "flex", alignItems: "center" }}>
-              <Bot size={14} color="white" />
-            </span>
-            Ask AI about this lesson
-          </span>
-          <span style={{ color: "#94a3b8" }}>{open ? <X size={16} /> : <span style={{ fontSize: "0.75rem" }}>Open</span>}</span>
-        </button>
-        {open && <ChatBody messages={messages} loadingHistory={loadingHistory} sending={sending} error={error} question={question} setQuestion={setQuestion} submitQuestion={submitQuestion} resetChat={resetChat} lesson={lesson} courseTitle={courseTitle} bottomRef={bottomRef} />}
-      </div>
-    );
-  }
-
-  // ── Embedded mode (always open, no toggle) ──
-  return (
-    <ChatBody
+  /* ── Render ── */
+  const inner = (
+    <ChatInner
+      view={view}
+      setView={setView}
       messages={messages}
+      sessions={sessions}
+      sessionId={sessionId}
       loadingHistory={loadingHistory}
+      loadingSessions={loadingSessions}
+      loadingSession={loadingSession}
+      deletingId={deletingId}
       sending={sending}
       error={error}
       question={question}
       setQuestion={setQuestion}
       submitQuestion={submitQuestion}
       resetChat={resetChat}
+      openHistory={openHistory}
+      loadSessionMessages={loadSessionMessages}
+      deleteSession={deleteSession}
       lesson={lesson}
       courseTitle={courseTitle}
       bottomRef={bottomRef}
-      fullHeight
+      embedded={embedded}
     />
   );
+
+  if (!embedded) {
+    return (
+      <div
+        style={{
+          borderRadius: 14,
+          border: "1px solid #e2e8f0",
+          background: "#f8fafc",
+          marginTop: 12,
+          overflow: "hidden",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          style={{
+            display: "flex",
+            width: "100%",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+            padding: "10px 14px",
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+          }}
+        >
+          <span
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: "0.8125rem",
+              fontWeight: 600,
+              color: "#0f172a",
+            }}
+          >
+            <span
+              style={{
+                borderRadius: 8,
+                background: "#0f172a",
+                padding: "5px 6px",
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              <Bot size={14} color="white" />
+            </span>
+            Ask AI about this lesson
+          </span>
+          <span style={{ color: "#94a3b8" }}>
+            {open ? (
+              <X size={16} />
+            ) : (
+              <span style={{ fontSize: "0.75rem" }}>Open</span>
+            )}
+          </span>
+        </button>
+        {open && <div style={{ borderTop: "1px solid #e2e8f0" }}>{inner}</div>}
+      </div>
+    );
+  }
+
+  return inner;
 }
 
-type ChatBodyProps = {
+/* ─── Inner shell — handles view switching ─── */
+type InnerProps = {
+  view: "chat" | "history";
+  setView: (v: "chat" | "history") => void;
   messages: LocalMessage[];
+  sessions: ChatSession[];
+  sessionId: string | null;
   loadingHistory: boolean;
+  loadingSessions: boolean;
+  loadingSession: string | null;
+  deletingId: string | null;
   sending: boolean;
   error: string;
   question: string;
   setQuestion: (v: string) => void;
   submitQuestion: () => void;
   resetChat: () => void;
+  openHistory: () => void;
+  loadSessionMessages: (sid: string) => void;
+  deleteSession: (sid: string, e: React.MouseEvent) => void;
   lesson: LMSLesson;
   courseTitle?: string;
   bottomRef: React.RefObject<HTMLDivElement | null>;
-  fullHeight?: boolean;
+  embedded: boolean;
 };
 
-function ChatBody({ messages, loadingHistory, sending, error, question, setQuestion, submitQuestion, resetChat, lesson, courseTitle, bottomRef, fullHeight }: ChatBodyProps) {
+function ChatInner({
+  view,
+  setView,
+  messages,
+  sessions,
+  sessionId,
+  loadingHistory,
+  loadingSessions,
+  loadingSession,
+  deletingId,
+  sending,
+  error,
+  question,
+  setQuestion,
+  submitQuestion,
+  resetChat,
+  openHistory,
+  loadSessionMessages,
+  deleteSession,
+  lesson,
+  courseTitle,
+  bottomRef,
+  embedded,
+}: InnerProps) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", flex: fullHeight ? 1 : undefined, minHeight: fullHeight ? 0 : undefined, padding: fullHeight ? 0 : "0 12px 12px", borderTop: fullHeight ? undefined : "1px solid #e2e8f0" }}>
-      {/* Sub-header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0 8px", flexShrink: 0 }}>
-        <div>
-          <p style={{ fontSize: "0.75rem", fontWeight: 700, color: "#0f172a", margin: 0 }}>Lesson Chatbot</p>
-          <p style={{ fontSize: "0.65rem", color: "#94a3b8", margin: "1px 0 0" }}>
-            {courseTitle ? `${courseTitle} · ` : ""}{lesson.title}
-          </p>
+    <>
+      <style>{`
+        .clc-root {
+          display: flex; flex-direction: column;
+          flex: 1; min-height: 0;
+          font-family: 'Segoe UI', system-ui, sans-serif;
+        }
+        .clc-root * { box-sizing: border-box; }
+
+        /* ── Header ── */
+        .clc-header {
+          display: flex; align-items: center; gap: 8px;
+          padding: 10px 12px 8px; flex-shrink: 0;
+          border-bottom: 1px solid #e2e8f0;
+          background: #fafafa;
+        }
+        .clc-icon-btn {
+          display: flex; align-items: center; justify-content: center;
+          width: 28px; height: 28px; border-radius: 8px;
+          border: 1px solid #e2e8f0; background: white;
+          cursor: pointer; color: #64748b; flex-shrink: 0;
+          transition: background 0.12s, color 0.12s;
+        }
+        .clc-icon-btn:hover { background: #f1f5f9; color: #0f172a; }
+        .clc-icon-btn.active { background: #ede9fe; color: #7c3aed; border-color: #c4b5fd; }
+        .clc-title { flex: 1; min-width: 0; }
+        .clc-title p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        /* ── Chat messages area ── */
+        .clc-messages {
+          flex: 1; min-height: 0; overflow-y: auto;
+          padding: 10px; display: flex; flex-direction: column; gap: 8px;
+          background: white;
+          scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent;
+        }
+        .clc-messages::-webkit-scrollbar { width: 4px; }
+        .clc-messages::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
+
+        /* Message bubbles */
+        .clc-bubble-wrap { display: flex; }
+        .clc-bubble-wrap.user { justify-content: flex-end; }
+        .clc-bubble-wrap.assistant { justify-content: flex-start; }
+        .clc-bubble {
+          max-width: 88%; padding: 8px 11px;
+          font-size: 0.78rem; line-height: 1.6; white-space: pre-wrap;
+        }
+        .clc-bubble.user {
+          background: #0f172a; color: white;
+          border-radius: 14px 14px 3px 14px;
+        }
+        .clc-bubble.assistant {
+          background: #f1f5f9; color: #1e293b;
+          border-radius: 14px 14px 14px 3px;
+          border: 1px solid #e8edf5;
+        }
+        .clc-typing {
+          display: flex; align-items: center; gap: 4px; padding: 4px 2px;
+        }
+        .clc-dot {
+          width: 6px; height: 6px; border-radius: 50%;
+          background: #94a3b8; animation: clcBounce 1.2s ease-in-out infinite;
+        }
+        .clc-dot:nth-child(2) { animation-delay: 0.2s; }
+        .clc-dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes clcBounce {
+          0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+          30% { transform: translateY(-5px); opacity: 1; }
+        }
+        .clc-ai-badge {
+          display: flex; align-items: center; gap: 5px;
+          font-size: 0.65rem; font-weight: 700; color: #7c3aed;
+          margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.05em;
+        }
+
+        /* ── Input bar ── */
+        .clc-input-bar {
+          display: flex; gap: 6px; padding: 8px 10px; flex-shrink: 0;
+          border-top: 1px solid #e2e8f0; background: #fafafa;
+          align-items: flex-end;
+        }
+        .clc-textarea {
+          flex: 1; resize: none; border: 1px solid #e2e8f0; border-radius: 10px;
+          padding: 8px 10px; font-size: 0.78rem; outline: none; font-family: inherit;
+          transition: border-color 0.13s; line-height: 1.5; background: white;
+          min-height: 36px; max-height: 100px; overflow-y: auto;
+        }
+        .clc-textarea:focus { border-color: #a78bfa; }
+        .clc-send-btn {
+          width: 36px; height: 36px; border-radius: 10px; border: none; flex-shrink: 0;
+          display: flex; align-items: center; justify-content: center;
+          transition: background 0.13s; cursor: pointer;
+        }
+        .clc-send-btn:disabled { cursor: not-allowed; }
+
+        /* ── History panel ── */
+        .clc-history {
+          flex: 1; min-height: 0; display: flex; flex-direction: column;
+        }
+        .clc-hist-scroll {
+          flex: 1; min-height: 0; overflow-y: auto; padding: 8px;
+          scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent;
+        }
+        .clc-hist-scroll::-webkit-scrollbar { width: 4px; }
+        .clc-hist-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
+        .clc-session-item {
+          width: 100%; text-align: left; background: none;
+          border: 1px solid #e2e8f0; border-radius: 10px;
+          padding: 10px 12px; cursor: pointer; margin-bottom: 6px;
+          transition: border-color 0.12s, background 0.12s;
+          display: flex; align-items: flex-start; gap: 10px;
+          position: relative;
+        }
+        .clc-session-item:hover { background: #f8fafc; border-color: #c4b5fd; }
+        .clc-session-item.current { background: #ede9fe; border-color: #7c3aed; }
+        .clc-session-icon {
+          width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+          display: flex; align-items: center; justify-content: center;
+          background: #f1f5f9;
+        }
+        .clc-session-item.current .clc-session-icon { background: #7c3aed; }
+        .clc-session-del {
+          position: absolute; top: 8px; right: 8px;
+          width: 22px; height: 22px; border-radius: 6px;
+          border: none; background: none; cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+          color: #94a3b8; opacity: 0; transition: opacity 0.13s, background 0.13s;
+        }
+        .clc-session-item:hover .clc-session-del { opacity: 1; }
+        .clc-session-del:hover { background: #fee2e2; color: #dc2626; }
+
+        /* ── Empty state ── */
+        .clc-empty {
+          display: flex; flex-direction: column; align-items: center;
+          justify-content: center; gap: 8px; padding: 24px;
+          text-align: center; flex: 1;
+        }
+
+        /* ── Error banner ── */
+        .clc-error {
+          margin: 6px 10px; padding: 7px 10px;
+          background: #fee2e2; border-radius: 8px;
+          font-size: 0.73rem; color: #991b1b;
+          flex-shrink: 0;
+        }
+
+        /* ── Hint pill ── */
+        .clc-hint {
+          padding: 10px 12px; background: #eff6ff;
+          border-radius: 10px; font-size: 0.75rem; color: #1d4ed8; line-height: 1.55;
+        }
+
+        /* spin util */
+        .clc-spin { animation: clcSpin 0.7s linear infinite; }
+        @keyframes clcSpin { to { transform: rotate(360deg); } }
+      `}</style>
+
+      <div className="clc-root">
+        {/* ── Header ── */}
+        <div className="clc-header">
+          {view === "history" ? (
+            <button
+              type="button"
+              className="clc-icon-btn"
+              onClick={() => setView("chat")}
+              title="Back to chat"
+            >
+              <ChevronLeft size={15} />
+            </button>
+          ) : (
+            <div
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 8,
+                background: "#7c3aed",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              <Bot size={14} color="white" />
+            </div>
+          )}
+
+          <div className="clc-title">
+            {view === "history" ? (
+              <>
+                <p
+                  style={{
+                    fontSize: "0.78rem",
+                    fontWeight: 700,
+                    color: "#0f172a",
+                  }}
+                >
+                  Chat History
+                </p>
+                <p style={{ fontSize: "0.65rem", color: "#94a3b8" }}>
+                  {lesson.title}
+                </p>
+              </>
+            ) : (
+              <>
+                <p
+                  style={{
+                    fontSize: "0.78rem",
+                    fontWeight: 700,
+                    color: "#0f172a",
+                  }}
+                >
+                  AI Tutor
+                </p>
+                <p
+                  style={{
+                    fontSize: "0.65rem",
+                    color: "#94a3b8",
+                    maxWidth: 160,
+                  }}
+                >
+                  {courseTitle ? `${courseTitle} · ` : ""}
+                  {lesson.title}
+                </p>
+              </>
+            )}
+          </div>
+
+          {view === "chat" && (
+            <>
+              <button
+                type="button"
+                className={`clc-icon-btn${view === "history" ? " active" : ""}`}
+                onClick={openHistory}
+                title="Chat history"
+              >
+                <History size={14} />
+              </button>
+              <button
+                type="button"
+                className="clc-icon-btn"
+                onClick={resetChat}
+                title="New chat"
+              >
+                <Plus size={14} />
+              </button>
+            </>
+          )}
+
+          {view === "history" && (
+            <button
+              type="button"
+              className="clc-icon-btn"
+              onClick={() => {
+                setView("chat");
+              }}
+              title="New chat"
+              style={{ marginLeft: "auto" }}
+            >
+              <Plus size={14} />
+            </button>
+          )}
         </div>
-        <button
-          type="button"
-          onClick={resetChat}
-          style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 7, border: "1px solid #e2e8f0", background: "white", fontSize: "0.7rem", fontWeight: 600, color: "#64748b", cursor: "pointer", flexShrink: 0 }}
-        >
-          <Plus size={11} /> New chat
-        </button>
-      </div>
 
-      {error && (
-        <div style={{ marginBottom: 8, padding: "7px 10px", background: "#fee2e2", borderRadius: 8, fontSize: "0.75rem", color: "#991b1b" }}>{error}</div>
-      )}
+        {/* ── CHAT VIEW ── */}
+        {view === "chat" && (
+          <>
+            {error && <div className="clc-error">{error}</div>}
 
-      {/* Messages */}
-      <div style={{
-        flex: 1, minHeight: 0, overflowY: "auto", padding: "8px",
-        background: "white", borderRadius: 10, border: "1px solid #e2e8f0",
-        marginBottom: 8, display: "flex", flexDirection: "column", gap: 6,
-        scrollbarWidth: "thin", scrollbarColor: "#cbd5e1 transparent",
-      }}>
-        {loadingHistory && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.75rem", color: "#94a3b8" }}>
-            <Loader2 size={13} className="animate-spin" /> Loading…
-          </div>
+            <div className="clc-messages">
+              {loadingHistory && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: "0.75rem",
+                    color: "#94a3b8",
+                    padding: "4px 0",
+                  }}
+                >
+                  <Loader2 size={13} className="clc-spin" /> Loading messages…
+                </div>
+              )}
+
+              {!loadingHistory && messages.length === 0 && (
+                <div className="clc-hint">
+                  <strong style={{ display: "block", marginBottom: 4 }}>
+                    Ask anything about this lesson
+                  </strong>
+                  Try <em>"Explain this simply"</em>,{" "}
+                  <em>"Give me an example"</em>, or{" "}
+                  <em>"What's the main idea?"</em>
+                </div>
+              )}
+
+              {messages.map((msg) => (
+                <div key={msg.id} className={`clc-bubble-wrap ${msg.role}`}>
+                  <div className={`clc-bubble ${msg.role}`}>
+                    {msg.role === "assistant" && (
+                      <div className="clc-ai-badge">
+                        <Bot size={10} /> AI Tutor
+                      </div>
+                    )}
+                    {msg.content ||
+                      (msg.role === "assistant" && sending ? (
+                        <div className="clc-typing">
+                          <div className="clc-dot" />
+                          <div className="clc-dot" />
+                          <div className="clc-dot" />
+                        </div>
+                      ) : null)}
+                  </div>
+                </div>
+              ))}
+              <div ref={bottomRef} />
+            </div>
+
+            <div className="clc-input-bar">
+              <textarea
+                className="clc-textarea"
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="Ask your doubt…"
+                rows={1}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    submitQuestion();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="clc-send-btn"
+                onClick={submitQuestion}
+                disabled={sending || !question.trim()}
+                style={{
+                  background:
+                    sending || !question.trim() ? "#f1f5f9" : "#7c3aed",
+                  color: sending || !question.trim() ? "#94a3b8" : "white",
+                }}
+              >
+                {sending ? (
+                  <Loader2 size={15} className="clc-spin" />
+                ) : (
+                  <Send size={15} />
+                )}
+              </button>
+            </div>
+          </>
         )}
-        {!loadingHistory && messages.length === 0 && (
-          <div style={{ padding: "10px 12px", background: "#eff6ff", borderRadius: 8, fontSize: "0.75rem", color: "#1d4ed8", lineHeight: 1.5 }}>
-            Try: <em>"Explain this topic simply"</em> or <em>"What is the key concept?"</em>
-          </div>
-        )}
-        {messages.map((msg) => (
-          <div key={msg.id} style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
-            <div style={{
-              maxWidth: "88%", padding: "7px 10px", borderRadius: msg.role === "user" ? "12px 12px 3px 12px" : "12px 12px 12px 3px",
-              background: msg.role === "user" ? "#0f172a" : "#f1f5f9",
-              color: msg.role === "user" ? "white" : "#1e293b",
-              fontSize: "0.78rem", lineHeight: 1.55, whiteSpace: "pre-wrap",
-            }}>
-              {msg.content || (msg.role === "assistant" && sending ? (
-                <span style={{ display: "flex", alignItems: "center", gap: 5, color: "#94a3b8" }}>
-                  <Loader2 size={12} className="animate-spin" /> Thinking…
-                </span>
-              ) : null)}
+
+        {/* ── HISTORY VIEW ── */}
+        {view === "history" && (
+          <div className="clc-history">
+            <div className="clc-hist-scroll">
+              {loadingSessions && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8,
+                    padding: 24,
+                    color: "#94a3b8",
+                    fontSize: "0.78rem",
+                  }}
+                >
+                  <Loader2 size={16} className="clc-spin" /> Loading sessions…
+                </div>
+              )}
+
+              {!loadingSessions && sessions.length === 0 && (
+                <div className="clc-empty">
+                  <div
+                    style={{
+                      width: 40,
+                      height: 40,
+                      borderRadius: 12,
+                      background: "#f1f5f9",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <MessageCircle size={18} color="#94a3b8" />
+                  </div>
+                  <p
+                    style={{
+                      fontSize: "0.82rem",
+                      fontWeight: 600,
+                      color: "#475569",
+                      margin: 0,
+                    }}
+                  >
+                    No chat history yet
+                  </p>
+                  <p
+                    style={{ fontSize: "0.75rem", color: "#94a3b8", margin: 0 }}
+                  >
+                    Start a conversation to see it here.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setView("chat")}
+                    style={{
+                      marginTop: 8,
+                      padding: "7px 16px",
+                      borderRadius: 9,
+                      background: "#7c3aed",
+                      color: "white",
+                      border: "none",
+                      cursor: "pointer",
+                      fontSize: "0.78rem",
+                      fontWeight: 600,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 5,
+                    }}
+                  >
+                    <Plus size={13} /> Start chatting
+                  </button>
+                </div>
+              )}
+
+              {!loadingSessions && sessions.length > 0 && (
+                <>
+                  <p
+                    style={{
+                      fontSize: "0.68rem",
+                      fontWeight: 700,
+                      color: "#94a3b8",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em",
+                      padding: "4px 4px 8px",
+                      margin: 0,
+                    }}
+                  >
+                    {sessions.length} session{sessions.length !== 1 ? "s" : ""}
+                  </p>
+                  {sessions.map((s) => {
+                    const isCurrent = s.id === sessionId;
+                    const isLoading = loadingSession === s.id;
+                    const isDeleting = deletingId === s.id;
+                    return (
+                      <div
+                        key={s.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => loadSessionMessages(s.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            loadSessionMessages(s.id);
+                          }
+                        }}
+                        className={`clc-session-item${isCurrent ? " current" : ""}`}
+                      >
+                        <div className="clc-session-icon">
+                          {isLoading ? (
+                            <Loader2
+                              size={14}
+                              color={isCurrent ? "white" : "#7c3aed"}
+                              className="clc-spin"
+                            />
+                          ) : (
+                            <MessageCircle
+                              size={14}
+                              color={isCurrent ? "white" : "#7c3aed"}
+                            />
+                          )}
+                        </div>
+
+                        <div
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            textAlign: "left",
+                          }}
+                        >
+                          <p
+                            style={{
+                              fontSize: "0.78rem",
+                              fontWeight: 600,
+                              color: isCurrent ? "#4c1d95" : "#0f172a",
+                              margin: 0,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              paddingRight: 28,
+                            }}
+                          >
+                            <SessionTitle session={s} />
+                          </p>
+
+                          <p
+                            style={{
+                              fontSize: "0.67rem",
+                              color: isCurrent ? "#6d28d9" : "#94a3b8",
+                              margin: "2px 0 0",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 4,
+                            }}
+                          >
+                            <Clock size={9} />
+                            {formatSessionTime(s.created_at)}
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          className="clc-session-del"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteSession(s.id, e);
+                          }}
+                          title="Delete session"
+                          disabled={isDeleting}
+                          aria-label="Delete session"
+                        >
+                          {isDeleting ? (
+                            <Loader2 size={11} className="clc-spin" />
+                          ) : (
+                            <Trash2 size={11} />
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+
+            {/* History footer */}
+            <div
+              style={{
+                padding: "8px 10px",
+                borderTop: "1px solid #e2e8f0",
+                background: "#fafafa",
+                flexShrink: 0,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setView("chat")}
+                style={{
+                  width: "100%",
+                  padding: "8px",
+                  borderRadius: 9,
+                  border: "1px solid #e2e8f0",
+                  background: "white",
+                  cursor: "pointer",
+                  fontSize: "0.78rem",
+                  fontWeight: 600,
+                  color: "#64748b",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  transition: "background 0.12s",
+                }}
+              >
+                <ChevronLeft size={14} /> Back to chat
+              </button>
             </div>
           </div>
-        ))}
-        <div ref={bottomRef} />
+        )}
       </div>
-
-      {/* Input */}
-      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-        <textarea
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          placeholder="Ask your doubt…"
-          rows={2}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitQuestion(); } }}
-          style={{
-            flex: 1, resize: "none", border: "1px solid #e2e8f0", borderRadius: 10,
-            padding: "8px 10px", fontSize: "0.78rem", outline: "none", fontFamily: "inherit",
-            transition: "border-color 0.13s", lineHeight: 1.5,
-          }}
-          onFocus={(e) => (e.target.style.borderColor = "#a78bfa")}
-          onBlur={(e) => (e.target.style.borderColor = "#e2e8f0")}
-        />
-        <button
-          type="button"
-          onClick={submitQuestion}
-          disabled={sending || !question.trim()}
-          style={{
-            padding: "0 12px", borderRadius: 10, border: "none",
-            background: sending || !question.trim() ? "#e2e8f0" : "#7c3aed",
-            color: sending || !question.trim() ? "#94a3b8" : "white",
-            cursor: sending || !question.trim() ? "not-allowed" : "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            transition: "background 0.13s",
-          }}
-        >
-          {sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-        </button>
-      </div>
-    </div>
+    </>
   );
 }

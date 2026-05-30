@@ -101,17 +101,17 @@ export default function CoursePortal({ mode }: Props) {
     }
   };
 
-  const trackVideo = async (lesson: LMSLesson, event: React.SyntheticEvent<HTMLVideoElement>) => {
-    if (mode !== "student") return;
-    const video = event.currentTarget;
-    if (!video.duration || video.paused) return;
-    try {
-      await apiFetch(`/progress/${lesson.id}/watch`, {
-        method: "POST",
-        body: JSON.stringify({ watched_seconds_delta: 5, video_duration_seconds: video.duration, current_position_seconds: video.currentTime }),
-      });
-    } catch { /* progress ping — non-blocking */ }
-  };
+  // const trackVideo = async (lesson: LMSLesson, event: React.SyntheticEvent<HTMLVideoElement>) => {
+  //   if (mode !== "student") return;
+  //   const video = event.currentTarget;
+  //   if (!video.duration || video.paused) return;
+  //   try {
+  //     await apiFetch(`/progress/${lesson.id}/watch`, {
+  //       method: "POST",
+  //       body: JSON.stringify({ watched_seconds_delta: 5, video_duration_seconds: video.duration, current_position_seconds: video.currentTime }),
+  //     });
+  //   } catch { /* progress ping — non-blocking */ }
+  // };
 
   const selectLesson = (lesson: LMSLesson) => {
     setActiveLesson(lesson);
@@ -464,7 +464,7 @@ export default function CoursePortal({ mode }: Props) {
                         key={activeLesson.id}
                         controls
                         src={fileUrl(activeLesson.video_url)}
-                        onTimeUpdate={(e) => trackVideo(activeLesson, e)}
+                        // onTimeUpdate={(e) => trackVideo(activeLesson, e)}
                       />
                     </div>
                   ) : activeLesson.external_video_link ? (

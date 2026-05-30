@@ -13,12 +13,15 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
     FRONTEND_BASE_URL: str = "http://localhost:3000"
 
-    # AI / integrations. Keep real keys only in .env, never in committed code.
-    OPENROUTER_API_KEY: str = ""
-    MODEL: str = "anthropic/claude-sonnet-4.6"
-    TRANSCRIPTION_MODEL: str = "openai/whisper-large-v3"
-    EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
+    # AI 
+    OPENROUTER_API_KEY: str
+    OPENAI_API_KEY: str
+    MODEL: str
+    TRANSCRIPTION_MODEL: str
+    EMBEDDING_MODEL: str 
     TAVILY_API_KEY: str = ""
+
+    # Meeting
     BBB_URL: str = "https://tensordock-bbb.freedynamicdns.net/bigbluebutton/"
     BBB_SECRET: str = ""
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   NotebookIcon,
   Sparkles,
@@ -11,8 +11,6 @@ import {
   BookOpen,
   Clock,
   Users,
-  Hash,
-  Globe,
   Loader2,
   AlertCircle,
 } from "lucide-react";
@@ -20,6 +18,7 @@ import {
 import AppShell from "@/components/AppShell";
 import { apiFetch } from "@/lib/api";
 import LANGUAGES from "@/utils/languages";
+import type { CourseMeta } from "@/types";
 
 type LessonPlan = {
   title: string;
@@ -79,6 +78,29 @@ function StatPill({
   );
 }
 
+function SelectField({
+  value,
+  onChange,
+  disabled,
+  children,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white focus:ring-2 focus:ring-slate-100 disabled:opacity-50"
+    >
+      {children}
+    </select>
+  );
+}
+
 function GenerateForm({
   onGenerated,
 }: {
@@ -122,7 +144,6 @@ function GenerateForm({
   return (
     <form onSubmit={handleSubmit} noValidate>
       <div className="rounded-2xl border border-slate-200 bg-white">
-        {/* Header */}
         <div className="border-b border-slate-100 px-6 py-5">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900">
@@ -130,7 +151,7 @@ function GenerateForm({
             </div>
             <div>
               <h2 className="text-base font-semibold text-slate-900">
-                Generate Curriculum
+                Generate curriculum
               </h2>
               <p className="text-xs text-slate-500">
                 Describe your course and let AI build the lesson plan
@@ -139,9 +160,7 @@ function GenerateForm({
           </div>
         </div>
 
-        {/* Fields */}
         <div className="space-y-5 px-6 py-6">
-          {/* Topic */}
           <div>
             <Label>Course topic *</Label>
             <input
@@ -154,7 +173,6 @@ function GenerateForm({
             />
           </div>
 
-          {/* Audience */}
           <div>
             <Label>Target audience *</Label>
             <input
@@ -167,7 +185,6 @@ function GenerateForm({
             />
           </div>
 
-          {/* Duration + Lessons side by side */}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <Label>
@@ -206,7 +223,6 @@ function GenerateForm({
             </div>
           </div>
 
-          {/* Language */}
           <div>
             <Label>Language</Label>
             <select
@@ -226,7 +242,6 @@ function GenerateForm({
           {error && <ErrorBanner message={error} />}
         </div>
 
-        {/* Footer */}
         <div className="border-t border-slate-100 px-6 py-4">
           <button
             type="submit"
@@ -253,19 +268,33 @@ function GenerateForm({
 
 function CurriculumPreview({
   plan,
+  meta,
   onApproved,
   onBack,
 }: {
   plan: CurriculumPlan;
+  meta: CourseMeta;
   onApproved: (data: SuccessData) => void;
   onBack: () => void;
 }) {
   const [courseId, setCourseId] = useState("");
+  const [classId, setClassId] = useState("");
+  const [sectionId, setSectionId] = useState("");
+  const [subjectId, setSubjectId] = useState("");
   const [expanded, setExpanded] = useState<number | null>(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const filteredSections = useMemo(() => {
+    if (!classId) return [];
+    return meta.sections.filter((s) => s.extra === classId);
+  }, [classId, meta.sections]);
+
   async function handleApprove() {
+    if (!classId) {
+      setError("Please select a class before saving.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -274,6 +303,9 @@ function CurriculumPreview({
         body: JSON.stringify({
           plan,
           course_id: courseId ? Number(courseId) : null,
+          class_id: Number(classId),
+          section_id: sectionId ? Number(sectionId) : null,
+          subject_id: subjectId ? Number(subjectId) : null,
         }),
       });
       onApproved(result);
@@ -295,8 +327,8 @@ function CurriculumPreview({
         Back to generator
       </button>
 
-      {/* Course card */}
       <div className="rounded-2xl border border-slate-200 bg-white">
+        {/* Course header */}
         <div className="border-b border-slate-100 px-6 py-5">
           <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
             Generated curriculum
@@ -308,21 +340,9 @@ function CurriculumPreview({
             {plan.course_description}
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
-            <StatPill
-              icon={Users}
-              label="Audience"
-              value={plan.target_audience}
-            />
-            <StatPill
-              icon={Clock}
-              label="Duration"
-              value={`${plan.duration_weeks} weeks`}
-            />
-            <StatPill
-              icon={BookOpen}
-              label="Lessons"
-              value={plan.lessons.length}
-            />
+            <StatPill icon={Users} label="Audience" value={plan.target_audience} />
+            <StatPill icon={Clock} label="Duration" value={`${plan.duration_weeks} weeks`} />
+            <StatPill icon={BookOpen} label="Lessons" value={plan.lessons.length} />
           </div>
         </div>
 
@@ -351,15 +371,9 @@ function CurriculumPreview({
                   )}
                 </div>
                 {isOpen ? (
-                  <ChevronDown
-                    size={15}
-                    className="mt-0.5 shrink-0 text-slate-400"
-                  />
+                  <ChevronDown size={15} className="mt-0.5 shrink-0 text-slate-400" />
                 ) : (
-                  <ChevronRight
-                    size={15}
-                    className="mt-0.5 shrink-0 text-slate-400"
-                  />
+                  <ChevronRight size={15} className="mt-0.5 shrink-0 text-slate-400" />
                 )}
               </button>
             );
@@ -368,6 +382,53 @@ function CurriculumPreview({
 
         {/* Approve section */}
         <div className="border-t border-slate-100 px-6 py-5 space-y-4">
+          <div>
+            <p className="mb-3 text-sm font-semibold text-slate-700">
+              Assign to class
+            </p>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label>Class *</Label>
+                <SelectField
+                  value={classId}
+                  onChange={(v) => { setClassId(v); setSectionId(""); }}
+                  disabled={loading}
+                >
+                  <option value="">Select class</option>
+                  {meta.classes.map((c) => (
+                    <option key={c.id} value={String(c.id)}>{c.name}</option>
+                  ))}
+                </SelectField>
+              </div>
+              <div>
+                <Label>Section</Label>
+                <SelectField
+                  value={sectionId}
+                  onChange={setSectionId}
+                  disabled={loading || !classId}
+                >
+                  <option value="">All sections</option>
+                  {filteredSections.map((s) => (
+                    <option key={s.id} value={String(s.id)}>{s.name}</option>
+                  ))}
+                </SelectField>
+              </div>
+              <div>
+                <Label>Subject</Label>
+                <SelectField
+                  value={subjectId}
+                  onChange={setSubjectId}
+                  disabled={loading}
+                >
+                  <option value="">Select subject</option>
+                  {meta.subjects.map((s) => (
+                    <option key={s.id} value={String(s.id)}>{s.name}</option>
+                  ))}
+                </SelectField>
+              </div>
+            </div>
+          </div>
+
           <div>
             <Label>Attach to existing course ID (optional)</Label>
             <input
@@ -421,9 +482,7 @@ function SuccessBanner({
           <CheckCircle2 size={28} className="text-emerald-600" />
         </div>
         <div>
-          <h2 className="text-lg font-bold text-slate-900">
-            Curriculum saved!
-          </h2>
+          <h2 className="text-lg font-bold text-slate-900">Curriculum saved!</h2>
           <p className="mt-1 text-sm text-slate-500">{data.message}</p>
         </div>
 
@@ -432,9 +491,7 @@ function SuccessBanner({
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-0.5">
               Course
             </p>
-            <p className="text-sm font-semibold text-slate-800">
-              {data.course_title}
-            </p>
+            <p className="text-sm font-semibold text-slate-800">{data.course_title}</p>
           </div>
           <div className="grid grid-cols-2 divide-x divide-slate-100">
             <div className="px-4 py-3">
@@ -473,6 +530,11 @@ export default function CurriculumPage() {
   const [step, setStep] = useState<Step>("form");
   const [plan, setPlan] = useState<CurriculumPlan | null>(null);
   const [successData, setSuccessData] = useState<SuccessData | null>(null);
+  const [meta, setMeta] = useState<CourseMeta | null>(null);
+
+  useEffect(() => {
+    apiFetch<CourseMeta>("/courses/meta").then(setMeta).catch(() => {});
+  }, []);
 
   function handleGenerated(p: CurriculumPlan) {
     setPlan(p);
@@ -505,12 +567,20 @@ export default function CurriculumPage() {
 
         {step === "form" && <GenerateForm onGenerated={handleGenerated} />}
 
-        {step === "preview" && plan && (
+        {step === "preview" && plan && meta && (
           <CurriculumPreview
             plan={plan}
+            meta={meta}
             onApproved={handleApproved}
             onBack={handleReset}
           />
+        )}
+
+        {step === "preview" && plan && !meta && (
+          <div className="flex items-center justify-center py-12 text-sm text-slate-500">
+            <Loader2 size={16} className="mr-2 animate-spin" />
+            Loading class data…
+          </div>
         )}
 
         {step === "success" && successData && (

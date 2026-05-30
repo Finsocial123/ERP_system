@@ -11,6 +11,7 @@ from app.schemas.curriculum import (
 )
 from app.services import curriculum_service
 from app.models.user import (UserRole)
+from app.dependencies.auth import current_school_id
 
 ACCESS_ROLES = (UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value, UserRole.TEACHER.value)
 
@@ -28,19 +29,23 @@ async def generate_curriculum(
 @router.post("/approve")
 async def approve_curriculum(
     request: CurriculumApproveRequest,
+    school_id: int = Depends(current_school_id),
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(require_roles(*ACCESS_ROLES))
 ):
     course = await curriculum_service.save_curriculum(
         plan=request.plan,
         course_id=request.course_id,
+        school_id=school_id,
+        class_id=request.class_id,
+        section_id=request.section_id,
+        subject_id=request.subject_id,
         current_user=current_user,
-        db=db
+        db=db,
     )
     return {
         "message": "Curriculum saved successfully",
         "course_id": course.id,
         "course_title": course.title,
-        "lessons_created": len(request.plan.lessons)
+        "lessons_created": len(request.plan.lessons),
     }
-

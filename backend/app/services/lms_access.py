@@ -379,3 +379,20 @@ async def async_can_manage_course(db: AsyncSession, school_id: int, user: User, 
 async def async_ensure_can_manage_course(db: AsyncSession, school_id: int, user: User, course: Course) -> None:
     if not await async_can_manage_course(db, school_id, user, course):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can manage only your assigned LMS courses")
+    
+
+async def async_current_session(db: AsyncSession, school_id: int) -> AcademicSession | None:
+    active = (await db.execute(
+        select(AcademicSession)
+        .where(AcademicSession.school_id == school_id, AcademicSession.is_active.is_(True))
+        .order_by(AcademicSession.id.desc())
+    )).scalars().first()
+
+    if active:
+        return active
+
+    return (await db.execute(
+        select(AcademicSession)
+        .where(AcademicSession.school_id == school_id)
+        .order_by(AcademicSession.id.desc())
+    )).scalars().first()

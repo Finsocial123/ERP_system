@@ -23,4 +23,6 @@ class CurriculumPlan(BaseModel):
 class CurriculumApproveRequest(BaseModel):
     plan: CurriculumPlan
     course_id: int | None = None
-
+    class_id: int
+    section_id: int | None = None
+    subject_id: int | None = None

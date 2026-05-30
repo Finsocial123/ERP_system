@@ -14,6 +14,7 @@ from app.models.user import User, UserRole
 ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
 MANAGER_ROLES = (UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN, UserRole.TEACHER)
 LEARNER_ROLES = (UserRole.STUDENT, UserRole.PARENT)
+ONLY_STUDENT_ROLES = (UserRole.STUDENT)
 ALL_LMS_ROLES = (
     UserRole.SUPER_ADMIN,
     UserRole.SCHOOL_OWNER,

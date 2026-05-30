@@ -2,11 +2,11 @@ import { API_BASE, apiFetch, getToken } from "@/lib/api";
 import type { ChatMessage, ChatSession } from "@/types";
 
 export async function createChatSession(): Promise<ChatSession> {
-  return apiFetch<ChatSession>("/sessions/sessions", { method: "POST" });
+  return apiFetch<ChatSession>("/sessions", { method: "POST" });
 }
 
 export async function getChatSessions(): Promise<ChatSession[]> {
-  return apiFetch<ChatSession[]>("/sessions/sessions");
+  return apiFetch<ChatSession[]>("/sessions");
 }
 
 export async function getChatMessages(sessionId: string): Promise<ChatMessage[]> {

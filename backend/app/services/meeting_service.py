@@ -150,10 +150,9 @@ async def get_active_meeting_for_class(
     query = select(Meeting).where(
         Meeting.school_id == school_id,
         Meeting.class_id == class_id,
+        Meeting.section_id == section_id,
         Meeting.status == MeetingStatus.LIVE,
     )
-    if section_id:
-        query = query.where(Meeting.section_id == section_id)
 
     result = await db.execute(query)
     return result.scalar_one_or_none()
@@ -172,7 +171,9 @@ async def list_meetings(
     query = (
         select(Meeting)
         .options(joinedload(Meeting.created_by)) 
-        .where(Meeting.school_id == current_user.school_id)
+        .where(
+            Meeting.school_id == current_user.school_id,
+        )
     )
 
     if current_user.role == UserRole.STUDENT.value:
@@ -185,10 +186,13 @@ async def list_meetings(
 
         query = query.where(
             Meeting.class_id == student.class_id,
+            Meeting.section_id == student.section_id,
             Meeting.meeting_type == MeetingType.TEACHER_CLASS, 
         )
         if student.section_id:
-            query = query.where(Meeting.section_id == student.section_id)
+            query = query.where(
+                Meeting.section_id == student.section_id,
+            )
 
     elif current_user.role == UserRole.TEACHER.value:
         query = query.where(

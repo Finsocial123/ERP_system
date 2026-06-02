@@ -18,7 +18,6 @@ from app.schemas.meetings import MeetingListOut, TeacherClassOut, TeacherMeeting
 router = APIRouter(prefix="/meetings", tags=["Meetings"])
 
 
-
 @router.get("/stats")
 async def meeting_stats(
     db: AsyncSession = Depends(get_async_db),

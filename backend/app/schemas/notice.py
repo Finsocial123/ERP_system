@@ -13,6 +13,18 @@ class NoticeAudienceOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
+class AvailableClassOut(BaseModel):
+    class_id: int
+    class_name: str
+    section_id: int | None
+    section_name: str | None
+
+class NoticeClassAudienceOut(BaseModel):
+    id: int
+    class_id: int
+    section_id: int
+
+    model_config = {"from_attributes": True} 
 
 class NoticeBase(BaseModel):
     title: Annotated[str, Field(min_length=3, max_length=255)]
@@ -20,7 +32,6 @@ class NoticeBase(BaseModel):
     priority: NoticePriority = NoticePriority.NORMAL
     publish_at: datetime | None = None
     expires_at: datetime | None = None
-    # Roles that can see this notice. Empty list = all roles.
     audience_roles: list[UserRole] = []
 
     @model_validator(mode="after")
@@ -39,6 +50,9 @@ class NoticeUpdate(BaseModel):
     publish_at: datetime | None = None
     expires_at: datetime | None = None
     audience_roles: list[UserRole] | None = None
+    audience_class_ids: list[int] | None = None     
+    audience_section_ids: list[int] | None = None   
+
 
     @model_validator(mode="after")
     def check_expiry_after_publish(self) -> "NoticeUpdate":
@@ -73,7 +87,8 @@ class NoticeOut(BaseModel):
     audiences: list[NoticeAudienceOut]
     read_count: int = 0
     is_read: bool = False 
-
+    class_audiences: list[NoticeClassAudienceOut] = []
+    
     model_config = {"from_attributes": True}
 
 
@@ -111,6 +126,8 @@ class NoticeCreate(BaseModel):
     publish_at: datetime | None = None
     expires_at: datetime | None = None
     audience_roles: list[UserRole] = []
+    audience_class_ids: list[int] = []   
+    audience_section_ids: list[int] = [] 
 
     @model_validator(mode="after")
     def check_expiry_after_publish(self) -> "NoticeCreate":
@@ -119,3 +136,11 @@ class NoticeCreate(BaseModel):
             if self.expires_at <= self.publish_at:
                 raise ValueError("expires_at must be after publish_at")
         return self
+    
+    @model_validator(mode="after")
+    def check_class_section_lengths(self) -> "NoticeCreate":
+        if self.audience_section_ids and len(self.audience_section_ids) != len(self.audience_class_ids):
+            raise ValueError("audience_section_ids must have the same length as audience_class_ids")
+        return self
+
+

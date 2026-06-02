@@ -3,6 +3,17 @@
 :root {
   --background: #f8fafc;
   --foreground: #0f172a;
+  --erp-primary: #2563eb;
+  --erp-primary-dark: #1d4ed8;
+  --erp-primary-soft: #dbeafe;
+  --erp-primary-text: #ffffff;
+  --erp-secondary: #0f172a;
+  --erp-accent: #22c55e;
+  --erp-sidebar: #0f172a;
+  --erp-sidebar-active: #4f46e5;
+  --erp-background: #f8fafc;
+  --erp-text: #0f172a;
+  --erp-border-radius: 16px;
 }
 
 * {
@@ -11,8 +22,8 @@
 
 body {
   margin: 0;
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--erp-background, var(--background));
+  color: var(--erp-text, var(--foreground));
   font-family: Arial, Helvetica, sans-serif;
 }
 

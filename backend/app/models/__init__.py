@@ -5,6 +5,7 @@ from app.models.timetable import TimetableDay, TimetableEntry, TimetablePeriod
 from app.models.exam import Exam, ExamSubject, ExamMark
 from app.models.fee import FeeAssignment, FeeCategory, FeeExpense, FeePayment, FeeStructure, StudentFeeRecord
 from app.models.school import School
+from app.models.branding import SchoolBranding
 from app.models.user import User
 from app.models.verification import PendingSchoolRegistration
 from app.models.course import Course
@@ -26,6 +27,7 @@ from app.models.communication import (
 
 __all__ = [
     "School",
+    "SchoolBranding",
     "User",
     "PendingSchoolRegistration",
     "AcademicSession",

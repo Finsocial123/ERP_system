@@ -246,118 +246,158 @@ async def send_message_stream(
     logger.debug("MESSAGES: %s", json.dumps(messages, indent=2))
 
     async def event_generator():
-        # prevent shared state across concurrent requests from different users
-        full_response = []
+            full_response = []
 
-        async with session_factory() as gen_db:
-            try:
-                if request.enhance_prompt:
-                    yield f"data: {json.dumps({'enhanced_prompt': enhanced_content})}\n\n"
+            async with session_factory() as gen_db:
+                try:
+                    if request.enhance_prompt:
+                        yield f"data: {json.dumps({'enhanced_prompt': enhanced_content})}\n\n"
 
-                active_tools = TOOLS if request.web_search else []
+                    active_tools = TOOLS if request.web_search else []
 
-                first_response = await client.chat.completions.create(
-                    model=settings.MODEL,
-                    messages=messages,
-                    **({"tools": active_tools, "tool_choice": "auto"} if active_tools else {}),
-                    stream=False
-                )
+                    # ── Single streaming call replaces the old stream=False probe ──
+                    # We read the stream once. If the model decides to call a tool,
+                    # delta.tool_calls arrive in fragments; we accumulate them.
+                    # If it decides to answer directly, delta.content tokens are
+                    # yielded to the client immediately — first token is visible
+                    # 1-3 seconds earlier than before.
 
-                choice = first_response.choices[0]
-
-                if choice.finish_reason == "tool_calls":
-                    tool_call = choice.message.tool_calls[0]
-                    tool_name = tool_call.function.name
-                    tool_args = json.loads(tool_call.function.arguments)
-
-                    yield f"data: {json.dumps({'status': 'thinking', 'tool': tool_name})}\n\n"
-
-                    assistant_tool_msg = ChatMessage(
-                        session_id=session_id,
-                        role=ChatRole.ASSISTANT,
-                        content=None,
-                        user_id=current_user.id,
-                        tool_calls=[tc.model_dump() for tc in choice.message.tool_calls],
-                    )
-                    gen_db.add(assistant_tool_msg)
-                    await gen_db.commit()
-
-                    tool_result = await execute_tool(tool_name, tool_args, gen_db)
-
-                    tool_result_msg = ChatMessage(
-                        session_id=session_id,
-                        role=ChatRole.TOOL,
-                        content=tool_result,
-                        user_id=current_user.id,
-                        tool_call_id=tool_call.id,
-                    )
-                    gen_db.add(tool_result_msg)
-                    await gen_db.commit()
-
-                    messages_with_result = messages + [
-                        choice.message.model_dump(exclude_none=True),
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": tool_result
-                        }
-                    ]
-
-                    final_stream = await client.chat.completions.create(
-                        model=settings.MODEL,
-                        messages=messages_with_result,
-                        stream=True
-                    )
-
-                    async for chunk in final_stream:
-                        token = chunk.choices[0].delta.content
-                        if token:
-                            full_response.append(token)
-                            yield f"data: {json.dumps({'token': token})}\n\n"
-
-                    final_assistant_msg = ChatMessage(
-                        session_id=session_id,
-                        role=ChatRole.ASSISTANT,
-                        content="".join(full_response),
-                        user_id=current_user.id,
-                        tool_calls=None,
-                    )
-                    gen_db.add(final_assistant_msg)
-
-                    await _update_session_title(gen_db, session_id, enhanced_content)
-                    await gen_db.commit()
-
-                    yield f"data: {json.dumps({'status': 'done'})}\n\n"
-
-                else:
                     stream = await client.chat.completions.create(
                         model=settings.MODEL,
                         messages=messages,
+                        **({"tools": active_tools, "tool_choice": "auto"} if active_tools else {}),
                         stream=True
                     )
 
+                    # Accumulators for a potential tool call
+                    finish_reason = None
+                    tool_call_id = None
+                    tool_call_name = None
+                    tool_call_args_parts: list[str] = []
+
                     async for chunk in stream:
-                        token = chunk.choices[0].delta.content
-                        if token:
-                            full_response.append(token)
-                            yield f"data: {json.dumps({'token': token})}\n\n"
+                        choice = chunk.choices[0]
+                        delta = choice.delta
+                        finish_reason = choice.finish_reason or finish_reason
 
-                    final_assistant_msg = ChatMessage(
-                        session_id=session_id,
-                        role=ChatRole.ASSISTANT,
-                        content="".join(full_response),
-                        user_id=current_user.id,
-                    )
-                    gen_db.add(final_assistant_msg)
+                        # ── Tool call fragment ──
+                        if delta.tool_calls:
+                            tc = delta.tool_calls[0]   # only one tool at a time
+                            if tc.id:
+                                tool_call_id = tc.id
+                            if tc.function and tc.function.name:
+                                tool_call_name = tc.function.name
+                            if tc.function and tc.function.arguments:
+                                tool_call_args_parts.append(tc.function.arguments)
 
-                    await _update_session_title(gen_db, session_id, enhanced_content)
-                    await gen_db.commit()
+                        # ── Regular content token — stream straight to client ──
+                        elif delta.content:
+                            full_response.append(delta.content)
+                            yield f"data: {json.dumps({'token': delta.content})}\n\n"
 
-                    yield f"data: {json.dumps({'status': 'done'})}\n\n"
+                    # ── After stream is exhausted, handle the two outcomes ──
 
-            except Exception as e:
-                await gen_db.rollback()
-                logger.error(f"[chat error] session={session_id} error={e}", exc_info=True)
-                yield f"data: {json.dumps({'error': 'Something went wrong. Please try again.'})}\n\n"
+                    if finish_reason == "tool_calls" and tool_call_name and tool_call_id:
+                        # Behaviour is identical to the original tool_calls branch.
+                        # The only difference: we read tool name/args from our
+                        # accumulators instead of from choice.message.
+                        tool_args = json.loads("".join(tool_call_args_parts))
+
+                        yield f"data: {json.dumps({'status': 'thinking', 'tool': tool_call_name})}\n\n"
+
+                        # Reconstruct the assistant tool-call message for the DB
+                        # (same shape as before — a list of dicts with id/type/function)
+                        tool_calls_payload = [
+                            {
+                                "id": tool_call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_call_name,
+                                    "arguments": "".join(tool_call_args_parts),
+                                },
+                            }
+                        ]
+
+                        assistant_tool_msg = ChatMessage(
+                            session_id=session_id,
+                            role=ChatRole.ASSISTANT,
+                            content=None,
+                            user_id=current_user.id,
+                            tool_calls=tool_calls_payload,
+                        )
+                        gen_db.add(assistant_tool_msg)
+                        await gen_db.commit()
+
+                        tool_result = await execute_tool(tool_call_name, tool_args, gen_db)
+
+                        tool_result_msg = ChatMessage(
+                            session_id=session_id,
+                            role=ChatRole.TOOL,
+                            content=tool_result,
+                            user_id=current_user.id,
+                            tool_call_id=tool_call_id,
+                        )
+                        gen_db.add(tool_result_msg)
+                        await gen_db.commit()
+
+                        messages_with_result = messages + [
+                            {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": tool_calls_payload,
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": tool_result,
+                            },
+                        ]
+
+                        final_stream = await client.chat.completions.create(
+                            model=settings.MODEL,
+                            messages=messages_with_result,
+                            stream=True
+                        )
+
+                        async for chunk in final_stream:
+                            token = chunk.choices[0].delta.content
+                            if token:
+                                full_response.append(token)
+                                yield f"data: {json.dumps({'token': token})}\n\n"
+
+                        final_assistant_msg = ChatMessage(
+                            session_id=session_id,
+                            role=ChatRole.ASSISTANT,
+                            content="".join(full_response),
+                            user_id=current_user.id,
+                            tool_calls=None,
+                        )
+                        gen_db.add(final_assistant_msg)
+
+                        await _update_session_title(gen_db, session_id, enhanced_content)
+                        await gen_db.commit()
+
+                        yield f"data: {json.dumps({'status': 'done'})}\n\n"
+
+                    else:
+                        # Normal response — tokens were already streamed above.
+                        # Just save to DB and signal done. Identical to original else branch.
+                        final_assistant_msg = ChatMessage(
+                            session_id=session_id,
+                            role=ChatRole.ASSISTANT,
+                            content="".join(full_response),
+                            user_id=current_user.id,
+                        )
+                        gen_db.add(final_assistant_msg)
+
+                        await _update_session_title(gen_db, session_id, enhanced_content)
+                        await gen_db.commit()
+
+                        yield f"data: {json.dumps({'status': 'done'})}\n\n"
+
+                except Exception as e:
+                    await gen_db.rollback()
+                    logger.error(f"[chat error] session={session_id} error={e}", exc_info=True)
+                    yield f"data: {json.dumps({'error': 'Something went wrong. Please try again.'})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

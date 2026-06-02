@@ -27,8 +27,9 @@ import {
   ChevronRight,
 } from "lucide-react";
 
-import { clearAuth, dashboardPathForRole, getSavedAuth } from "@/lib/api";
-import type { AuthResponse } from "@/types";
+import { apiFetch, clearAuth, dashboardPathForRole, fileUrl, getSavedAuth } from "@/lib/api";
+import { applyBrandingTheme, normalizeBranding } from "@/lib/branding";
+import type { AuthResponse, SchoolBranding } from "@/types";
 
 type NavItem = {
   href: string;
@@ -139,6 +140,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [auth, setAuth] = useState<AuthResponse | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopOpen, setDesktopOpen] = useState(true);
+  const [branding, setBranding] = useState<SchoolBranding | null>(null);
 
   useEffect(() => {
     const saved = getSavedAuth();
@@ -153,6 +155,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     }
     setAuth(saved);
   }, [pathname, router]);
+
+  useEffect(() => {
+    if (!auth) return;
+    apiFetch<SchoolBranding>("/schools/branding/me")
+      .then((data) => {
+        setBranding(data);
+        applyBrandingTheme(data);
+      })
+      .catch(() => {
+        applyBrandingTheme({ logo_url: auth.school?.logo_url || null });
+      });
+  }, [auth]);
 
   const visibleNav = useMemo(() => {
     if (!auth) return [];
@@ -175,7 +189,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return (
       <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#f1f5f9" }}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-          <div style={{ width: 32, height: 32, border: "3px solid #e2e8f0", borderTopColor: "#7c3aed", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+          <div style={{ width: 32, height: 32, border: "3px solid #e2e8f0", borderTopColor: "var(--erp-primary, #7c3aed)", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
           <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
           <p style={{ fontSize: "0.875rem", color: "#94a3b8", margin: 0 }}>Loading…</p>
         </div>
@@ -186,6 +200,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const SIDEBAR_W = 264;
   const roleGradient = getRoleGradient(auth.user.role);
   const initials = getInitials(auth.user.full_name);
+  const activeBranding = normalizeBranding(branding || { logo_url: auth.school?.logo_url || null });
+  const logoSrc = fileUrl(activeBranding.logo_url);
 
   return (
     <>
@@ -194,7 +210,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           position: fixed;
           top: 0; left: 0; bottom: 0;
           width: ${SIDEBAR_W}px;
-          background: #0f172a;
+          background: var(--erp-sidebar, #0f172a);
           border-right: 1px solid rgba(255,255,255,0.06);
           display: flex;
           flex-direction: column;
@@ -250,15 +266,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         }
         .as-nav-link:hover { background: rgba(255,255,255,0.06); color: #cbd5e1; }
         .as-nav-link.active {
-          background: rgba(124,58,237,0.15);
-          color: #c4b5fd;
+          background: color-mix(in srgb, var(--erp-primary, #7c3aed) 22%, transparent);
+          color: #fff;
         }
         .as-nav-link.active::before {
           content: '';
           position: absolute;
           left: 0; top: 20%; bottom: 20%;
           width: 3px;
-          background: #7c3aed;
+          background: var(--erp-primary, #7c3aed);
           border-radius: 0 3px 3px 0;
         }
         .as-header {
@@ -325,7 +341,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         }
       `}</style>
 
-      <div style={{ minHeight: "100vh", background: "#f1f5f9" }}>
+      <div style={{ minHeight: "100vh", background: "var(--erp-background, #f1f5f9)" }}>
 
         {/* ── Sidebar ── */}
         <aside className={`as-sidebar${mobileOpen ? " open" : ""}${!desktopOpen ? " lg-hidden" : ""}`}
@@ -339,14 +355,29 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 onClick={() => router.replace(dashboardPathForRole(auth.user.role, Boolean(auth.user.must_change_password)))}
                 style={{ background: "none", border: "none", cursor: "pointer", padding: 0, textAlign: "left", minWidth: 0 }}
               >
-                <p style={{ fontSize: "0.55rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", color: "#7c3aed", margin: "0 0 3px" }}>
-                  ERP Portal
-                </p>
-                <h1 style={{ fontSize: "0.9rem", fontWeight: 700, color: "#f1f5f9", margin: 0, maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {auth.school?.name || "School ERP"}
-                </h1>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                  {logoSrc ? (
+                    <img
+                      src={logoSrc}
+                      alt={auth.school?.name ? `${auth.school.name} logo` : "School logo"}
+                      style={{ width: 34, height: 34, borderRadius: 10, objectFit: "contain", background: "rgba(255,255,255,0.95)", padding: 4, flexShrink: 0 }}
+                    />
+                  ) : (
+                    <div style={{ width: 34, height: 34, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--erp-primary, #7c3aed)", color: "var(--erp-primary-text, #fff)", flexShrink: 0 }}>
+                      <School size={18} />
+                    </div>
+                  )}
+                  <div style={{ minWidth: 0 }}>
+                    <p style={{ fontSize: "0.55rem", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--erp-primary, #7c3aed)", margin: "0 0 3px" }}>
+                      ERP Portal
+                    </p>
+                    <h1 style={{ fontSize: "0.9rem", fontWeight: 700, color: "#f1f5f9", margin: 0, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {auth.school?.name || "School ERP"}
+                    </h1>
+                  </div>
+                </div>
                 {auth.school?.school_code && (
-                  <p style={{ fontSize: "0.65rem", color: "#475569", margin: "2px 0 0" }}>#{auth.school.school_code}</p>
+                  <p style={{ fontSize: "0.65rem", color: "#64748b", margin: "6px 0 0 44px" }}>#{auth.school.school_code}</p>
                 )}
               </button>
               
@@ -381,7 +412,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           {/* Footer user card */}
           <div className="as-sidebar-foot">
             <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "9px 10px", borderRadius: 10, background: "rgba(255,255,255,0.04)" }}>
-              <div className="as-avatar" style={{ background: roleGradient }}>{initials}</div>
+              <div className="as-avatar" style={{ background: activeBranding.primary_color || roleGradient }}>{initials}</div>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <p style={{ fontSize: "0.78rem", fontWeight: 600, color: "#e2e8f0", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {auth.user.full_name}
@@ -425,7 +456,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div className="as-avatar" style={{ background: roleGradient, width: 30, height: 30, fontSize: "0.65rem" }}>{initials}</div>
+              <div className="as-avatar" style={{ background: activeBranding.primary_color || roleGradient, width: 30, height: 30, fontSize: "0.65rem" }}>{initials}</div>
               <button className="as-logout-btn" onClick={logout}>
                 <LogOut size={13} /> Logout
               </button>

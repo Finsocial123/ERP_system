@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 from typing import Annotated
@@ -12,7 +11,7 @@ from app.core.config import settings
 from app.instructions import get_system_prompt
 from app.core.database import get_async_db, get_session_factory
 from app.client import client
-from app.services.rag import get_query_embedding, search_chunks, retrieve_context
+from app.services.rag import retrieve_context
 from app.instructions import RAG_PROMPT_TEMPLATE
 from app.services.context_manager import trim_history
 from app.services.tools.definitions import TOOLS
@@ -68,6 +67,9 @@ async def get_sessions(
     db: Annotated[AsyncSession, Depends(get_async_db)],
     current_user: User = Depends(get_current_user),
 ):
+    # if user_id != current_user.id:
+    #     raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your session")
+
     result = await db.execute(
         select(ChatSession)
         .where(ChatSession.user_id == current_user.id)
@@ -127,30 +129,22 @@ async def send_message_stream(
     current_user: User = Depends(get_current_user),
 ):
     if not request.content or not request.content.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Message content cannot be empty",
-        )
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Message content cannot be empty")
 
     session = await _get_session_or_404(session_id, db)
 
     if session.user_id != current_user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Not your session")
 
-    # Intercept summary and quiz keywords before RAG and LLM
+    # Intercept summary and quiz before RAG and LLM
     BLOCK_KEYWORDS = ["summarize", "summary", "overview", "key points", "summarise", "quiz"]
     if any(kw in request.content.lower() for kw in BLOCK_KEYWORDS):
         async def redirect_generator():
-            msg = (
-                "Use the **Summary** and **Quiz** feature for this lesson to get a full "
-                "structured summary and quiz respectively. I'm here to answer specific "
-                "questions about the lesson content!"
-            )
+            msg = "Use the **Summary** and **Quiz** feature for this lesson to get a full structured summary and quiz respectively. I'm here to answer specific questions about the lesson content!"
             yield f"data: {json.dumps({'token': msg})}\n\n"
             yield f"data: {json.dumps({'status': 'done'})}\n\n"
         return StreamingResponse(redirect_generator(), media_type="text/event-stream")
 
-    # Optional prompt enhancement (non-streaming, intentional)
     try:
         if request.enhance_prompt:
             enhance_response = await client.chat.completions.create(
@@ -158,15 +152,14 @@ async def send_message_stream(
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            "You are a prompt enhancer. Rewrite the student's questions to be "
-                            "clearer, more specific, and more detailed. Return ONLY the rewritten "
-                            "question, nothing else."
-                        ),
+                        "content": "You are a prompt enhancer. Rewrite the student's questions to be clearer, more specific, and more detailed. Return ONLY the rewritten question, nothing else."
                     },
-                    {"role": "user", "content": request.content},
+                    {
+                        "role": "user",
+                        "content": request.content
+                    }
                 ],
-                stream=False,
+                stream=False
             )
             enhanced_content = enhance_response.choices[0].message.content.strip()
             if not enhanced_content:
@@ -177,7 +170,6 @@ async def send_message_stream(
         logger.warning(f"Prompt enhancement failed, falling back to original: {e}")
         enhanced_content = request.content
 
-    # Save user message
     user_msg = ChatMessage(
         session_id=session_id,
         role=ChatRole.USER,
@@ -188,90 +180,39 @@ async def send_message_stream(
     db.add(user_msg)
     await db.commit()
 
-    # ── Parallel RAG + history fetch ───────────────────────────────────────────
-    #
-    # OLD (sequential):
-    #   1. embed query          (~400 ms, blocks everything)
-    #   2. pgvector search      (~50 ms, waits for step 1)
-    #   3. fetch chat history   (~50 ms, waits for steps 1+2)
-    #   total: ~500 ms before we can build messages
-    #
-    # NEW (parallel):
-    #   embed query  ──┐
-    #   fetch history ─┴──► both finish together (~400 ms total)
-    #   pgvector search (needs embedding, ~50 ms after embed)
-    #   total: ~450 ms — saves ~50–400 ms depending on history size
-    #
-    # Key constraint: SQLAlchemy async sessions are NOT safe to share across
-    # concurrent coroutines. We use session_factory to open a dedicated session
-    # for the RAG DB query so it never shares a connection with the history fetch.
-
+    # RAG pipeline
     context = None
-    history = []
-
     if request.lesson_id is not None:
-        # Coroutine 1: embedding API call (network I/O, ~400 ms)
-        async def _get_embedding() -> list[float] | None:
-            try:
-                return await get_query_embedding(enhanced_content)
-            except Exception as e:
-                logger.error(f"Embedding failed for lesson_id={request.lesson_id}: {e}")
-                return None
-
-        # Coroutine 2: history fetch from DB (local I/O, ~50 ms)
-        async def _get_history() -> list[ChatMessage]:
-            result = await db.execute(
-                select(ChatMessage)
-                .where(ChatMessage.session_id == session_id)
-                .order_by(ChatMessage.created_at)
+        try:
+            context = await retrieve_context(
+                query=enhanced_content,
+                db=db,
+                lesson_id=request.lesson_id,
+                top_k=6
             )
-            return list(result.scalars().all())
+        except Exception as e:
+            logger.error(f"RAG retrieval failed for lesson_id={request.lesson_id}: {e}")
 
-        # Fire both simultaneously — neither depends on the other
-        embedding, history = await asyncio.gather(
-            _get_embedding(),
-            _get_history(),
-        )
-
-        # Coroutine 3: pgvector search — runs immediately after embedding lands,
-        # using its own dedicated DB session to avoid async session conflicts
-        if embedding is not None:
-            try:
-                async with session_factory() as rag_db:
-                    context = await search_chunks(
-                        embedding=embedding,
-                        db=rag_db,
-                        lesson_id=request.lesson_id,
-                        top_k=6,
-                    )
-            except Exception as e:
-                logger.error(f"RAG chunk search failed for lesson_id={request.lesson_id}: {e}")
-                context = None
-
-    else:
-        # No lesson context needed — just fetch history on its own
-        result = await db.execute(
-            select(ChatMessage)
-            .where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.created_at)
-        )
-        history = list(result.scalars().all())
-
-    logger.debug(
-        "CONTEXT: %s",
-        str(context)[:200] if context else "NO CONTEXT — lesson_id was not provided",
-    )
-
-    # Build user content with RAG context if available
-    if context:
-        user_content = RAG_PROMPT_TEMPLATE.format(
-            context=context,
-            query=enhanced_content,
-        )
+        if context:
+            user_content = RAG_PROMPT_TEMPLATE.format(
+                context=context,
+                query=enhanced_content
+            )
+        else:
+            user_content = enhanced_content
     else:
         user_content = enhanced_content
 
-    # Build raw message history for the LLM
+    logger.debug("CONTEXT: %s", str(context)[:200] if context else "NO CONTEXT — lesson_id was not provided")
+
+    # Build history
+    result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at)
+    )
+    history = result.scalars().all()
+
     raw_history = []
     for i, msg in enumerate(history):
         if i == len(history) - 1 and msg.role == ChatRole.USER:
@@ -280,7 +221,7 @@ async def send_message_stream(
             raw_history.append({
                 "role": "assistant",
                 "content": msg.content,
-                "tool_calls": msg.tool_calls,
+                "tool_calls": msg.tool_calls
             })
         elif msg.role == ChatRole.TOOL:
             raw_history.append({
@@ -297,15 +238,15 @@ async def send_message_stream(
         history=raw_history,
         system_prompt=system_prompt,
         rag_context=context,
-        max_tokens=50000,
+        max_tokens=50000
     )
 
     messages = [{"role": "system", "content": system_prompt}] + trimmed_history
 
     logger.debug("MESSAGES: %s", json.dumps(messages, indent=2))
 
-    # ── Streaming event generator ──────────────────────────────────────────────
     async def event_generator():
+        # prevent shared state across concurrent requests from different users
         full_response = []
 
         async with session_factory() as gen_db:
@@ -315,101 +256,57 @@ async def send_message_stream(
 
                 active_tools = TOOLS if request.web_search else []
 
-                # Single streaming call — replaces the old stream=False probe.
-                # Regular tokens are yielded to the client immediately as they
-                # arrive. Tool-call fragments are accumulated and handled after
-                # the stream is exhausted.
-                stream = await client.chat.completions.create(
+                first_response = await client.chat.completions.create(
                     model=settings.MODEL,
                     messages=messages,
                     **({"tools": active_tools, "tool_choice": "auto"} if active_tools else {}),
-                    stream=True,
+                    stream=False
                 )
 
-                # Accumulators for a potential tool call
-                finish_reason = None
-                tool_call_id = None
-                tool_call_name = None
-                tool_call_args_parts: list[str] = []
+                choice = first_response.choices[0]
 
-                async for chunk in stream:
-                    choice = chunk.choices[0]
-                    delta = choice.delta
-                    finish_reason = choice.finish_reason or finish_reason
+                if choice.finish_reason == "tool_calls":
+                    tool_call = choice.message.tool_calls[0]
+                    tool_name = tool_call.function.name
+                    tool_args = json.loads(tool_call.function.arguments)
 
-                    if delta.tool_calls:
-                        # Tool-call fragments arrive across multiple chunks
-                        tc = delta.tool_calls[0]
-                        if tc.id:
-                            tool_call_id = tc.id
-                        if tc.function and tc.function.name:
-                            tool_call_name = tc.function.name
-                        if tc.function and tc.function.arguments:
-                            tool_call_args_parts.append(tc.function.arguments)
-
-                    elif delta.content:
-                        # Normal response — stream token straight to client
-                        full_response.append(delta.content)
-                        yield f"data: {json.dumps({'token': delta.content})}\n\n"
-
-                # ── Handle outcome after stream is fully read ──────────────────
-
-                if finish_reason == "tool_calls" and tool_call_name and tool_call_id:
-                    tool_args = json.loads("".join(tool_call_args_parts))
-
-                    yield f"data: {json.dumps({'status': 'thinking', 'tool': tool_call_name})}\n\n"
-
-                    # Reconstruct tool-call payload in the same shape as before
-                    tool_calls_payload = [
-                        {
-                            "id": tool_call_id,
-                            "type": "function",
-                            "function": {
-                                "name": tool_call_name,
-                                "arguments": "".join(tool_call_args_parts),
-                            },
-                        }
-                    ]
+                    yield f"data: {json.dumps({'status': 'thinking', 'tool': tool_name})}\n\n"
 
                     assistant_tool_msg = ChatMessage(
                         session_id=session_id,
                         role=ChatRole.ASSISTANT,
                         content=None,
                         user_id=current_user.id,
-                        tool_calls=tool_calls_payload,
+                        tool_calls=[tc.model_dump() for tc in choice.message.tool_calls],
                     )
                     gen_db.add(assistant_tool_msg)
                     await gen_db.commit()
 
-                    tool_result = await execute_tool(tool_call_name, tool_args, gen_db)
+                    tool_result = await execute_tool(tool_name, tool_args, gen_db)
 
                     tool_result_msg = ChatMessage(
                         session_id=session_id,
                         role=ChatRole.TOOL,
                         content=tool_result,
                         user_id=current_user.id,
-                        tool_call_id=tool_call_id,
+                        tool_call_id=tool_call.id,
                     )
                     gen_db.add(tool_result_msg)
                     await gen_db.commit()
 
                     messages_with_result = messages + [
-                        {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": tool_calls_payload,
-                        },
+                        choice.message.model_dump(exclude_none=True),
                         {
                             "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "content": tool_result,
-                        },
+                            "tool_call_id": tool_call.id,
+                            "content": tool_result
+                        }
                     ]
 
                     final_stream = await client.chat.completions.create(
                         model=settings.MODEL,
                         messages=messages_with_result,
-                        stream=True,
+                        stream=True
                     )
 
                     async for chunk in final_stream:
@@ -433,8 +330,18 @@ async def send_message_stream(
                     yield f"data: {json.dumps({'status': 'done'})}\n\n"
 
                 else:
-                    # Normal response — tokens already streamed above.
-                    # Just persist and signal done.
+                    stream = await client.chat.completions.create(
+                        model=settings.MODEL,
+                        messages=messages,
+                        stream=True
+                    )
+
+                    async for chunk in stream:
+                        token = chunk.choices[0].delta.content
+                        if token:
+                            full_response.append(token)
+                            yield f"data: {json.dumps({'token': token})}\n\n"
+
                     final_assistant_msg = ChatMessage(
                         session_id=session_id,
                         role=ChatRole.ASSISTANT,

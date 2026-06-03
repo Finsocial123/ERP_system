@@ -1,14 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.meetings import TeacherClassOut
-from app.core.database import get_db
+from app.core.database import get_db, get_async_db
 from app.core.security import get_password_hash
 from app.core.utils import generate_temporary_password, normalize_login_id
 from app.dependencies.auth import current_school_id, require_school_admin, get_current_user
-from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject
+from app.schemas.notice import AvailableClassOut
+from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject, SchoolClass
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.school import School
 from app.models.user import User, UserRole
@@ -482,6 +484,11 @@ def get_my_classes(
 
     assignments = (
         db.query(TeacherSubject)
+        .options(
+            joinedload(TeacherSubject.school_class),
+            joinedload(TeacherSubject.section),
+            joinedload(TeacherSubject.subject),
+        )
         .filter(
             TeacherSubject.teacher_id == teacher.id,
             TeacherSubject.school_id == school_id,
@@ -489,6 +496,7 @@ def get_my_classes(
         .order_by(TeacherSubject.class_id, TeacherSubject.section_id)
         .all()
     )
+
 
     return [
         {
@@ -503,7 +511,71 @@ def get_my_classes(
     ]
 
 
+@router.get("/teachers/me/available-classes", response_model=list[AvailableClassOut])
+async def get_teacher_available_classes(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    if current_user.role != UserRole.TEACHER.value:
+        return []
 
+    result = await db.execute(
+        select(Teacher).where(
+            Teacher.user_id == current_user.id,
+            Teacher.school_id == current_user.school_id,
+            Teacher.is_active.is_(True),
+        )
+    )
+    teacher = result.scalar_one_or_none()
+    if not teacher:
+        return []  
+    subject_classes = select(
+        TeacherSubject.class_id,
+        TeacherSubject.section_id,
+    ).where(
+        TeacherSubject.teacher_id == teacher.id,
+        TeacherSubject.school_id == current_user.school_id,
+    )
+
+    class_teacher_classes = select(
+        ClassTeacherAssignment.class_id,
+        ClassTeacherAssignment.section_id,
+    ).where(
+        ClassTeacherAssignment.teacher_id == teacher.id,
+        ClassTeacherAssignment.school_id == current_user.school_id,
+    )
+
+    combined = subject_classes.union(class_teacher_classes)
+    pairs_result = await db.execute(combined)
+    pairs = pairs_result.all()
+
+    if not pairs:
+        return []
+
+    class_ids = {p.class_id for p in pairs}
+    section_ids = {p.section_id for p in pairs if p.section_id is not None}
+
+    classes_result = await db.execute(
+        select(SchoolClass).where(SchoolClass.id.in_(class_ids))
+    )
+    classes_map = {c.id: c.name for c in classes_result.scalars().all()}
+
+    sections_map = {}
+    if section_ids:
+        sections_result = await db.execute(
+            select(Section).where(Section.id.in_(section_ids))
+        )
+        sections_map = {s.id: s.name for s in sections_result.scalars().all()}
+
+    return [
+        AvailableClassOut(
+            class_id=p.class_id,
+            class_name=classes_map.get(p.class_id, f"Class {p.class_id}"),
+            section_id=p.section_id,
+            section_name=sections_map.get(p.section_id) if p.section_id else None,
+        )
+        for p in sorted(pairs, key=lambda x: (x.class_id, x.section_id or 0))
+    ]
 
 
 

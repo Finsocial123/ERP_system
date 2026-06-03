@@ -9,6 +9,13 @@ type NoticePriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
 type NoticeStatus = "DRAFT" | "PUBLISHED" | "ARCHIVED";
 type AudienceRole = "STUDENT" | "PARENT" | "TEACHER";
 
+interface AvailableClass {
+  class_id: number;
+  class_name: string;
+  section_id: number | null;
+  section_name: string | null;
+}
+
 interface AuthorOut {
   id: number;
   full_name: string;
@@ -285,14 +292,58 @@ function NoticeForm({
         audience_roles: initial.audiences
           .map((a) => a.role as AudienceRole)
           .filter((r) => FORM_AUDIENCE_ROLES.includes(r)),
+        audience_class_ids: [],
+        audience_section_ids: [],
         enhance: false,
       };
     }
-    return emptyForm();
+    return {
+      ...emptyForm(),
+      audience_class_ids: [],
+      audience_section_ids: [],
+    };
   });
+
+  const [availableClasses, setAvailableClasses] = useState<AvailableClass[]>(
+    [],
+  );
+  const [selectedClassPairs, setSelectedClassPairs] = useState<Set<string>>(
+    new Set(),
+  );
+  const [loadingClasses, setLoadingClasses] = useState(false);
   const [showAI, setShowAI] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  function toggleClassPair(classId: number, sectionId: number | null) {
+    const key = `${classId}_${sectionId}`;
+    setSelectedClassPairs((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    async function fetchClasses() {
+      setLoadingClasses(true);
+      try {
+        const data = await apiFetch<AvailableClass[]>(
+          "/teachers/me/available-classes",
+        );
+        setAvailableClasses(data);
+      } catch (e: any) {
+        console.error("Failed to fetch classes:", e.message);
+      } finally {
+        setLoadingClasses(false);
+      }
+    }
+    fetchClasses();
+  }, []);
 
   const set = (key: string, val: any) => setForm((f) => ({ ...f, [key]: val }));
 
@@ -312,6 +363,14 @@ function NoticeForm({
     setError("");
     setLoading(true);
     try {
+      const pairs = Array.from(selectedClassPairs).map((key) => {
+        const [classId, sectionId] = key.split("_");
+        return {
+          class_id: parseInt(classId),
+          section_id: sectionId === "null" ? null : parseInt(sectionId),
+        };
+      });
+
       const body = {
         title: form.title,
         content: form.content,
@@ -324,6 +383,8 @@ function NoticeForm({
           ? new Date(form.expires_at).toISOString()
           : null,
         audience_roles: form.audience_roles,
+        audience_class_ids: pairs.map((p) => p.class_id),
+        audience_section_ids: pairs.map((p) => p.section_id),
         enhance: form.enhance,
       };
       if (initial) {
@@ -450,32 +511,146 @@ function NoticeForm({
         </div>
       </div>
 
-      <div>
-        <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">
-          Send To{" "}
-          <span className="text-red-400 font-normal normal-case">
-            * at least one required
-          </span>
+      {/* Replace the entire audience <div> section with this */}
+      <div className="space-y-4">
+        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">
+          Audience
         </label>
-        <div className="flex gap-2">
-          {FORM_AUDIENCE_ROLES.map((role) => (
-            <button
-              key={role}
-              onClick={() => toggleRole(role)}
-              className={`flex-1 py-2 text-sm font-medium rounded-xl border transition-all ${
-                form.audience_roles.includes(role)
-                  ? "bg-slate-900 text-white border-slate-900"
-                  : "border-slate-200 text-slate-600 hover:border-slate-400 bg-white"
-              }`}
-            >
-              {role.charAt(0) + role.slice(1).toLowerCase()}
-            </button>
-          ))}
+
+        {/* Step 1: Class Selection (teachers only) */}
+        {availableClasses.length > 0 && (
+          <div className="border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+              <p className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                Select Classes
+              </p>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Leave empty to send to all classes
+              </p>
+            </div>
+            {loadingClasses ? (
+              <div className="px-4 py-3 text-sm text-slate-400">
+                Loading classes...
+              </div>
+            ) : (
+              <div className="p-3 grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
+                {availableClasses.map((cls) => {
+                  const key = `${cls.class_id}_${cls.section_id}`;
+                  const isSelected = selectedClassPairs.has(key);
+                  const label = cls.section_name
+                    ? `${cls.class_name} · ${cls.section_name}`
+                    : cls.class_name;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() =>
+                        toggleClassPair(cls.class_id, cls.section_id)
+                      }
+                      className={`px-3 py-2 text-sm rounded-lg border transition-all text-left font-medium ${
+                        isSelected
+                          ? "bg-slate-900 text-white border-slate-900"
+                          : "bg-white border-slate-200 text-slate-600 hover:border-slate-400"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {selectedClassPairs.size > 0 && (
+              <div className="px-4 py-2 bg-blue-50 border-t border-blue-100">
+                <p className="text-xs text-blue-600 font-medium">
+                  {selectedClassPairs.size} class
+                  {selectedClassPairs.size > 1 ? "es" : ""} selected
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 2: Role Selection */}
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+            <p className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
+              {availableClasses.length > 0 ? "Send To" : "Send To"}
+            </p>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Select who should receive this notice
+              <span className="text-red-400 ml-1">* required</span>
+            </p>
+          </div>
+          <div className="p-3 flex gap-2">
+            {FORM_AUDIENCE_ROLES.map((role) => (
+              <button
+                key={role}
+                type="button"
+                onClick={() => toggleRole(role)}
+                className={`flex-1 py-2.5 text-sm font-medium rounded-lg border transition-all ${
+                  form.audience_roles.includes(role)
+                    ? "bg-slate-900 text-white border-slate-900"
+                    : "border-slate-200 text-slate-600 hover:border-slate-400 bg-white"
+                }`}
+              >
+                {role.charAt(0) + role.slice(1).toLowerCase()}
+              </button>
+            ))}
+          </div>
+          {audienceError && (
+            <div className="px-4 py-2 bg-red-50 border-t border-red-100">
+              <p className="text-xs text-red-500">
+                Select at least one recipient.
+              </p>
+            </div>
+          )}
         </div>
-        {audienceError && (
-          <p className="text-xs text-red-500 mt-1.5">
-            Select at least one audience.
-          </p>
+
+        {/* Summary */}
+        {(selectedClassPairs.size > 0 || form.audience_roles.length > 0) && (
+          <div className="flex items-center gap-2 flex-wrap px-1">
+            <span className="text-xs text-slate-400">Sending to:</span>
+            {selectedClassPairs.size > 0 ? (
+              Array.from(selectedClassPairs).map((key) => {
+                const [classId, sectionId] = key.split("_");
+                const cls = availableClasses.find(
+                  (c) =>
+                    c.class_id === parseInt(classId) &&
+                    String(c.section_id) === sectionId,
+                );
+                const label = cls
+                  ? cls.section_name
+                    ? `${cls.class_name} · ${cls.section_name}`
+                    : cls.class_name
+                  : key;
+                return (
+                  <span
+                    key={key}
+                    className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium"
+                  >
+                    {label}
+                  </span>
+                );
+              })
+            ) : (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
+                All classes
+              </span>
+            )}
+            {form.audience_roles.length > 0 && (
+              <>
+                <span className="text-xs text-slate-300">→</span>
+                {form.audience_roles.map((r) => (
+                  <span
+                    key={r}
+                    className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 font-medium"
+                  >
+                    {r.charAt(0) + r.slice(1).toLowerCase()}
+                  </span>
+                ))}
+              </>
+            )}
+          </div>
         )}
       </div>
 

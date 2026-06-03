@@ -54,7 +54,7 @@ def _group_segments_into_chunks(
         else:
             current_text += " " + seg["text"]
 
-        current_text = seg["end"]
+        current_end = seg["end"]  
 
     if current_text:
         chunks.append({
@@ -64,7 +64,6 @@ def _group_segments_into_chunks(
         })
 
     return chunks
-
 
 
 async def chunk_and_embed_lesson(

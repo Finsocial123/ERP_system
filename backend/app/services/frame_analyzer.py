@@ -110,12 +110,8 @@ async def analyze_frame_with_vision(
 
     if prompt is None:
         prompt = """
-            Describe what's shown in this educational video frame. Focus on:
-            - Text visible on screen (code, slides, diagrams, equations)
-            - Key visual elements (charts, graphs, UI elements, drawings)
-            - Any demonstrations or examples being shown
-            - Technical concepts being illustrated
-            Be concise and specific. If code is visible, mention the language and what it does. If it's a diagram, describe its structure.
+            Describe this educational video frame in 2-3 sentences. 
+            Include: any visible text/code (language + purpose), key visual elements, and the concept being demonstrated. Be concise
         """
 
     try:

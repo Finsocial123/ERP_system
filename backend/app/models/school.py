@@ -26,3 +26,4 @@ class School(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     users = relationship("User", back_populates="school")
+    branding = relationship("SchoolBranding", back_populates="school", uselist=False, cascade="all, delete-orphan")

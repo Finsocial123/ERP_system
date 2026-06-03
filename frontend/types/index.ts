@@ -25,6 +25,34 @@
     is_active?: boolean;
   };
 
+
+  export type SchoolBranding = {
+    id: number;
+    school_id: number;
+    logo_url?: string | null;
+    favicon_url?: string | null;
+    primary_color: string;
+    secondary_color: string;
+    accent_color: string;
+    sidebar_color: string;
+    background_color: string;
+    text_color: string;
+    theme_mode: "light" | "dark" | "auto" | string;
+    theme_source: "preset" | "manual" | "logo_generated" | string;
+    preset_name: string;
+    border_radius: number;
+  };
+
+  export type SchoolBrandingPublic = Omit<SchoolBranding, "id" | "school_id"> & {
+    school_name: string;
+    school_code: string;
+  };
+
+  export type LogoUploadResponse = {
+    logo_url: string;
+    branding: SchoolBranding;
+  };
+
   export type AuthResponse = {
     access_token: string;
     token_type: string;

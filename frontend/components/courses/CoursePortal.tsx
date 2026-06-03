@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import {
   BookOpen,
@@ -38,6 +38,227 @@ function ProgressBar({ value, h = 4 }: { value: number; h?: number }) {
   return (
     <div style={{ background: "#e2e8f0", borderRadius: 999, height: h, overflow: "hidden", width: "100%" }}>
       <div style={{ height: "100%", width: `${Math.min(100, Math.max(0, value))}%`, background: bar, borderRadius: 999, transition: "width 0.5s ease" }} />
+    </div>
+  );
+}
+
+type WatchStatus = {
+  watched_seconds: number;
+  video_duration_seconds: number;
+  required_watch_seconds: number;
+  watch_percentage: number;
+  can_mark_complete: boolean;
+};
+
+type WatchStatusInput = Partial<WatchStatus> | null | undefined;
+
+const VIDEO_REQUIRED_RATIO = 0.75;
+const WATCH_TICK_MS = 1000;
+const WATCH_FLUSH_INTERVAL_MS = 20000;
+const WATCH_MIN_FLUSH_SECONDS = 10;
+
+function normalizeWatchStatus(status?: WatchStatusInput): WatchStatus {
+  const duration = Number(status?.video_duration_seconds || 0);
+  const watched = Number(status?.watched_seconds || 0);
+  const required = Number(status?.required_watch_seconds || (duration > 0 ? duration * VIDEO_REQUIRED_RATIO : 0));
+  return {
+    watched_seconds: Math.round(Math.min(Math.max(watched, 0), duration || watched) * 100) / 100,
+    video_duration_seconds: Math.round(Math.max(duration, 0) * 100) / 100,
+    required_watch_seconds: Math.round(Math.max(required, 0) * 100) / 100,
+    watch_percentage: required > 0 ? Math.round(Math.min((watched / required) * 100, 100) * 100) / 100 : Number(status?.watch_percentage || 0),
+    can_mark_complete: Boolean(status?.can_mark_complete || (required > 0 && watched >= required)),
+  };
+}
+
+function buildLocalWatchStatus(base: WatchStatus, watchedSeconds: number, durationSeconds: number): WatchStatus {
+  const duration = Math.max(durationSeconds || base.video_duration_seconds || 0, 0);
+  const required = duration > 0 ? Math.round(duration * VIDEO_REQUIRED_RATIO * 100) / 100 : base.required_watch_seconds;
+  const watched = Math.round(Math.min(Math.max(watchedSeconds, 0), duration || watchedSeconds) * 100) / 100;
+  return {
+    watched_seconds: watched,
+    video_duration_seconds: duration ? Math.round(duration * 100) / 100 : base.video_duration_seconds,
+    required_watch_seconds: required,
+    watch_percentage: required > 0 ? Math.round(Math.min((watched / required) * 100, 100) * 100) / 100 : 0,
+    can_mark_complete: required > 0 && watched >= required,
+  };
+}
+
+function OptimizedVideoPlayer({
+  lesson,
+  mode,
+  initialStatus,
+  onStatusSynced,
+}: {
+  lesson: LMSLesson;
+  mode: "student" | "parent";
+  initialStatus?: WatchStatusInput;
+  onStatusSynced?: (lessonId: number, status: WatchStatus) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const pendingSecondsRef = useRef(0);
+  const lastTickAtRef = useRef<number | null>(null);
+  const lastFlushAtRef = useRef<number>(Date.now());
+  const inFlightRef = useRef(false);
+  const statusRef = useRef<WatchStatus>(normalizeWatchStatus(initialStatus));
+  const [localStatus, setLocalStatus] = useState<WatchStatus>(() => statusRef.current);
+
+  useEffect(() => {
+    const nextStatus = normalizeWatchStatus(initialStatus);
+    pendingSecondsRef.current = 0;
+    lastTickAtRef.current = null;
+    lastFlushAtRef.current = Date.now();
+    inFlightRef.current = false;
+    statusRef.current = nextStatus;
+    setLocalStatus(nextStatus);
+    // Reset only when the lesson changes. Parent progress updates every second for UI,
+    // but those updates should not reset the unsaved local watch accumulator.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lesson.id]);
+
+  const stopTimer = useCallback(() => {
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    lastTickAtRef.current = null;
+  }, []);
+
+  const mergeLocalStatus = useCallback((deltaSeconds: number, video: HTMLVideoElement) => {
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    const current = statusRef.current;
+    const next = buildLocalWatchStatus(current, (current.watched_seconds || 0) + deltaSeconds, duration);
+    statusRef.current = next;
+    setLocalStatus(next);
+    onStatusSynced?.(lesson.id, next);
+  }, [lesson.id, onStatusSynced]);
+
+  const flushWatchProgress = useCallback(async (video: HTMLVideoElement, force = false) => {
+    if (mode !== "student" || !lesson.video_url) return;
+    if (inFlightRef.current) return;
+
+    const pending = Math.round(pendingSecondsRef.current * 100) / 100;
+    if (pending <= 0) return;
+    if (!force && pending < WATCH_MIN_FLUSH_SECONDS) return;
+
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    const position = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+
+    pendingSecondsRef.current = 0;
+    inFlightRef.current = true;
+
+    try {
+      const status = await apiFetch<WatchStatus>(`/progress/${lesson.id}/watch`, {
+        method: "POST",
+        body: JSON.stringify({
+          watched_seconds_delta: pending,
+          video_duration_seconds: duration,
+          current_position_seconds: position,
+        }),
+      });
+      const normalized = normalizeWatchStatus(status);
+      statusRef.current = normalized;
+      setLocalStatus(normalized);
+      onStatusSynced?.(lesson.id, normalized);
+      lastFlushAtRef.current = Date.now();
+    } catch {
+      // Non-blocking progress save. Put the unsaved seconds back and retry on the next flush.
+      pendingSecondsRef.current += pending;
+    } finally {
+      inFlightRef.current = false;
+    }
+  }, [lesson.id, lesson.video_url, mode, onStatusSynced]);
+
+  const startTimer = useCallback(() => {
+    if (mode !== "student" || !lesson.video_url || timerRef.current !== null) return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    lastTickAtRef.current = Date.now();
+    timerRef.current = window.setInterval(() => {
+      const currentVideo = videoRef.current;
+      if (!currentVideo || currentVideo.paused || currentVideo.ended) {
+        lastTickAtRef.current = Date.now();
+        return;
+      }
+
+      const now = Date.now();
+      const lastTick = lastTickAtRef.current || now;
+      const elapsed = Math.min(Math.max((now - lastTick) / 1000, 0), 2);
+      lastTickAtRef.current = now;
+
+      if (elapsed <= 0) return;
+      pendingSecondsRef.current += elapsed;
+      mergeLocalStatus(elapsed, currentVideo);
+
+      const shouldFlush =
+        now - lastFlushAtRef.current >= WATCH_FLUSH_INTERVAL_MS &&
+        pendingSecondsRef.current >= WATCH_MIN_FLUSH_SECONDS;
+
+      if (shouldFlush) {
+        void flushWatchProgress(currentVideo, false);
+      }
+    }, WATCH_TICK_MS);
+  }, [flushWatchProgress, lesson.video_url, mergeLocalStatus, mode]);
+
+  const flushAndStop = useCallback((video: HTMLVideoElement) => {
+    stopTimer();
+    void flushWatchProgress(video, true);
+  }, [flushWatchProgress, stopTimer]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      const video = videoRef.current;
+      if (document.visibilityState === "hidden" && video) {
+        flushAndStop(video);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      const video = videoRef.current;
+      stopTimer();
+      if (video) {
+        void flushWatchProgress(video, true);
+      }
+    };
+  }, [flushAndStop, flushWatchProgress, stopTimer]);
+
+  const showWatchProgress = mode === "student" && Boolean(lesson.video_url);
+
+  return (
+    <div>
+      <div className="cp-video-wrap">
+        <video
+          ref={videoRef}
+          key={lesson.id}
+          controls
+          src={fileUrl(lesson.video_url)}
+          onLoadedMetadata={(event) => {
+            const video = event.currentTarget;
+            const duration = Number.isFinite(video.duration) ? video.duration : 0;
+            const current = statusRef.current;
+            const next = buildLocalWatchStatus(current, current.watched_seconds, duration);
+            statusRef.current = next;
+            setLocalStatus(next);
+            onStatusSynced?.(lesson.id, next);
+          }}
+          onPlay={startTimer}
+          onPause={(event) => flushAndStop(event.currentTarget)}
+          onEnded={(event) => flushAndStop(event.currentTarget)}
+        />
+      </div>
+      {showWatchProgress && (
+        <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 10, fontSize: "0.72rem", color: "#64748b" }}>
+          <div style={{ flex: 1 }}>
+            <ProgressBar value={localStatus.watch_percentage} h={4} />
+          </div>
+          <span style={{ whiteSpace: "nowrap", fontWeight: 600 }}>
+            Watched {Math.round(localStatus.watch_percentage)}%
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -101,18 +322,6 @@ export default function CoursePortal({ mode }: Props) {
     }
   };
 
-  // const trackVideo = async (lesson: LMSLesson, event: React.SyntheticEvent<HTMLVideoElement>) => {
-  //   if (mode !== "student") return;
-  //   const video = event.currentTarget;
-  //   if (!video.duration || video.paused) return;
-  //   try {
-  //     await apiFetch(`/progress/${lesson.id}/watch`, {
-  //       method: "POST",
-  //       body: JSON.stringify({ watched_seconds_delta: 5, video_duration_seconds: video.duration, current_position_seconds: video.currentTime }),
-  //     });
-  //   } catch { /* progress ping — non-blocking */ }
-  // };
-
   const selectLesson = (lesson: LMSLesson) => {
     setActiveLesson(lesson);
     setAiKey((k) => k + 1);
@@ -127,6 +336,31 @@ export default function CoursePortal({ mode }: Props) {
 
   const overallProgress = Math.round(Number(mode === "student" ? progress?.overall_progress || 0 : selected?.progress || 0));
   const completedCount = lessons.filter((l) => completedMap[l.id]).length;
+
+  const activeLessonProgress = useMemo(() => (
+    activeLesson ? progress?.lessons.find((item) => item.lesson_id === activeLesson.id) : undefined
+  ), [activeLesson, progress]);
+
+  const updateLessonWatchStatus = useCallback((lessonId: number, status: WatchStatus) => {
+    setProgress((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        lessons: prev.lessons.map((item) => (
+          item.lesson_id === lessonId
+            ? {
+              ...item,
+              watched_seconds: status.watched_seconds,
+              video_duration_seconds: status.video_duration_seconds,
+              required_watch_seconds: status.required_watch_seconds,
+              watch_percentage: status.watch_percentage,
+              can_mark_complete: item.completed || status.can_mark_complete,
+            }
+            : item
+        )),
+      };
+    });
+  }, []);
 
   const aiTabs: { id: AITab; label: string; icon: React.ComponentType<{ size?: number; color?: string }>; accent: string; lightBg: string; activeBg: string; activeFg: string }[] = [
     { id: "chat", label: "AI Chat", icon: MessageCircle, accent: "#7c3aed", lightBg: "#ede9fe", activeBg: "#7c3aed", activeFg: "#ffffff" },
@@ -459,14 +693,12 @@ export default function CoursePortal({ mode }: Props) {
                 {/* Video player */}
                 {activeLesson ? (
                   activeLesson.video_url ? (
-                    <div className="cp-video-wrap">
-                      <video
-                        key={activeLesson.id}
-                        controls
-                        src={fileUrl(activeLesson.video_url)}
-                        // onTimeUpdate={(e) => trackVideo(activeLesson, e)}
-                      />
-                    </div>
+                    <OptimizedVideoPlayer
+                      lesson={activeLesson}
+                      mode={mode}
+                      initialStatus={activeLessonProgress}
+                      onStatusSynced={updateLessonWatchStatus}
+                    />
                   ) : activeLesson.external_video_link ? (
                     <div className="cp-no-video">
                       <PlayCircle size={36} style={{ opacity: 0.6 }} />

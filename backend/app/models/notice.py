@@ -56,6 +56,9 @@ class Notice(Base):
     reads = relationship(
         "NoticeRead", back_populates="notice", cascade="all, delete-orphan"
     )
+    class_audiences = relationship(
+        "NoticeClassAudience", back_populates="notice", cascade="all, delete-orphan"
+    )
 
 class NoticeAudience(Base):
     __tablename__ = "notice_audiences"
@@ -88,3 +91,23 @@ class NoticeRead(Base):
 
     notice = relationship("Notice", back_populates="reads")
     user = relationship("User")
+
+
+class NoticeClassAudience(Base):
+    __tablename__ = "notice_class_audiences"
+    __table_args__ = (
+        UniqueConstraint("notice_id", "class_id", "section_id", name="uq_notice_class_section"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    notice_id: Mapped[int] = mapped_column(
+        ForeignKey("notices.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    class_id: Mapped[int] = mapped_column(
+        ForeignKey("school_classes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    section_id: Mapped[int | None] = mapped_column(
+        ForeignKey("sections.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+
+    notice = relationship("Notice", back_populates="class_audiences")

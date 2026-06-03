@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Eye, EyeOff, School } from "lucide-react";
 
-import { apiFetch, dashboardPathForRole, saveAuth } from "@/lib/api";
-import type { AuthResponse } from "@/types";
+import { apiFetch, dashboardPathForRole, fileUrl, saveAuth } from "@/lib/api";
+import { applyBrandingTheme, DEFAULT_BRANDING } from "@/lib/branding";
+import type { AuthResponse, SchoolBrandingPublic } from "@/types";
 import { AuthLink, Button, Card, Input, Label } from "@/components/ui";
 
 const portalTabs = ["Admin", "Teacher", "Student", "Parent"] as const;
@@ -29,6 +30,33 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [brandingPreview, setBrandingPreview] = useState<SchoolBrandingPublic | null>(null);
+
+  useEffect(() => {
+    const code = schoolCode.trim().toUpperCase();
+    if (code.length < 3) {
+      setBrandingPreview(null);
+      applyBrandingTheme(DEFAULT_BRANDING);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      apiFetch<SchoolBrandingPublic>(`/schools/branding/by-code/${encodeURIComponent(code)}`)
+        .then((data) => {
+          setBrandingPreview(data);
+          applyBrandingTheme(data);
+        })
+        .catch(() => {
+          setBrandingPreview(null);
+          applyBrandingTheme(DEFAULT_BRANDING);
+        });
+    }, 450);
+
+    return () => window.clearTimeout(timer);
+  }, [schoolCode]);
+
+  const previewLogo = fileUrl(brandingPreview?.logo_url);
+  const previewName = brandingPreview?.school_name || "School ERP";
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,15 +77,15 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-linear-to-br from-slate-50 via-white to-slate-100 p-4">
+    <main className="flex min-h-screen items-center justify-center p-4" style={{ background: "linear-gradient(135deg, var(--erp-background, #f8fafc), #ffffff, var(--erp-primary-soft, #dbeafe))" }}>
       <Card className="w-full max-w-lg border-slate-200/80 p-0 shadow-lg">
-        <div className="rounded-t-2xl bg-slate-900 p-6 text-white">
+        <div className="rounded-t-2xl p-6 text-white" style={{ background: "var(--erp-sidebar, #0f172a)" }}>
           <div className="mb-5 flex items-center gap-3">
-            <div className="rounded-2xl bg-white/10 p-3">
-              <School size={24} />
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/95 p-2" style={{ color: "var(--erp-primary, #2563eb)" }}>
+              {previewLogo ? <img src={previewLogo} alt={`${previewName} logo`} className="max-h-full max-w-full object-contain" /> : <School size={24} />}
             </div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-300">School ERP</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-300">{previewName}</p>
               <h1 className="text-2xl font-bold">Welcome back</h1>
             </div>
           </div>
@@ -71,7 +99,8 @@ export default function LoginPage() {
                 key={tab}
                 type="button"
                 onClick={() => setActiveTab(tab)}
-                className={`rounded-xl px-2 py-2 text-xs font-semibold transition ${activeTab === tab ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"}`}
+                className={`rounded-xl px-2 py-2 text-xs font-semibold transition ${activeTab === tab ? "bg-white shadow-sm" : "text-slate-500 hover:text-slate-900"}`}
+                style={activeTab === tab ? { color: "var(--erp-primary, #0f172a)" } : undefined}
               >
                 {tab}
               </button>
@@ -82,7 +111,7 @@ export default function LoginPage() {
             <div>
               <Label>School / College Code</Label>
               <Input value={schoolCode} onChange={(e) => setSchoolCode(e.target.value.toUpperCase())} required placeholder="Example: DPS001" />
-              <p className="mt-1 text-xs text-slate-500">Ask your institution admin for this code.</p>
+              <p className="mt-1 text-xs text-slate-500">{brandingPreview ? `Theme loaded for ${brandingPreview.school_name}.` : "Ask your institution admin for this code."}</p>
             </div>
             <div>
               <Label>Email / Employee ID / Admission No.</Label>

@@ -27,6 +27,7 @@ from app.models import (  # noqa: F401
     StudentFeeRecord,
     ParentGuardian,
     School,
+    SchoolBranding,
     SchoolClass,
     Section,
     Student,

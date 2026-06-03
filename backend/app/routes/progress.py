@@ -226,8 +226,9 @@ def track_video_watch_progress(
 
     record.last_watch_ping_at = now
 
+    # No db.refresh(record) here: the endpoint already has the updated SQLAlchemy
+    # object in memory, so refreshing would add one unnecessary SELECT per watch ping.
     db.commit()
-    db.refresh(record)
 
     return get_watch_status(record)
 

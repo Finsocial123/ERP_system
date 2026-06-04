@@ -96,78 +96,6 @@ async def _transcribe_groq(audio_bytes: bytes, filename: str, language: str) -> 
 
 
 
-
-# async def transcribe_audio_bytes(audio_bytes: bytes, filename: str = "audio.mp3", language: str = "en") -> str:
-#     base64_audio = base64.b64encode(audio_bytes).decode("utf-8")
-
-#     async with httpx.AsyncClient(timeout=120) as http:
-#         response = await http.post(
-#             "https://openrouter.ai/api/v1/audio/transcriptions",
-#             headers={
-#                 "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-#             },
-#             files={"file": (filename, audio_bytes, "audio/mpeg")},
-#             data={
-#                 "model": settings.TRANSCRIPTION_MODEL,
-#                 "language": language
-#             }
-#         )
-
-        
-#         if response.status_code != 200:
-#             print(f"OpenRouter STT error: {response.status_code} - {response.text}")
-#             response.raise_for_status()
-
-#         result = response.json()
-
-#         print("WHISPER RESPONSE KEYS:", list(result.keys()))
-#         print("HAS SEGMENTS:", "segments" in result)
-#         print("SEGMENTS COUNT:", len(result.get("segments", [])))
-#         if result.get("segments"):
-#             print("FIRST SEGMENT:", result["segments"][0])
-
-
-#         return {
-#             "text": result.get("text", ""),
-#             "segments": []
-#         }
-
-# async def transcribe_audio_bytes(audio_bytes: bytes, filename: str = "audio.mp3", language: str = "en") -> dict:
-#     async with httpx.AsyncClient(timeout=120) as http:
-#         response = await http.post(
-#             "https://openrouter.ai/api/v1/audio/transcriptions",
-#             headers={
-#                 "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-#             },
-#             files={"file": (filename, audio_bytes, "audio/mpeg")},
-#             data={
-#                 "model": settings.TRANSCRIPTION_MODEL,
-#                 "language": language,
-#             }
-#         )
-
-
-
-#         if response.status_code != 200:
-#             print(f"OpenRouter STT error: {response.status_code} - {response.text}")
-#             response.raise_for_status()
-
-#         result = response.json()
-
-#         print(f"Using transcription model: {settings.TRANSCRIPTION_MODEL}")
-
-#         print("WHISPER RESPONSE KEYS:", list(result.keys()))
-#         print("HAS SEGMENTS:", "segments" in result)
-#         print("SEGMENTS COUNT:", len(result.get("segments", [])))
-#         if result.get("segments"):
-#             print("FIRST SEGMENT:", result["segments"][0])
-
-#         return {
-#             "text": result.get("text", ""),
-#             "segments": []  # OpenRouter whisper doesn't return segments
-#         }
-
-
 async def transcribe_audio_bytes(audio_bytes: bytes, filename: str = "audio.mp3", language: str = "en") -> dict:
     async with httpx.AsyncClient(timeout=120) as http:
         response = await http.post(
@@ -179,6 +107,8 @@ async def transcribe_audio_bytes(audio_bytes: bytes, filename: str = "audio.mp3"
             data={
                 "model": "whisper-1",
                 "language": language,
+                "response_format": "verbose_json",
+                "timestamp_granularities[]": "segment",
             }
         )
 
@@ -189,7 +119,7 @@ async def transcribe_audio_bytes(audio_bytes: bytes, filename: str = "audio.mp3"
         result = response.json()
         return {
             "text": result.get("text", ""),
-            "segments": []
+            "segments": result.get("segments", []) 
         }
     
 
@@ -219,7 +149,7 @@ async def transcribe_video(video_bytes: bytes, language: str = "en") -> dict:
         for seg in result["segments"]:
             seg["start"] += offset
             seg["end"] += offset
-        all_segments.extends(result["segments"])
+        all_segments.extend(result["segments"])
 
         offset += len(chunk) / (32000 / 8)
 

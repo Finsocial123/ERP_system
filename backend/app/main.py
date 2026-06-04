@@ -65,16 +65,6 @@ app.add_middleware(
 )
 
 
-@app.get("/")
-def root():
-    return {"message": "School ERP Phase 9 API is running"}
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
 app.include_router(auth.router)
 app.include_router(schools.router)
 app.include_router(academic.router)

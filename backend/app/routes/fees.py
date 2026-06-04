@@ -541,26 +541,6 @@ def create_category(
     return _category_read(category)
 
 
-@router.put("/categories/{category_id}", response_model=FeeCategoryRead)
-def update_category(
-    category_id: int,
-    payload: FeeCategoryUpdate,
-    school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    category = _get_or_404(db, FeeCategory, category_id, school_id, "Fee category")
-    for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(category, key, value)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="Fee category with this name already exists")
-    db.refresh(category)
-    return _category_read(category)
-
-
 @router.delete("/categories/{category_id}", response_model=MessageResponse)
 def delete_category(
     category_id: int,
@@ -595,27 +575,6 @@ def create_structure(
     _get_or_404(db, AcademicSession, payload.academic_session_id, school_id, "Academic session")
     structure = FeeStructure(school_id=school_id, **payload.model_dump())
     db.add(structure)
-    db.commit()
-    db.refresh(structure)
-    return _structure_read(structure)
-
-
-@router.put("/structures/{structure_id}", response_model=FeeStructureRead)
-def update_structure(
-    structure_id: int,
-    payload: FeeStructureUpdate,
-    school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    structure = _get_or_404(db, FeeStructure, structure_id, school_id, "Fee structure")
-    data = payload.model_dump(exclude_unset=True)
-    if "category_id" in data and data["category_id"] is not None:
-        _validate_category(db, school_id, data["category_id"])
-    if "academic_session_id" in data:
-        _get_or_404(db, AcademicSession, data["academic_session_id"], school_id, "Academic session")
-    for key, value in data.items():
-        setattr(structure, key, value)
     db.commit()
     db.refresh(structure)
     return _structure_read(structure)
@@ -718,36 +677,6 @@ def create_assignment(
     return _assignment_read(db, assignment)
 
 
-@router.post("/assignments/{assignment_id}/generate-records", response_model=FeeAssignmentRead)
-def generate_assignment_records(
-    assignment_id: int,
-    school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    assignment = _get_or_404(db, FeeAssignment, assignment_id, school_id, "Fee assignment")
-    _generate_records_for_assignment(db, school_id, assignment)
-    db.commit()
-    db.refresh(assignment)
-    return _assignment_read(db, assignment)
-
-
-@router.put("/assignments/{assignment_id}", response_model=FeeAssignmentRead)
-def update_assignment(
-    assignment_id: int,
-    payload: FeeAssignmentUpdate,
-    school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    assignment = _get_or_404(db, FeeAssignment, assignment_id, school_id, "Fee assignment")
-    for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(assignment, key, value)
-    db.commit()
-    db.refresh(assignment)
-    return _assignment_read(db, assignment)
-
-
 @router.delete("/assignments/{assignment_id}", response_model=MessageResponse)
 def delete_assignment(
     assignment_id: int,
@@ -812,42 +741,6 @@ def create_record(
     db.commit()
     db.refresh(record)
     return _record_read(record)
-
-
-@router.put("/records/{record_id}", response_model=StudentFeeRecordRead)
-def update_record(
-    record_id: int,
-    payload: StudentFeeRecordUpdate,
-    school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    record = _get_or_404(db, StudentFeeRecord, record_id, school_id, "Student fee record")
-    data = payload.model_dump(exclude_unset=True)
-    requested_status = data.pop("status", None)
-    for key, value in data.items():
-        setattr(record, key, value)
-    if requested_status == "WAIVED":
-        record.status = "WAIVED"
-    _recalculate_record(record)
-    db.commit()
-    db.refresh(record)
-    return _record_read(record)
-
-
-@router.delete("/records/{record_id}", response_model=MessageResponse)
-def delete_record(
-    record_id: int,
-    school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    record = _get_or_404(db, StudentFeeRecord, record_id, school_id, "Student fee record")
-    if record.paid_amount > 0:
-        raise HTTPException(status_code=400, detail="Cannot delete a fee record that already has payments")
-    db.delete(record)
-    db.commit()
-    return MessageResponse(message="Student fee record deleted")
 
 
 @router.get("/payments", response_model=list[FeePaymentRead])
@@ -991,25 +884,6 @@ def create_expense(
         note=payload.note,
     )
     db.add(expense)
-    db.commit()
-    db.refresh(expense)
-    return _expense_read(expense)
-
-
-@router.put("/expenses/{expense_id}", response_model=FeeExpenseRead)
-def update_expense(
-    expense_id: int,
-    payload: FeeExpenseUpdate,
-    school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    expense = _get_or_404(db, FeeExpense, expense_id, school_id, "Fee expense")
-    data = payload.model_dump(exclude_unset=True)
-    if "payment_mode" in data and data["payment_mode"] is not None:
-        data["payment_mode"] = _validate_payment_mode(data["payment_mode"])
-    for key, value in data.items():
-        setattr(expense, key, value)
     db.commit()
     db.refresh(expense)
     return _expense_read(expense)

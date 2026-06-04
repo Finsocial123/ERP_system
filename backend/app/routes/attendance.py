@@ -258,31 +258,6 @@ def get_attendance_sheet(
 
 
 # ── PATCH /attendance/{attendance_id} ─────────────────────────────────────────
-@router.patch("/{attendance_id}", response_model=AttendanceRead)
-def update_attendance(
-    attendance_id: int,
-    payload: AttendanceUpdate,
-    school_id: int = Depends(current_school_id),
-    current_user: User = Depends(require_roles(*ALLOWED_ROLES)),
-    db: Session = Depends(get_db),
-):
-    record = db.query(StudentAttendance).filter(
-        StudentAttendance.id == attendance_id,
-        StudentAttendance.school_id == school_id,
-    ).first()
-    if not record:
-        raise HTTPException(status_code=404, detail="Attendance record not found")
-
-    _assert_teacher_can_access_class(db, school_id, current_user, record.class_id)
-
-    record.status = payload.status
-    record.note = payload.note
-    record.marked_by = current_user.id
-    db.commit()
-    db.refresh(record)
-    return record
-
-
 # ── GET /attendance/summary ───────────────────────────────────────────────────
 @router.get("/summary", response_model=list[StudentAttendanceSummary])
 def attendance_summary(
@@ -358,29 +333,6 @@ def attendance_summary(
 
 
 # ── GET /attendance/by-date ───────────────────────────────────────────────────
-@router.get("/by-date", response_model=list[AttendanceRead])
-def attendance_by_date(
-    session_id: int = Query(...),
-    class_id: int = Query(...),
-    date: date = Query(...),
-    section_id: int | None = Query(default=None),
-    school_id: int = Depends(current_school_id),
-    current_user: User = Depends(require_roles(*ALLOWED_ROLES)),
-    db: Session = Depends(get_db),
-):
-    _assert_teacher_can_access_class(db, school_id, current_user, class_id)
-
-    q = db.query(StudentAttendance).filter(
-        StudentAttendance.school_id == school_id,
-        StudentAttendance.class_id == class_id,
-        StudentAttendance.date == date,
-        StudentAttendance.session_id == session_id,
-    )
-    if section_id:
-        q = q.filter(StudentAttendance.section_id == section_id)
-    return q.all()
-
-
 # ── GET /attendance/my ────────────────────────────────────────────────────────
 @router.get("/my", response_model=list[AttendanceRead])
 def my_attendance(

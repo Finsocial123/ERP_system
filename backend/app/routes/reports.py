@@ -454,15 +454,3 @@ def homework_report(
 # FEE REPORT (placeholder — Phase 6 not yet built)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.get("/fees")
-def fee_report(
-    school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    return {
-        "message": "Fee management module (Phase 6) not yet implemented.",
-        "total_collected": 0,
-        "total_pending": 0,
-        "rows": [],
-    }

@@ -42,25 +42,6 @@ async def meeting_stats(
     }
 
 
-@router.get("/active/class/{class_id}")
-async def get_active_class_meeting(
-    class_id: int,
-    section_id: int | None = Query(None),
-    db: AsyncSession = Depends(get_async_db),
-    current_user: User = Depends(get_current_user),
-):
-    meeting = await meeting_service.get_active_meeting_for_class(
-        db=db,
-        school_id=current_user.school_id,
-        class_id=class_id,
-        section_id=section_id,
-    )
-    if not meeting:
-        return {"live": False}
-    return {"live": True, "meeting_id": meeting.id, "title": meeting.title}
-
-
-
 @router.get("/", response_model=MeetingListOut)
 async def list_meetings(
     skip: int = Query(0, ge=0),

@@ -348,41 +348,6 @@ def list_circulars(
     return [_circular_out(item) for item in visible[skip : skip + limit]]
 
 
-@router.patch("/circulars/{circular_id}", response_model=CircularOut)
-def update_circular(
-    circular_id: int,
-    payload: CircularUpdate,
-    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    item = db.query(Circular).filter(Circular.id == circular_id, Circular.school_id == _school_id(current_user)).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Circular not found")
-    data = payload.model_dump(exclude_unset=True)
-    if "audience_roles" in data:
-        item.audience_roles = _roles_to_csv(payload.audience_roles)
-        data.pop("audience_roles")
-    for key, value in data.items():
-        setattr(item, key, value.value if hasattr(value, "value") else value)
-    db.commit()
-    db.refresh(item)
-    return _circular_out(item)
-
-
-@router.delete("/circulars/{circular_id}", response_model=MessageResponse)
-def delete_circular(
-    circular_id: int,
-    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    item = db.query(Circular).filter(Circular.id == circular_id, Circular.school_id == _school_id(current_user)).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Circular not found")
-    db.delete(item)
-    db.commit()
-    return MessageResponse(message="Circular deleted successfully")
-
-
 # ─────────────────────────────── Announcements ───────────────────────────────
 
 @router.post("/announcements", response_model=AnnouncementOut, status_code=status.HTTP_201_CREATED)
@@ -444,41 +409,6 @@ def list_announcements(
     items = q.order_by(Announcement.created_at.desc()).all()
     visible = [item for item in items if _audience_allows(item.audience_roles, current_user)]
     return [_announcement_out(item) for item in visible[skip : skip + limit]]
-
-
-@router.patch("/announcements/{announcement_id}", response_model=AnnouncementOut)
-def update_announcement(
-    announcement_id: int,
-    payload: AnnouncementUpdate,
-    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    item = db.query(Announcement).filter(Announcement.id == announcement_id, Announcement.school_id == _school_id(current_user)).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Announcement not found")
-    data = payload.model_dump(exclude_unset=True)
-    if "audience_roles" in data:
-        item.audience_roles = _roles_to_csv(payload.audience_roles)
-        data.pop("audience_roles")
-    for key, value in data.items():
-        setattr(item, key, value.value if hasattr(value, "value") else value)
-    db.commit()
-    db.refresh(item)
-    return _announcement_out(item)
-
-
-@router.delete("/announcements/{announcement_id}", response_model=MessageResponse)
-def delete_announcement(
-    announcement_id: int,
-    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    item = db.query(Announcement).filter(Announcement.id == announcement_id, Announcement.school_id == _school_id(current_user)).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Announcement not found")
-    db.delete(item)
-    db.commit()
-    return MessageResponse(message="Announcement deleted successfully")
 
 
 # ─────────────────────────────────── Events ──────────────────────────────────
@@ -543,41 +473,6 @@ def list_events(
     items = q.order_by(SchoolEvent.event_date.asc(), SchoolEvent.start_time.asc()).all()
     visible = [item for item in items if _audience_allows(item.audience_roles, current_user)]
     return [_event_out(item) for item in visible[skip : skip + limit]]
-
-
-@router.patch("/events/{event_id}", response_model=EventOut)
-def update_event(
-    event_id: int,
-    payload: EventUpdate,
-    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    item = db.query(SchoolEvent).filter(SchoolEvent.id == event_id, SchoolEvent.school_id == _school_id(current_user)).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Event not found")
-    data = payload.model_dump(exclude_unset=True)
-    if "audience_roles" in data:
-        item.audience_roles = _roles_to_csv(payload.audience_roles)
-        data.pop("audience_roles")
-    for key, value in data.items():
-        setattr(item, key, value.value if hasattr(value, "value") else value)
-    db.commit()
-    db.refresh(item)
-    return _event_out(item)
-
-
-@router.delete("/events/{event_id}", response_model=MessageResponse)
-def delete_event(
-    event_id: int,
-    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
-    db: Session = Depends(get_db),
-):
-    item = db.query(SchoolEvent).filter(SchoolEvent.id == event_id, SchoolEvent.school_id == _school_id(current_user)).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Event not found")
-    db.delete(item)
-    db.commit()
-    return MessageResponse(message="Event deleted successfully")
 
 
 # ─────────────────────────────── Support tickets ─────────────────────────────

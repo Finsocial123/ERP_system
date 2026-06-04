@@ -242,13 +242,6 @@ def create_student(payload: StudentCreate, current_user: User = Depends(require_
     return student
 
 
-@router.get("/students/{student_id}", response_model=StudentRead)
-def get_student(student_id: int, school_id: int = Depends(current_school_id), db: Session = Depends(get_db)):
-    return _get_or_404(db, Student, student_id, school_id)
-
-
-
-
 @router.post("/students/{student_id}/parent-login", response_model=StudentRead)
 def create_parent_login_for_student(
     student_id: int,
@@ -578,11 +571,6 @@ async def get_teacher_available_classes(
     ]
 
 
-
-
-@router.get("/teachers/{teacher_id}", response_model=TeacherRead)
-def get_teacher(teacher_id: int, school_id: int = Depends(current_school_id), db: Session = Depends(get_db)):
-    return _get_or_404(db, Teacher, teacher_id, school_id)
 
 
 @router.put("/teachers/{teacher_id}", response_model=TeacherRead)

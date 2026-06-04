@@ -73,15 +73,6 @@ async def list_notices(
     )
 
 
-@router.get("/{notice_id}", response_model=NoticeOut)
-async def get_notice(
-    notice_id: int,
-    db: AsyncSession = Depends(get_async_db),
-    current_user: User = Depends(get_current_user),
-):
-    return await notice_service.get_notice(db, notice_id, current_user)
-
-
 @router.patch("/{notice_id}", response_model=NoticeOut)
 async def update_notice(
     notice_id: int,

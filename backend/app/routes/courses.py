@@ -252,16 +252,6 @@ def get_all_courses(
     return [_course_payload(db, course) for course in courses]
 
 
-@router.get("/my-created", response_model=list[CourseOut])
-def get_my_created_courses(
-    school_id: int = Depends(current_school_id),
-    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
-    db: Session = Depends(get_db),
-):
-    courses = _base_course_query(db, school_id).filter(Course.teacher_id == current_user.id).order_by(Course.created_at.desc()).all()
-    return [_course_payload(db, course) for course in courses]
-
-
 @router.post("/", response_model=CourseOut, status_code=status.HTTP_201_CREATED)
 def create_course(
     title: str = Form(..., min_length=2, max_length=255),
@@ -314,24 +304,6 @@ def create_course(
     db.commit()
     db.refresh(course)
     return _course_payload(db, course)
-
-
-@router.get("/{course_id}", response_model=CourseOut)
-def get_course(
-    course_id: int,
-    school_id: int = Depends(current_school_id),
-    current_user: User = Depends(require_roles(*ALL_LMS_ROLES)),
-    db: Session = Depends(get_db),
-):
-    course = get_course_or_404(db, school_id, course_id)
-    ensure_can_view_course(db, school_id, current_user, course)
-    progress = None
-    student = None
-    if current_user.role == UserRole.STUDENT.value:
-        student = student_for_user(db, school_id, current_user)
-        enrollment = db.query(Enrollment).filter(Enrollment.student_id == current_user.id, Enrollment.course_id == course.id).first()
-        progress = float(enrollment.progress or 0) if enrollment else 0
-    return _course_payload(db, course, progress=progress, student=student)
 
 
 @router.put("/{course_id}", response_model=CourseOut)
@@ -544,18 +516,6 @@ def build_student_course_progress_report(course_id: int, school_id: int, db: Ses
 
     db.commit()
     return sorted(result, key=lambda item: ((item.get("roll_number") or ""), (item.get("student_name") or "").lower()))
-
-
-@router.get("/{course_id}/students")
-def get_enrolled_students(
-    course_id: int,
-    school_id: int = Depends(current_school_id),
-    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
-    db: Session = Depends(get_db),
-):
-    course = get_course_or_404(db, school_id, course_id)
-    ensure_can_manage_course(db, school_id, current_user, course)
-    return build_student_course_progress_report(course_id, school_id, db)
 
 
 @router.get("/{course_id}/students/progress")

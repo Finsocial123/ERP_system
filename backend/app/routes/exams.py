@@ -803,17 +803,6 @@ def delete_exam_subject(
     return MessageResponse(message="Exam subject removed successfully")
 
 
-@router.get("/{exam_id}/students", response_model=list[ExamStudentRead])
-def list_exam_students(
-    exam_id: int,
-    school_id: int = Depends(current_school_id),
-    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
-    db: Session = Depends(get_db),
-):
-    exam = _exam_or_404(db, school_id, exam_id)
-    return [_student_read(student) for student in _students_for_exam_query(db, exam).all()]
-
-
 @router.get("/{exam_id}/marks", response_model=list[ExamMarkRead])
 def list_exam_marks(
     exam_id: int,

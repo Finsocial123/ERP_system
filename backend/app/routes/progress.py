@@ -307,40 +307,6 @@ def mark_lesson_complete(
 
 
 # Mark a lesson as incomplete (undo)
-@router.delete("/{lesson_id}/complete")
-def mark_lesson_incomplete(
-    lesson_id: int,
-    school_id: int = Depends(current_school_id),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(UserRole.STUDENT))
-):
-    lesson = get_lesson_or_404(lesson_id, db)
-    ensure_student_enrolled(current_user.id, lesson.course_id, db, school_id, current_user)
-
-    record = db.query(LessonProgress).filter(
-        LessonProgress.student_id == current_user.id,
-        LessonProgress.lesson_id == lesson_id
-    ).first()
-
-    if not record:
-        raise HTTPException(
-            status_code=404,
-            detail="No progress record found"
-        )
-
-    record.completed = False
-    record.completed_at = None
-    db.commit()
-
-    recalculate_course_progress(
-        current_user.id,
-        lesson.course_id,
-        db
-    )
-
-    return {"message": "Lesson marked as incomplete"}
-
-
 # Get progress for a student in a course
 @router.get("/course/{course_id}")
 def get_course_progress(

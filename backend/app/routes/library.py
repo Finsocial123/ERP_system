@@ -123,16 +123,6 @@ def list_books(
     return q.order_by(Book.title).offset(skip).limit(limit).all()
 
 
-@router.get("/books/{book_id}", response_model=BookRead)
-def get_book(
-    book_id: int,
-    school_id: int = Depends(current_school_id),
-    _: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    return _get_book_or_404(db, book_id, school_id)
-
-
 @router.patch("/books/{book_id}", response_model=BookRead)
 def update_book(
     book_id: int,
@@ -380,17 +370,6 @@ def my_issues(
 
     issues = q.order_by(BookIssue.issue_date.desc()).all()
     return [_issue_to_read(i, today) for i in issues]
-
-
-@router.get("/issues/{issue_id}", response_model=IssueRead)
-def get_issue(
-    issue_id: int,
-    school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*STAFF_ROLES)),
-    db: Session = Depends(get_db),
-):
-    issue = _get_issue_or_404(db, issue_id, school_id)
-    return _issue_to_read(issue, date.today())
 
 
 # ══════════════════════════════════════════════════════════════════════════════

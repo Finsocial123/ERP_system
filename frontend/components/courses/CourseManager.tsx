@@ -126,6 +126,7 @@ export default function CourseManager({ mode }: Props) {
   const [courseForm, setCourseForm] = useState<CourseForm>(emptyCourse);
   const [lessonForm, setLessonForm] = useState<LessonForm>(emptyLesson);
   const [editing, setEditing] = useState<LMSCourse | null>(null);
+  const [editingLesson, setEditingLesson] = useState<LMSLesson | null>(null);
   const [selected, setSelected] = useState<LMSCourse | null>(null);
   const [lessons, setLessons] = useState<LMSLesson[]>([]);
   const [progressReport, setProgressReport] = useState<LMSCourseProgressReport | null>(null);
@@ -191,6 +192,8 @@ export default function CourseManager({ mode }: Props) {
         apiFetch<LMSCourseProgressReport>(`/courses/${course.id}/students/progress`),
       ]);
       setLessons(lessonRows);
+      setLessonForm({ ...emptyLesson, order: String(lessonRows.length + 1) });
+      setEditingLesson(null);
       setProgressReport(report);
       setExpandedStudentId(null);
     } catch (err) {
@@ -228,6 +231,11 @@ export default function CourseManager({ mode }: Props) {
     setEditing(null);
   };
 
+  const resetLessonForm = () => {
+    setLessonForm({ ...emptyLesson, order: String(lessons.length + 1) });
+    setEditingLesson(null);
+  };
+
   const startEdit = (course: LMSCourse) => {
     setEditing(course);
     setCourseForm({
@@ -241,6 +249,20 @@ export default function CourseManager({ mode }: Props) {
       thumbnail: null,
     });
     window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const startEditLesson = (lesson: LMSLesson) => {
+    setEditingLesson(lesson);
+    setLessonForm({
+      title: lesson.title,
+      description: lesson.description || "",
+      order: String(lesson.order || 1),
+      language: lesson.language || "en",
+      external_video_link: lesson.external_video_link || "",
+      video: null,
+      pdf: null,
+    });
+    document.getElementById("lesson-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const buildCourseData = () => {
@@ -290,13 +312,14 @@ export default function CourseManager({ mode }: Props) {
       if (lessonForm.external_video_link) data.append("external_video_link", lessonForm.external_video_link.trim());
       if (lessonForm.video) data.append("video", lessonForm.video);
       if (lessonForm.pdf) data.append("pdf", lessonForm.pdf);
-      await apiUpload(`/lessons/${selected.id}`, data, { method: "POST" });
-      setLessonForm({ ...emptyLesson, order: String(lessons.length + 2) });
-      setSuccess("Lesson added successfully");
+      await apiUpload<LMSLesson>(editingLesson ? `/lessons/${editingLesson.id}` : `/lessons/${selected.id}`, data, { method: editingLesson ? "PUT" : "POST" });
+      setLessonForm({ ...emptyLesson, order: String(editingLesson ? lessons.length + 1 : lessons.length + 2) });
+      setSuccess(editingLesson ? "Lesson updated successfully" : "Lesson added successfully");
+      setEditingLesson(null);
       await loadLessons(selected);
       await loadData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save lesson");
+      setError(err instanceof Error ? err.message : editingLesson ? "Failed to update lesson" : "Failed to save lesson");
     } finally {
       setSavingLesson(false);
     }
@@ -588,7 +611,18 @@ export default function CourseManager({ mode }: Props) {
               </div>
             </div>
 
-            <form onSubmit={saveLesson} className="mb-6 grid gap-4 md:grid-cols-4">
+            <form id="lesson-form" onSubmit={saveLesson} className="mb-6 grid gap-4 md:grid-cols-4 scroll-mt-6">
+              <div className="md:col-span-4 flex flex-col gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h3 className="font-bold text-slate-900">{editingLesson ? "Edit lesson" : "Add lesson"}</h3>
+                  <p className="text-sm text-slate-500">{editingLesson ? "Update the selected lesson title, order, description, files or video link." : "Create a new lesson for the selected course."}</p>
+                </div>
+                {editingLesson && (
+                  <button type="button" onClick={resetLessonForm} className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100">
+                    <X size={15} /> Cancel edit
+                  </button>
+                )}
+              </div>
               <div className="md:col-span-2">
                 <Label>Lesson title</Label>
                 <Input value={lessonForm.title} required onChange={(e) => updateLesson("title", e.target.value)} />
@@ -618,7 +652,7 @@ export default function CourseManager({ mode }: Props) {
                 <input className="block w-full text-sm text-slate-600" type="file" accept="application/pdf" onChange={(e) => updateLesson("pdf", e.target.files?.[0] || null)} />
               </div>
               <div className="md:col-span-4">
-                <Button type="submit" disabled={savingLesson || !lessonForm.title}>{savingLesson ? "Adding..." : "Add Lesson"}</Button>
+                <Button type="submit" disabled={savingLesson || !lessonForm.title}>{savingLesson ? "Saving..." : editingLesson ? "Update Lesson" : "Add Lesson"}</Button>
               </div>
             </form>
 
@@ -635,7 +669,10 @@ export default function CourseManager({ mode }: Props) {
                         {lesson.pdf_url && <a className="inline-flex items-center gap-1 rounded-xl bg-blue-50 px-3 py-1 font-semibold text-blue-700" href={fileUrl(lesson.pdf_url)} target="_blank"><FileText size={14} /> PDF</a>}
                       </div>
                     </div>
-                    <button type="button" onClick={() => deleteLesson(lesson)} className="rounded-xl border border-red-200 p-2 text-red-600 hover:bg-red-50"><Trash2 size={16} /></button>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" title="Edit lesson" onClick={() => startEditLesson(lesson)} className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:bg-slate-100"><Edit2 size={16} /></button>
+                      <button type="button" title="Delete lesson" onClick={() => deleteLesson(lesson)} className="rounded-xl border border-red-200 p-2 text-red-600 hover:bg-red-50"><Trash2 size={16} /></button>
+                    </div>
                   </div>
                 </div>
               ))}

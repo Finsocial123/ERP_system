@@ -136,7 +136,43 @@ async def _check_conflicts(db: AsyncSession, school_id: int, payload: dict[str, 
             raise HTTPException(status_code=400, detail='Selected room is already assigned in this day and period')
 
 def _entry_payload(entry: TimetableEntry) -> TimetableEntryRead:
-    return TimetableEntryRead(id=entry.id, class_id=entry.class_id, section_id=entry.section_id, day_id=entry.day_id, period_id=entry.period_id, subject_id=entry.subject_id, teacher_id=entry.teacher_id, room=entry.room, note=entry.note, academic_session_id=entry.academic_session_id, is_active=entry.is_active, class_name=entry.school_class.name if entry.school_class else None, section_name=entry.section.name if entry.section else None, day_name=entry.day.display_name if entry.day else None, day_of_week=entry.day.day_of_week if entry.day else None, day_sort_order=entry.day.sort_order if entry.day else None, period_name=entry.period.name if entry.period else None, period_number=entry.period.period_number if entry.period else None, start_time=entry.period.start_time if entry.period else None, end_time=entry.period.end_time if entry.period else None, subject_name=entry.subject.name if entry.subject else None, teacher_name=entry.teacher.full_name if entry.teacher else None, academic_session_name=entry.academic_session.name if entry.academic_session else None, created_at=entry.created_at, updated_at=entry.updated_at)
+    school_class = entry.__dict__.get("school_class")
+    section = entry.__dict__.get("section")
+    day = entry.__dict__.get("day")
+    period = entry.__dict__.get("period")
+    subject = entry.__dict__.get("subject")
+    teacher = entry.__dict__.get("teacher")
+    academic_session = entry.__dict__.get("academic_session")
+
+    return TimetableEntryRead(
+        id=entry.id,
+        class_id=entry.class_id,
+        section_id=entry.section_id,
+        day_id=entry.day_id,
+        period_id=entry.period_id,
+        subject_id=entry.subject_id,
+        teacher_id=entry.teacher_id,
+        room=entry.room,
+        note=entry.note,
+        academic_session_id=entry.academic_session_id,
+        is_active=entry.is_active,
+
+        class_name=school_class.name if school_class else None,
+        section_name=section.name if section else None,
+        day_name=day.display_name if day else None,
+        day_of_week=day.day_of_week if day else None,
+        day_sort_order=day.sort_order if day else None,
+        period_name=period.name if period else None,
+        period_number=period.period_number if period else None,
+        start_time=period.start_time if period else None,
+        end_time=period.end_time if period else None,
+        subject_name=subject.name if subject else None,
+        teacher_name=teacher.full_name if teacher else None,
+        academic_session_name=academic_session.name if academic_session else None,
+
+        created_at=entry.created_at,
+        updated_at=entry.updated_at,
+    )
 
 def _entry_query(db: AsyncSession, school_id: int):
     return async_query(db, TimetableEntry).filter(TimetableEntry.school_id == school_id)
@@ -249,7 +285,15 @@ async def list_entries(class_id: int | None=Query(default=None), section_id: int
         query = query.filter(TimetableEntry.teacher_id == teacher_id)
     if academic_session_id is not None:
         query = query.filter(TimetableEntry.academic_session_id == academic_session_id)
-    entries = _ordered_entries(query).options(joinedload(TimetableEntry.school_class), joinedload(TimetableEntry.section), joinedload(TimetableEntry.day), joinedload(TimetableEntry.period), joinedload(TimetableEntry.subject), joinedload(TimetableEntry.teacher), joinedload(TimetableEntry.academic_session)).all()
+    entries = await _ordered_entries(query).options(
+    joinedload(TimetableEntry.school_class),
+    joinedload(TimetableEntry.section),
+    joinedload(TimetableEntry.day),
+    joinedload(TimetableEntry.period),
+    joinedload(TimetableEntry.subject),
+    joinedload(TimetableEntry.teacher),
+    joinedload(TimetableEntry.academic_session),
+).all()
     return [_entry_payload(entry) for entry in entries]
 
 @router.post('/entries', response_model=TimetableEntryRead, status_code=status.HTTP_201_CREATED)
@@ -311,7 +355,15 @@ async def view_by_class(class_id: int=Query(...), section_id: int | None=Query(d
     title = f"{school_class.name}{(' - ' + section.name if section else '')} Timetable"
     periods = await async_query(db, TimetablePeriod).filter(TimetablePeriod.school_id == school_id, TimetablePeriod.is_active.is_(True)).order_by(TimetablePeriod.period_number.asc()).all()
     days = await async_query(db, TimetableDay).filter(TimetableDay.school_id == school_id, TimetableDay.is_active.is_(True)).order_by(TimetableDay.sort_order.asc()).all()
-    entries = _ordered_entries(query).options(joinedload(TimetableEntry.school_class), joinedload(TimetableEntry.section), joinedload(TimetableEntry.day), joinedload(TimetableEntry.period), joinedload(TimetableEntry.subject), joinedload(TimetableEntry.teacher), joinedload(TimetableEntry.academic_session)).all()
+    entries = await _ordered_entries(query).options(
+    joinedload(TimetableEntry.school_class),
+    joinedload(TimetableEntry.section),
+    joinedload(TimetableEntry.day),
+    joinedload(TimetableEntry.period),
+    joinedload(TimetableEntry.subject),
+    joinedload(TimetableEntry.teacher),
+    joinedload(TimetableEntry.academic_session),
+).all()
     return TimetableGridResponse(mode='class', title=title, entries=[_entry_payload(e) for e in entries], periods=periods, days=days)
 
 @router.get('/view/teacher', response_model=TimetableGridResponse)
@@ -323,7 +375,15 @@ async def view_by_teacher(teacher_id: int=Query(...), academic_session_id: int |
         query = query.filter(TimetableEntry.academic_session_id == academic_session_id)
     periods = await async_query(db, TimetablePeriod).filter(TimetablePeriod.school_id == school_id, TimetablePeriod.is_active.is_(True)).order_by(TimetablePeriod.period_number.asc()).all()
     days = await async_query(db, TimetableDay).filter(TimetableDay.school_id == school_id, TimetableDay.is_active.is_(True)).order_by(TimetableDay.sort_order.asc()).all()
-    entries = _ordered_entries(query).options(joinedload(TimetableEntry.school_class), joinedload(TimetableEntry.section), joinedload(TimetableEntry.day), joinedload(TimetableEntry.period), joinedload(TimetableEntry.subject), joinedload(TimetableEntry.teacher), joinedload(TimetableEntry.academic_session)).all()
+    entries = await _ordered_entries(query).options(
+    joinedload(TimetableEntry.school_class),
+    joinedload(TimetableEntry.section),
+    joinedload(TimetableEntry.day),
+    joinedload(TimetableEntry.period),
+    joinedload(TimetableEntry.subject),
+    joinedload(TimetableEntry.teacher),
+    joinedload(TimetableEntry.academic_session),
+).all()
     return TimetableGridResponse(mode='teacher', title=f'{teacher.full_name} Timetable', entries=[_entry_payload(e) for e in entries], periods=periods, days=days)
 
 @router.get('/my-teacher', response_model=TimetableGridResponse)

@@ -81,7 +81,7 @@ async def send_message_stream(session_id: str, request: ChatRequest, db: Annotat
             msg = "Use the **Summary** and **Quiz** feature for this lesson to get a full structured summary and quiz respectively. I'm here to answer specific questions about the lesson content!"
             yield f"data: {json.dumps({'token': msg})}\n\n"
             yield f"data: {json.dumps({'status': 'done'})}\n\n"
-        return StreamingResponse(await redirect_generator(), media_type='text/event-stream')
+        return StreamingResponse(redirect_generator(), media_type='text/event-stream')
     try:
         if request.enhance_prompt:
             enhance_response = await client.chat.completions.create(model=settings.MODEL, messages=[{'role': 'system', 'content': "You are a prompt enhancer. Rewrite the student's questions to be clearer, more specific, and more detailed. Return ONLY the rewritten question, nothing else."}, {'role': 'user', 'content': request.content}], stream=False)
@@ -110,7 +110,7 @@ async def send_message_stream(session_id: str, request: ChatRequest, db: Annotat
         async def _get_history() -> list[ChatMessage]:
             result = await db.execute(select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at))
             return list(result.scalars().all())
-        embedding, history = await asyncio.gather(await _get_embedding(), await _get_history())
+        embedding, history = await asyncio.gather(_get_embedding(), await _get_history())
         if embedding is not None:
             try:
                 async with session_factory() as rag_db:

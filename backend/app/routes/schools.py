@@ -1,8 +1,8 @@
 from pathlib import Path
-from uuid import uuid4
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from app.core.database import get_async_db
 from app.core.utils import normalize_school_code
+from app.core.cloudinary_upload import upload_school_logo_to_cloudinary
 from app.dependencies.auth import current_school_id, get_current_user, require_school_admin
 from app.models.branding import SchoolBranding
 from app.models.school import School
@@ -11,7 +11,6 @@ from app.schemas.school import DEFAULT_LOGO_THEME, LogoUploadResponse, SchoolBra
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
 router = APIRouter(prefix='/schools', tags=['Schools'])
-UPLOAD_ROOT = Path(__file__).resolve().parents[2] / 'uploads'
 ALLOWED_LOGO_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp'}
 ALLOWED_LOGO_MIME_TYPES = {'image/png', 'image/jpeg', 'image/webp'}
 MAX_LOGO_BYTES = 3 * 1024 * 1024
@@ -78,12 +77,11 @@ async def upload_school_logo(file: UploadFile=File(...), current_user: User=Depe
         raise HTTPException(status_code=400, detail='Logo file is empty')
     if len(content) > MAX_LOGO_BYTES:
         raise HTTPException(status_code=400, detail='Logo must be 3 MB or smaller')
-    target_dir = UPLOAD_ROOT / 'schools' / str(school.id) / 'branding'
-    target_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = f'logo-{uuid4().hex}{suffix}'
-    target_path = target_dir / safe_name
-    target_path.write_bytes(content)
-    logo_url = f'/uploads/schools/{school.id}/branding/{safe_name}'
+    logo_url = await upload_school_logo_to_cloudinary(
+        school_id=school.id,
+        content=content,
+        content_type=file.content_type or 'image/png',
+    )
     branding = await _get_or_create_branding(db, school)
     branding.logo_url = logo_url
     branding.theme_source = 'manual' if branding.theme_source == 'preset' else branding.theme_source

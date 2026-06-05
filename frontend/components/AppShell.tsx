@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import {
   BookOpen,
   Building2,
@@ -20,7 +20,6 @@ import {
   Settings,
   UserRound,
   Users,
-  X,
   Video,
   Album,
   Presentation,
@@ -28,7 +27,7 @@ import {
 } from "lucide-react";
 
 import { apiFetch, clearAuth, dashboardPathForRole, fileUrl, getSavedAuth } from "@/lib/api";
-import { applyBrandingTheme, normalizeBranding } from "@/lib/branding";
+import { BRANDING_UPDATED_EVENT, applyBrandingTheme, cacheBrandingTheme, getCachedBranding, normalizeBranding } from "@/lib/branding";
 import type { AuthResponse, SchoolBranding } from "@/types";
 
 type NavItem = {
@@ -40,6 +39,8 @@ type NavItem = {
 };
 
 const ADMIN_ROLES = ["SUPER_ADMIN", "SCHOOL_OWNER", "SCHOOL_ADMIN"];
+const AppShellContext = createContext(false);
+const SIDEBAR_OPEN_KEY = "erp_sidebar_desktop_open";
 
 const navItems: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ADMIN_ROLES, group: "Main" },
@@ -135,12 +136,19 @@ function getInitials(name: string): string {
 }
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
+  const isNestedShell = useContext(AppShellContext);
+  if (isNestedShell) return <>{children}</>;
+  return <AppShellRoot>{children}</AppShellRoot>;
+}
+
+function AppShellRoot({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [auth, setAuth] = useState<AuthResponse | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopOpen, setDesktopOpen] = useState(true);
-  const [branding, setBranding] = useState<SchoolBranding | null>(null);
+  const [sidebarHydrated, setSidebarHydrated] = useState(false);
+  const [branding, setBranding] = useState<Partial<SchoolBranding> | null>(null);
 
   useEffect(() => {
     const saved = getSavedAuth();
@@ -153,20 +161,56 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       const canOpen = navItems.some((item) => item.href === pathname && item.roles.includes(saved.user.role));
       if (!canOpen) { router.replace(dashboardPathForRole(saved.user.role, Boolean(saved.user.must_change_password))); return; }
     }
-    setAuth(saved);
+    setAuth((previous) => {
+      if (previous?.access_token === saved.access_token && previous?.user.id === saved.user.id) return previous;
+      return saved;
+    });
   }, [pathname, router]);
 
   useEffect(() => {
-    if (!auth) return;
+    setDesktopOpen(window.localStorage.getItem(SIDEBAR_OPEN_KEY) !== "false");
+    setSidebarHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!sidebarHydrated) return;
+    window.localStorage.setItem(SIDEBAR_OPEN_KEY, desktopOpen ? "true" : "false");
+  }, [desktopOpen, sidebarHydrated]);
+
+  useEffect(() => {
+    const cached = getCachedBranding();
+    if (cached) {
+      setBranding(cached);
+      applyBrandingTheme(cached);
+    }
+
+    const onBrandingUpdated = (event: Event) => {
+      const next = (event as CustomEvent<Partial<SchoolBranding>>).detail;
+      setBranding(next);
+      applyBrandingTheme(next);
+    };
+
+    window.addEventListener(BRANDING_UPDATED_EVENT, onBrandingUpdated);
+    return () => window.removeEventListener(BRANDING_UPDATED_EVENT, onBrandingUpdated);
+  }, []);
+
+  useEffect(() => {
+    if (!auth?.user.school_id) return;
+    let cancelled = false;
     apiFetch<SchoolBranding>("/schools/branding/me")
       .then((data) => {
+        if (cancelled) return;
         setBranding(data);
         applyBrandingTheme(data);
+        cacheBrandingTheme(data);
       })
       .catch(() => {
-        applyBrandingTheme({ logo_url: auth.school?.logo_url || null });
+        const fallback = { logo_url: auth.school?.logo_url || null };
+        setBranding((previous) => previous || fallback);
+        if (!getCachedBranding()) applyBrandingTheme(fallback);
       });
-  }, [auth]);
+    return () => { cancelled = true; };
+  }, [auth?.user.school_id]);
 
   const visibleNav = useMemo(() => {
     if (!auth) return [];
@@ -187,7 +231,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   if (!auth) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#f1f5f9" }}>
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--erp-background, #f1f5f9)" }}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
           <div style={{ width: 32, height: 32, border: "3px solid #e2e8f0", borderTopColor: "var(--erp-primary, #7c3aed)", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
           <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
@@ -204,7 +248,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const logoSrc = fileUrl(activeBranding.logo_url);
 
   return (
-    <>
+    <AppShellContext.Provider value={true}>
       <style>{`
         .as-sidebar {
           position: fixed;
@@ -468,6 +512,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </main>
         </div>
       </div>
-    </>
+    </AppShellContext.Provider>
   );
 }

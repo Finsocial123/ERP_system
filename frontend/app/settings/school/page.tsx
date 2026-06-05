@@ -9,6 +9,7 @@ import { Button, Card, Input, Label, Textarea } from "@/components/ui";
 import { apiFetch, apiUpload, fileUrl } from "@/lib/api";
 import {
   applyBrandingTheme,
+  cacheBrandingTheme,
   BRANDING_PRESETS,
   buildLogoGeneratedTheme,
   extractDominantColorFromImage,
@@ -127,6 +128,7 @@ export default function SchoolSettingsPage() {
       });
       setBranding(data);
       applyBrandingTheme(data);
+      cacheBrandingTheme(data);
       setMessage("Branding and theme updated successfully.");
       return data;
     } catch (err) {

@@ -1,8 +1,11 @@
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import func, or_
 from app.core.database import get_async_db
+from app.core.cloudinary_upload import upload_teacher_profile_photo_to_cloudinary
 from app.dependencies.auth import get_current_user
 from app.models.academic import AcademicSession, SchoolClass, Section, Subject
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
@@ -13,7 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
 router = APIRouter(prefix='/profile', tags=['Profile'])
 ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
-SELF_EDIT_FIELDS = {UserRole.SUPER_ADMIN.value: ['full_name', 'email', 'phone'], UserRole.SCHOOL_OWNER.value: ['full_name', 'email', 'phone'], UserRole.SCHOOL_ADMIN.value: ['full_name', 'email', 'phone'], UserRole.TEACHER.value: ['phone', 'address', 'photo_url'], UserRole.STUDENT.value: ['phone', 'address', 'photo_url'], UserRole.PARENT.value: ['phone', 'alternate_phone', 'occupation', 'address']}
+ALLOWED_PROFILE_PHOTO_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp'}
+ALLOWED_PROFILE_PHOTO_MIME_TYPES = {'image/png', 'image/jpeg', 'image/webp'}
+MAX_PROFILE_PHOTO_BYTES = 3 * 1024 * 1024
+SELF_EDIT_FIELDS = {UserRole.SUPER_ADMIN.value: ['full_name', 'email', 'phone'], UserRole.SCHOOL_OWNER.value: ['full_name', 'email', 'phone'], UserRole.SCHOOL_ADMIN.value: ['full_name', 'email', 'phone'], UserRole.TEACHER.value: ['phone', 'address'], UserRole.STUDENT.value: ['phone', 'address', 'photo_url'], UserRole.PARENT.value: ['phone', 'alternate_phone', 'occupation', 'address']}
 
 def _clean(value: Any) -> Any:
     if value == '':
@@ -253,6 +259,37 @@ async def get_my_profile(current_user: User=Depends(get_current_user), db: Async
         response['role_data'] = await _build_admin_profile(db, current_user.school_id, maps)
         response['summary'] = {'students': await async_query(db, Student).filter(Student.school_id == current_user.school_id, Student.is_active.is_(True)).count(), 'teachers': await async_query(db, Teacher).filter(Teacher.school_id == current_user.school_id, Teacher.is_active.is_(True)).count(), 'parents': await _active_parent_count(db, current_user.school_id), 'classes': await async_query(db, SchoolClass).filter(SchoolClass.school_id == current_user.school_id, SchoolClass.is_active.is_(True)).count(), 'subjects': await async_query(db, Subject).filter(Subject.school_id == current_user.school_id, Subject.is_active.is_(True)).count()}
     return response
+
+
+@router.post('/teacher/photo', response_model=ProfileResponse, status_code=status.HTTP_200_OK)
+async def upload_teacher_profile_photo(file: UploadFile=File(...), current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
+    if current_user.role != UserRole.TEACHER.value:
+        raise HTTPException(status_code=403, detail='Only teachers can upload a profile photo from this endpoint')
+    if not current_user.school_id:
+        raise HTTPException(status_code=400, detail='User is not linked to a school')
+    teacher = await _find_teacher_for_user(db, current_user)
+    if not teacher:
+        raise HTTPException(status_code=404, detail='Teacher record is not linked to this login yet')
+
+    suffix = Path(file.filename or '').suffix.lower()
+    if suffix not in ALLOWED_PROFILE_PHOTO_EXTENSIONS or file.content_type not in ALLOWED_PROFILE_PHOTO_MIME_TYPES:
+        raise HTTPException(status_code=400, detail='Upload a PNG, JPG, JPEG, or WEBP profile photo')
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail='Profile photo file is empty')
+    if len(content) > MAX_PROFILE_PHOTO_BYTES:
+        raise HTTPException(status_code=400, detail='Profile photo must be 3 MB or smaller')
+
+    teacher.photo_url = await upload_teacher_profile_photo_to_cloudinary(
+        school_id=current_user.school_id,
+        teacher_id=teacher.id,
+        content=content,
+        content_type=file.content_type or 'image/png',
+    )
+    await db.commit()
+    await db.refresh(current_user)
+    return await get_my_profile(current_user=current_user, db=db)
 
 @router.put('', response_model=ProfileResponse)
 async def update_my_profile(payload: ProfileUpdate, current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):

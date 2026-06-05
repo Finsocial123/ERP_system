@@ -26,10 +26,8 @@ def _ensure_cloudinary_configured() -> None:
         )
 
 
-async def upload_school_logo_to_cloudinary(*, school_id: int, content: bytes, content_type: str) -> str:
-    """Upload a school logo to Cloudinary and return the secure URL."""
+def _configure_cloudinary() -> None:
     _ensure_cloudinary_configured()
-
     cloudinary.config(
         cloud_name=settings.CLOUDINARY_CLOUD_NAME,
         api_key=settings.CLOUDINARY_API_KEY,
@@ -37,10 +35,21 @@ async def upload_school_logo_to_cloudinary(*, school_id: int, content: bytes, co
         secure=True,
     )
 
+
+async def upload_image_to_cloudinary(
+    *,
+    content: bytes,
+    content_type: str,
+    folder: str,
+    public_id_prefix: str,
+    failure_label: str = "image",
+) -> str:
+    """Upload an image byte payload to Cloudinary and return the secure URL."""
+    _configure_cloudinary()
+
     encoded = base64.b64encode(content).decode("ascii")
     data_uri = f"data:{content_type};base64,{encoded}"
-    folder = f"school-erp/schools/{school_id}/branding"
-    public_id = f"logo-{uuid4().hex}"
+    public_id = f"{public_id_prefix}-{uuid4().hex}"
 
     try:
         result = await run_in_threadpool(
@@ -54,13 +63,41 @@ async def upload_school_logo_to_cloudinary(*, school_id: int, content: bytes, co
     except Exception as exc:  # Cloudinary SDK raises provider-specific exceptions
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Cloudinary logo upload failed",
+            detail=f"Cloudinary {failure_label} upload failed",
         ) from exc
 
     secure_url = result.get("secure_url") or result.get("url")
     if not secure_url:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Cloudinary did not return a logo URL",
+            detail=f"Cloudinary did not return a {failure_label} URL",
         )
     return str(secure_url)
+
+
+async def upload_school_logo_to_cloudinary(*, school_id: int, content: bytes, content_type: str) -> str:
+    """Upload a school logo to Cloudinary and return the secure URL."""
+    return await upload_image_to_cloudinary(
+        content=content,
+        content_type=content_type,
+        folder=f"school-erp/schools/{school_id}/branding",
+        public_id_prefix="logo",
+        failure_label="logo",
+    )
+
+
+async def upload_teacher_profile_photo_to_cloudinary(
+    *,
+    school_id: int,
+    teacher_id: int,
+    content: bytes,
+    content_type: str,
+) -> str:
+    """Upload a teacher profile photo to Cloudinary and return the secure URL."""
+    return await upload_image_to_cloudinary(
+        content=content,
+        content_type=content_type,
+        folder=f"school-erp/schools/{school_id}/teachers/{teacher_id}/profile",
+        public_id_prefix="profile-photo",
+        failure_label="teacher profile photo",
+    )

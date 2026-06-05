@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   BookOpen,
   Building2,
@@ -23,6 +23,7 @@ import {
   Video,
   Album,
   Presentation,
+  Bell,
   ChevronRight,
 } from "lucide-react";
 
@@ -149,6 +150,7 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
   const [desktopOpen, setDesktopOpen] = useState(true);
   const [sidebarHydrated, setSidebarHydrated] = useState(false);
   const [branding, setBranding] = useState<Partial<SchoolBranding> | null>(null);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
 
   useEffect(() => {
     const saved = getSavedAuth();
@@ -211,6 +213,23 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
       });
     return () => { cancelled = true; };
   }, [auth?.user.school_id]);
+
+
+  const refreshUnreadNotifications = useCallback(() => {
+    if (!auth?.user.school_id) return;
+    apiFetch<Array<{ id: number }>>("/communication/notifications?unread_only=true&limit=100")
+      .then((data) => setUnreadNotifications(data.length))
+      .catch(() => setUnreadNotifications(0));
+  }, [auth?.user.school_id]);
+
+  useEffect(() => {
+    refreshUnreadNotifications();
+  }, [auth?.user.id, auth?.user.school_id, pathname, refreshUnreadNotifications]);
+
+  useEffect(() => {
+    window.addEventListener("erp_notifications_updated", refreshUnreadNotifications);
+    return () => window.removeEventListener("erp_notifications_updated", refreshUnreadNotifications);
+  }, [refreshUnreadNotifications]);
 
   const visibleNav = useMemo(() => {
     if (!auth) return [];
@@ -345,6 +364,19 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
           flex-shrink: 0;
         }
         .as-icon-btn:hover { background: #f1f5f9; }
+        .as-bell-btn { position: relative; }
+        .as-bell-btn.active { background: color-mix(in srgb, var(--erp-primary, #7c3aed) 12%, white); color: var(--erp-primary, #7c3aed); border-color: color-mix(in srgb, var(--erp-primary, #7c3aed) 28%, #e2e8f0); }
+        .as-bell-badge {
+          position: absolute;
+          top: -5px; right: -5px;
+          min-width: 17px; height: 17px;
+          border-radius: 999px;
+          background: #ef4444; color: #fff;
+          border: 2px solid #fff;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 0.6rem; font-weight: 800;
+          line-height: 1;
+        }
         .as-logout-btn {
           display: inline-flex; align-items: center; gap: 5px;
           padding: 6px 13px;
@@ -500,6 +532,16 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button
+                type="button"
+                className={`as-icon-btn as-bell-btn${pathname === "/notifications" ? " active" : ""}`}
+                onClick={() => router.push("/notifications")}
+                aria-label="Open notifications"
+                title="Notifications"
+              >
+                <Bell size={16} />
+                {unreadNotifications > 0 && <span className="as-bell-badge">{unreadNotifications > 99 ? "99+" : unreadNotifications}</span>}
+              </button>
               <div className="as-avatar" style={{ background: activeBranding.primary_color || roleGradient, width: 30, height: 30, fontSize: "0.65rem" }}>{initials}</div>
               <button className="as-logout-btn" onClick={logout}>
                 <LogOut size={13} /> Logout

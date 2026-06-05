@@ -6,34 +6,16 @@ import { apiFetch, getSavedAuth } from "@/lib/api";
 type UserRole = "SCHOOL_OWNER" | "SCHOOL_ADMIN" | "TEACHER" | "STUDENT" | "PARENT";
 type Priority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
 type PublishStatus = "DRAFT" | "PUBLISHED" | "ARCHIVED";
-type TicketStatus = "OPEN" | "IN_PROGRESS" | "RESOLVED" | "CLOSED";
 type ComplaintStatus = "SUBMITTED" | "UNDER_REVIEW" | "RESOLVED" | "REJECTED" | "CLOSED";
-type TabKey = "overview" | "circulars" | "announcements" | "events" | "tickets" | "complaints" | "notifications";
+type TabKey = "overview" | "announcements" | "events" | "complaints" | "notifications";
 
 type UserMini = { id: number; full_name: string; role: string };
 
 type Overview = {
-  circulars: number;
   announcements: number;
   upcoming_events: number;
-  open_tickets: number;
   open_complaints: number;
   unread_notifications: number;
-};
-
-type Circular = {
-  id: number;
-  circular_no: string | null;
-  title: string;
-  content: string;
-  issue_date: string;
-  priority: Priority;
-  status: PublishStatus;
-  audience_roles: string[];
-  attachment_url: string | null;
-  created_at: string;
-  updated_at: string;
-  author: UserMini | null;
 };
 
 type Announcement = {
@@ -65,21 +47,6 @@ type SchoolEvent = {
   created_at: string;
   updated_at: string;
   author: UserMini | null;
-};
-
-type SupportTicket = {
-  id: number;
-  subject: string;
-  description: string;
-  category: string | null;
-  priority: Priority;
-  status: TicketStatus;
-  resolution: string | null;
-  created_at: string;
-  updated_at: string;
-  resolved_at: string | null;
-  creator: UserMini | null;
-  assignee: UserMini | null;
 };
 
 type Complaint = {
@@ -128,8 +95,6 @@ const statusClass: Record<string, string> = {
   DRAFT: "bg-slate-100 text-slate-700",
   PUBLISHED: "bg-emerald-50 text-emerald-700",
   ARCHIVED: "bg-orange-50 text-orange-700",
-  OPEN: "bg-blue-50 text-blue-700",
-  IN_PROGRESS: "bg-violet-50 text-violet-700",
   RESOLVED: "bg-emerald-50 text-emerald-700",
   CLOSED: "bg-slate-100 text-slate-700",
   SUBMITTED: "bg-blue-50 text-blue-700",
@@ -161,11 +126,7 @@ function roleLabel(role: string) {
 }
 
 function Badge({ value, tone }: { value: string; tone?: Record<string, string> }) {
-  return (
-    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${tone?.[value] || "bg-slate-100 text-slate-700"}`}>
-      {roleLabel(value)}
-    </span>
-  );
+  return <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${tone?.[value] || "bg-slate-100 text-slate-700"}`}>{roleLabel(value)}</span>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -206,9 +167,7 @@ function AudienceSelector({ value, onChange }: { value: UserRole[]; onChange: (r
           {roleLabel(role)}
         </button>
       ))}
-      <button type="button" onClick={() => onChange([])} className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50">
-        All roles
-      </button>
+      <button type="button" onClick={() => onChange([])} className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50">All roles</button>
     </div>
   );
 }
@@ -228,27 +187,21 @@ export default function CommunicationCenter() {
   const [success, setSuccess] = useState("");
 
   const [overview, setOverview] = useState<Overview | null>(null);
-  const [circulars, setCirculars] = useState<Circular[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [events, setEvents] = useState<SchoolEvent[]>([]);
-  const [tickets, setTickets] = useState<SupportTicket[]>([]);
   const [complaints, setComplaints] = useState<Complaint[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
-  const [circularForm, setCircularForm] = useState({ title: "", content: "", circular_no: "", issue_date: today(), priority: "NORMAL" as Priority, status: "PUBLISHED" as PublishStatus, audience_roles: [] as UserRole[], attachment_url: "" });
   const [announcementForm, setAnnouncementForm] = useState({ title: "", message: "", priority: "NORMAL" as Priority, status: "PUBLISHED" as PublishStatus, audience_roles: [] as UserRole[], start_at: "", end_at: "" });
   const [eventForm, setEventForm] = useState({ title: "", description: "", event_date: today(), end_date: "", start_time: "", end_time: "", location: "", category: "", status: "PUBLISHED" as PublishStatus, audience_roles: [] as UserRole[] });
-  const [ticketForm, setTicketForm] = useState({ subject: "", description: "", category: "", priority: "NORMAL" as Priority });
   const [complaintForm, setComplaintForm] = useState({ subject: "", description: "", category: "", priority: "NORMAL" as Priority, is_anonymous: false });
-  const [notificationForm, setNotificationForm] = useState({ title: "", message: "", category: "GENERAL", priority: "NORMAL" as Priority, target_role: "" as "" | UserRole, target_user_id: "", link: "/communication", expires_at: "" });
+  const [notificationForm, setNotificationForm] = useState({ title: "", message: "", category: "GENERAL", priority: "NORMAL" as Priority, target_role: "" as "" | UserRole, target_user_id: "", link: "/notifications", expires_at: "" });
 
   const tabs = useMemo(
     () => [
       ["overview", "Overview"],
-      ["circulars", "Circulars"],
       ["announcements", "Announcements"],
       ["events", "Event Calendar"],
-      ["tickets", "Support Tickets"],
       ["complaints", "Complaints"],
       ["notifications", "Notifications"],
     ] as [TabKey, string][],
@@ -259,24 +212,21 @@ export default function CommunicationCenter() {
     setLoading(true);
     setError("");
     try {
-      const [overviewData, circularData, announcementData, eventData, ticketData, complaintData, notificationData] = await Promise.all([
+      const [overviewData, announcementData, eventData, complaintData, notificationData] = await Promise.all([
         apiFetch<Overview>("/communication/overview"),
-        apiFetch<Circular[]>("/communication/circulars"),
         apiFetch<Announcement[]>("/communication/announcements"),
         apiFetch<SchoolEvent[]>("/communication/events"),
-        apiFetch<SupportTicket[]>("/communication/tickets"),
         apiFetch<Complaint[]>("/communication/complaints"),
         apiFetch<NotificationItem[]>("/communication/notifications"),
       ]);
       setOverview(overviewData);
-      setCirculars(circularData);
       setAnnouncements(announcementData);
       setEvents(eventData);
-      setTickets(ticketData);
       setComplaints(complaintData);
       setNotifications(notificationData);
+      window.dispatchEvent(new Event("erp_notifications_updated"));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load communication data");
+      setError(err instanceof Error ? err.message : "Failed to load communication data.");
     } finally {
       setLoading(false);
     }
@@ -286,136 +236,87 @@ export default function CommunicationCenter() {
     void loadAll();
   }, [loadAll]);
 
-  async function submitForm<TPayload>(path: string, payload: TPayload, onDone: () => void) {
+  async function submitForm(path: string, payload: unknown, reset: () => void) {
     setSaving(true);
     setError("");
     setSuccess("");
     try {
       await apiFetch(path, { method: "POST", body: JSON.stringify(payload) });
-      onDone();
-      setSuccess("Saved successfully");
+      reset();
+      setSuccess("Saved successfully.");
       await loadAll();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Save failed");
+      setError(err instanceof Error ? err.message : "Save failed.");
     } finally {
       setSaving(false);
     }
   }
 
-  async function patchItem(path: string, payload: Record<string, unknown>) {
+  async function patchItem(path: string, payload: unknown) {
     setSaving(true);
     setError("");
-    setSuccess("");
     try {
       await apiFetch(path, { method: "PATCH", body: JSON.stringify(payload) });
-      setSuccess("Updated successfully");
       await loadAll();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Update failed");
+      setError(err instanceof Error ? err.message : "Update failed.");
     } finally {
       setSaving(false);
     }
   }
 
   async function markRead(id: number) {
-    try {
-      await apiFetch(`/communication/notifications/${id}/read`, { method: "POST" });
-      await loadAll();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not mark notification read");
-    }
+    await apiFetch(`/communication/notifications/${id}/read`, { method: "POST" });
+    await loadAll();
   }
 
   async function markAllRead() {
-    try {
-      await apiFetch("/communication/notifications/read-all", { method: "POST" });
-      await loadAll();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not mark notifications read");
-    }
+    await apiFetch("/communication/notifications/read-all", { method: "POST" });
+    await loadAll();
   }
 
   const statCards = [
-    ["Circulars", overview?.circulars ?? 0],
     ["Announcements", overview?.announcements ?? 0],
     ["Upcoming Events", overview?.upcoming_events ?? 0],
-    ["Open Tickets", overview?.open_tickets ?? 0],
     ["Open Complaints", overview?.open_complaints ?? 0],
     ["Unread Notifications", overview?.unread_notifications ?? 0],
-  ] as const;
+  ];
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Notice, Communication & Support</h1>
-          <p className="mt-1 text-sm text-slate-500">Circulars, announcements, event calendar, support tickets, complaints and in-app notifications.</p>
+          <p className="text-sm font-bold uppercase tracking-wide text-slate-400">Communication</p>
+          <h1 className="text-2xl font-bold text-slate-900">Notice & Communication Center</h1>
+          <p className="mt-1 text-sm text-slate-500">Announcements, event calendar, complaints and in-app notifications.</p>
         </div>
-        <button onClick={() => void loadAll()} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
-          Refresh
-        </button>
       </div>
 
-      {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
-      {success && <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{success}</div>}
-
-      <div className="flex gap-2 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-2">
+      <div className="flex flex-wrap gap-2">
         {tabs.map(([key, label]) => (
           <button
             key={key}
             onClick={() => setActiveTab(key)}
-            className={`whitespace-nowrap rounded-xl px-4 py-2 text-sm font-semibold transition ${activeTab === key ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${activeTab === key ? "bg-slate-900 text-white" : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
           >
             {label}
           </button>
         ))}
       </div>
 
+      {error && <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
+      {success && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">{success}</div>}
       {loading ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-slate-500">Loading communication data...</div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-8 text-sm text-slate-500">Loading...</div>
       ) : (
         <>
           {activeTab === "overview" && (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <section className="grid gap-4 md:grid-cols-4">
               {statCards.map(([label, value]) => (
                 <div key={label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <p className="text-sm font-semibold text-slate-500">{label}</p>
-                  <p className="mt-3 text-3xl font-bold text-slate-900">{value}</p>
+                  <p className="text-sm font-medium text-slate-500">{label}</p>
+                  <p className="mt-2 text-3xl font-black text-slate-900">{value}</p>
                 </div>
-              ))}
-            </div>
-          )}
-
-          {activeTab === "circulars" && (
-            <section className="space-y-4">
-              {isAdmin && (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void submitForm("/communication/circulars", { ...circularForm, attachment_url: circularForm.attachment_url || null }, () => setCircularForm({ title: "", content: "", circular_no: "", issue_date: today(), priority: "NORMAL", status: "PUBLISHED", audience_roles: [], attachment_url: "" }));
-                  }}
-                  className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-                >
-                  <h2 className="mb-4 text-lg font-bold text-slate-900">Create Circular</h2>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <Field label="Title"><Input required value={circularForm.title} onChange={(e) => setCircularForm({ ...circularForm, title: e.target.value })} /></Field>
-                    <Field label="Circular No."><Input value={circularForm.circular_no} onChange={(e) => setCircularForm({ ...circularForm, circular_no: e.target.value })} /></Field>
-                    <Field label="Issue Date"><Input type="date" value={circularForm.issue_date} onChange={(e) => setCircularForm({ ...circularForm, issue_date: e.target.value })} /></Field>
-                    <Field label="Priority"><Select value={circularForm.priority} onChange={(e) => setCircularForm({ ...circularForm, priority: e.target.value as Priority })}>{priorities.map((p) => <option key={p}>{p}</option>)}</Select></Field>
-                    <Field label="Status"><Select value={circularForm.status} onChange={(e) => setCircularForm({ ...circularForm, status: e.target.value as PublishStatus })}>{publishStatuses.map((s) => <option key={s}>{s}</option>)}</Select></Field>
-                    <Field label="Attachment URL"><Input value={circularForm.attachment_url} onChange={(e) => setCircularForm({ ...circularForm, attachment_url: e.target.value })} /></Field>
-                    <div className="md:col-span-2"><Field label="Audience"><AudienceSelector value={circularForm.audience_roles} onChange={(roles) => setCircularForm({ ...circularForm, audience_roles: roles })} /></Field></div>
-                    <div className="md:col-span-2"><Field label="Content"><Textarea required rows={4} value={circularForm.content} onChange={(e) => setCircularForm({ ...circularForm, content: e.target.value })} /></Field></div>
-                  </div>
-                  <button disabled={saving} className="mt-4 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">Save Circular</button>
-                </form>
-              )}
-              {circulars.length === 0 ? <EmptyState title="No circulars found" /> : circulars.map((item) => (
-                <article key={item.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="flex flex-wrap items-center gap-2"><h3 className="mr-auto text-lg font-bold text-slate-900">{item.title}</h3><Badge value={item.priority} tone={priorityClass} /><Badge value={item.status} tone={statusClass} /></div>
-                  <p className="mt-2 whitespace-pre-wrap text-sm text-slate-600">{item.content}</p>
-                  <div className="mt-4 flex flex-wrap gap-3 text-xs text-slate-500"><span>Issue: {fmtDate(item.issue_date)}</span><span>No: {item.circular_no || "—"}</span><span>Audience: {item.audience_roles.length ? item.audience_roles.map(roleLabel).join(", ") : "All"}</span></div>
-                </article>
               ))}
             </section>
           )}
@@ -438,7 +339,7 @@ export default function CommunicationCenter() {
                     <Field label="Status"><Select value={announcementForm.status} onChange={(e) => setAnnouncementForm({ ...announcementForm, status: e.target.value as PublishStatus })}>{publishStatuses.map((s) => <option key={s}>{s}</option>)}</Select></Field>
                     <Field label="Start At"><Input type="datetime-local" value={announcementForm.start_at} onChange={(e) => setAnnouncementForm({ ...announcementForm, start_at: e.target.value })} /></Field>
                     <Field label="End At"><Input type="datetime-local" value={announcementForm.end_at} onChange={(e) => setAnnouncementForm({ ...announcementForm, end_at: e.target.value })} /></Field>
-                    <div><Field label="Audience"><AudienceSelector value={announcementForm.audience_roles} onChange={(roles) => setAnnouncementForm({ ...announcementForm, audience_roles: roles })} /></Field></div>
+                    <div className="md:col-span-2"><Field label="Audience"><AudienceSelector value={announcementForm.audience_roles} onChange={(roles) => setAnnouncementForm({ ...announcementForm, audience_roles: roles })} /></Field></div>
                     <div className="md:col-span-2"><Field label="Message"><Textarea required rows={4} value={announcementForm.message} onChange={(e) => setAnnouncementForm({ ...announcementForm, message: e.target.value })} /></Field></div>
                   </div>
                   <button disabled={saving} className="mt-4 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">Save Announcement</button>
@@ -448,7 +349,7 @@ export default function CommunicationCenter() {
                 <article key={item.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                   <div className="flex flex-wrap items-center gap-2"><h3 className="mr-auto text-lg font-bold text-slate-900">{item.title}</h3><Badge value={item.priority} tone={priorityClass} /><Badge value={item.status} tone={statusClass} /></div>
                   <p className="mt-2 whitespace-pre-wrap text-sm text-slate-600">{item.message}</p>
-                  <div className="mt-4 flex flex-wrap gap-3 text-xs text-slate-500"><span>Start: {fmtDateTime(item.start_at)}</span><span>End: {fmtDateTime(item.end_at)}</span><span>Audience: {item.audience_roles.length ? item.audience_roles.map(roleLabel).join(", ") : "All"}</span></div>
+                  <div className="mt-4 flex flex-wrap gap-3 text-xs text-slate-500"><span>Created: {fmtDateTime(item.created_at)}</span><span>Audience: {item.audience_roles.length ? item.audience_roles.map(roleLabel).join(", ") : "All"}</span></div>
                 </article>
               ))}
             </section>
@@ -460,15 +361,15 @@ export default function CommunicationCenter() {
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
-                    const payload = { ...eventForm, end_date: eventForm.end_date || null, start_time: eventForm.start_time || null, end_time: eventForm.end_time || null, location: eventForm.location || null, category: eventForm.category || null, description: eventForm.description || null };
+                    const payload = { ...eventForm, end_date: eventForm.end_date || null, start_time: eventForm.start_time || null, end_time: eventForm.end_time || null, location: eventForm.location || null, category: eventForm.category || null };
                     void submitForm("/communication/events", payload, () => setEventForm({ title: "", description: "", event_date: today(), end_date: "", start_time: "", end_time: "", location: "", category: "", status: "PUBLISHED", audience_roles: [] }));
                   }}
                   className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
                 >
-                  <h2 className="mb-4 text-lg font-bold text-slate-900">Create Event</h2>
+                  <h2 className="mb-4 text-lg font-bold text-slate-900">Create Event / Meeting</h2>
                   <div className="grid gap-4 md:grid-cols-2">
                     <Field label="Title"><Input required value={eventForm.title} onChange={(e) => setEventForm({ ...eventForm, title: e.target.value })} /></Field>
-                    <Field label="Category"><Input value={eventForm.category} onChange={(e) => setEventForm({ ...eventForm, category: e.target.value })} placeholder="Holiday, Exam, Meeting" /></Field>
+                    <Field label="Category"><Input value={eventForm.category} onChange={(e) => setEventForm({ ...eventForm, category: e.target.value })} placeholder="Meeting, Exam, Holiday" /></Field>
                     <Field label="Event Date"><Input required type="date" value={eventForm.event_date} onChange={(e) => setEventForm({ ...eventForm, event_date: e.target.value })} /></Field>
                     <Field label="End Date"><Input type="date" value={eventForm.end_date} onChange={(e) => setEventForm({ ...eventForm, end_date: e.target.value })} /></Field>
                     <Field label="Start Time"><Input type="time" value={eventForm.start_time} onChange={(e) => setEventForm({ ...eventForm, start_time: e.target.value })} /></Field>
@@ -484,43 +385,9 @@ export default function CommunicationCenter() {
               {events.length === 0 ? <EmptyState title="No events found" /> : events.map((item) => (
                 <article key={item.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                   <div className="flex flex-wrap items-center gap-2"><h3 className="mr-auto text-lg font-bold text-slate-900">{item.title}</h3><Badge value={item.status} tone={statusClass} /></div>
-                  <p className="mt-2 text-sm text-slate-600">{item.description || "No description added."}</p>
-                  <div className="mt-4 flex flex-wrap gap-3 text-xs text-slate-500"><span>Date: {fmtDate(item.event_date)}{item.end_date ? ` - ${fmtDate(item.end_date)}` : ""}</span><span>Time: {fmtTime(item.start_time)}{item.end_time ? ` - ${fmtTime(item.end_time)}` : ""}</span><span>Location: {item.location || "—"}</span><span>Audience: {item.audience_roles.length ? item.audience_roles.map(roleLabel).join(", ") : "All"}</span></div>
-                </article>
-              ))}
-            </section>
-          )}
-
-          {activeTab === "tickets" && (
-            <section className="space-y-4">
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void submitForm("/communication/tickets", { ...ticketForm, category: ticketForm.category || null }, () => setTicketForm({ subject: "", description: "", category: "", priority: "NORMAL" }));
-                }}
-                className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-              >
-                <h2 className="mb-4 text-lg font-bold text-slate-900">Create Support Ticket</h2>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <Field label="Subject"><Input required value={ticketForm.subject} onChange={(e) => setTicketForm({ ...ticketForm, subject: e.target.value })} /></Field>
-                  <Field label="Category"><Input value={ticketForm.category} onChange={(e) => setTicketForm({ ...ticketForm, category: e.target.value })} placeholder="Login, Fees, Homework" /></Field>
-                  <Field label="Priority"><Select value={ticketForm.priority} onChange={(e) => setTicketForm({ ...ticketForm, priority: e.target.value as Priority })}>{priorities.map((p) => <option key={p}>{p}</option>)}</Select></Field>
-                  <div className="md:col-span-2"><Field label="Description"><Textarea required rows={3} value={ticketForm.description} onChange={(e) => setTicketForm({ ...ticketForm, description: e.target.value })} /></Field></div>
-                </div>
-                <button disabled={saving} className="mt-4 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">Submit Ticket</button>
-              </form>
-              {tickets.length === 0 ? <EmptyState title="No support tickets found" /> : tickets.map((item) => (
-                <article key={item.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="flex flex-wrap items-center gap-2"><h3 className="mr-auto text-lg font-bold text-slate-900">#{item.id} {item.subject}</h3><Badge value={item.priority} tone={priorityClass} /><Badge value={item.status} tone={statusClass} /></div>
-                  <p className="mt-2 whitespace-pre-wrap text-sm text-slate-600">{item.description}</p>
-                  {item.resolution && <p className="mt-3 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800">Resolution: {item.resolution}</p>}
-                  <div className="mt-4 flex flex-wrap gap-3 text-xs text-slate-500"><span>Created: {fmtDateTime(item.created_at)}</span><span>By: {item.creator?.full_name || "—"}</span><span>Category: {item.category || "—"}</span></div>
-                  {isAdmin && item.status !== "RESOLVED" && item.status !== "CLOSED" && (
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <button onClick={() => void patchItem(`/communication/tickets/${item.id}`, { status: "IN_PROGRESS" })} className="rounded-xl border border-violet-200 px-3 py-2 text-xs font-semibold text-violet-700 hover:bg-violet-50">Mark In Progress</button>
-                      <button onClick={() => void patchItem(`/communication/tickets/${item.id}`, { status: "RESOLVED", resolution: "Issue resolved by school admin." })} className="rounded-xl border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-50">Resolve</button>
-                    </div>
-                  )}
+                  <p className="mt-1 text-sm text-slate-500">{fmtDate(item.event_date)} {fmtTime(item.start_time)} {item.end_time ? `- ${fmtTime(item.end_time)}` : ""} {item.location ? `· ${item.location}` : ""}</p>
+                  {item.description && <p className="mt-3 whitespace-pre-wrap text-sm text-slate-600">{item.description}</p>}
+                  <div className="mt-4 flex flex-wrap gap-3 text-xs text-slate-500"><span>Category: {item.category || "General"}</span><span>Audience: {item.audience_roles.length ? item.audience_roles.map(roleLabel).join(", ") : "All"}</span></div>
                 </article>
               ))}
             </section>
@@ -569,14 +436,14 @@ export default function CommunicationCenter() {
                   onSubmit={(e) => {
                     e.preventDefault();
                     const payload = { ...notificationForm, target_role: notificationForm.target_role || null, target_user_id: notificationForm.target_user_id ? Number(notificationForm.target_user_id) : null, expires_at: notificationForm.expires_at || null };
-                    void submitForm("/communication/notifications", payload, () => setNotificationForm({ title: "", message: "", category: "GENERAL", priority: "NORMAL", target_role: "", target_user_id: "", link: "/communication", expires_at: "" }));
+                    void submitForm("/communication/notifications", payload, () => setNotificationForm({ title: "", message: "", category: "GENERAL", priority: "NORMAL", target_role: "", target_user_id: "", link: "/notifications", expires_at: "" }));
                   }}
                   className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
                 >
                   <h2 className="mb-4 text-lg font-bold text-slate-900">Send In-app Notification</h2>
                   <div className="grid gap-4 md:grid-cols-2">
                     <Field label="Title"><Input required value={notificationForm.title} onChange={(e) => setNotificationForm({ ...notificationForm, title: e.target.value })} /></Field>
-                    <Field label="Category"><Input value={notificationForm.category} onChange={(e) => setNotificationForm({ ...notificationForm, category: e.target.value })} /></Field>
+                    <Field label="Category"><Input value={notificationForm.category} onChange={(e) => setNotificationForm({ ...notificationForm, category: e.target.value.toUpperCase() })} placeholder="HOMEWORK, EXAM_REPORT, ATTENDANCE, MEETING, COURSE" /></Field>
                     <Field label="Priority"><Select value={notificationForm.priority} onChange={(e) => setNotificationForm({ ...notificationForm, priority: e.target.value as Priority })}>{priorities.map((p) => <option key={p}>{p}</option>)}</Select></Field>
                     <Field label="Target Role"><Select value={notificationForm.target_role} onChange={(e) => setNotificationForm({ ...notificationForm, target_role: e.target.value as "" | UserRole })}><option value="">All roles</option>{audienceRoles.map((r) => <option key={r} value={r}>{roleLabel(r)}</option>)}</Select></Field>
                     <Field label="Target User ID"><Input type="number" value={notificationForm.target_user_id} onChange={(e) => setNotificationForm({ ...notificationForm, target_user_id: e.target.value })} placeholder="Optional" /></Field>

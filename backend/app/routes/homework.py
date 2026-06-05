@@ -98,7 +98,7 @@ def _student_query_for_assignment(db: AsyncSession, assignment: HomeworkAssignme
     return query.order_by(Student.roll_number.asc(), Student.first_name.asc())
 
 async def _assignment_stats(db: AsyncSession, assignment: HomeworkAssignment) -> HomeworkStats:
-    total_students = _student_query_for_assignment(db, assignment).count()
+    total_students = await _student_query_for_assignment(db, assignment).count()
     from sqlalchemy import case, func as _func
     counts = await async_query(db, _func.count(HomeworkSubmission.id).label('total'), _func.sum(case((HomeworkSubmission.status == 'SUBMITTED', 1), else_=0)).label('submitted'), _func.sum(case((HomeworkSubmission.status == 'CHECKED', 1), else_=0)).label('checked')).filter(HomeworkSubmission.school_id == assignment.school_id, HomeworkSubmission.homework_id == assignment.id).first()
     submitted = int(counts.submitted or 0)

@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./erp_phase1.db"
-    ASYNC_DATABASE_URL: str = "sqlite:///./erp_phase1.db"
+    ASYNC_DATABASE_URL: str = "sqlite+aiosqlite:///./erp_phase1.db"
     SECRET_KEY: str = "change-this-secret-key-before-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24

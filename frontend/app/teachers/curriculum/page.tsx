@@ -277,6 +277,7 @@ function CurriculumPreview({
   onApproved: (data: SuccessData) => void;
   onBack: () => void;
 }) {
+  const [draftPlan, setDraftPlan] = useState<CurriculumPlan>(plan);
   const [courseId, setCourseId] = useState("");
   const [classId, setClassId] = useState("");
   const [sectionId, setSectionId] = useState("");
@@ -284,6 +285,19 @@ function CurriculumPreview({
   const [expanded, setExpanded] = useState<number | null>(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraftPlan(plan);
+  }, [plan]);
+
+  function updateDraftLesson(index: number, key: keyof LessonPlan, value: string | number) {
+    setDraftPlan((current) => ({
+      ...current,
+      lessons: current.lessons.map((lesson, i) =>
+        i === index ? { ...lesson, [key]: value } : lesson,
+      ),
+    }));
+  }
 
   const filteredSections = useMemo(() => {
     if (!classId) return [];
@@ -301,7 +315,7 @@ function CurriculumPreview({
       const result = await apiFetch<SuccessData>("/curriculum/approve", {
         method: "POST",
         body: JSON.stringify({
-          plan,
+          plan: draftPlan,
           course_id: courseId ? Number(courseId) : null,
           class_id: Number(classId),
           section_id: sectionId ? Number(sectionId) : null,
@@ -334,48 +348,83 @@ function CurriculumPreview({
             Generated curriculum
           </p>
           <h2 className="text-lg font-bold text-slate-900">
-            {plan.course_title}
+            {draftPlan.course_title}
           </h2>
           <p className="mt-1.5 text-sm text-slate-500 leading-relaxed">
-            {plan.course_description}
+            {draftPlan.course_description}
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
-            <StatPill icon={Users} label="Audience" value={plan.target_audience} />
-            <StatPill icon={Clock} label="Duration" value={`${plan.duration_weeks} weeks`} />
-            <StatPill icon={BookOpen} label="Lessons" value={plan.lessons.length} />
+            <StatPill icon={Users} label="Audience" value={draftPlan.target_audience} />
+            <StatPill icon={Clock} label="Duration" value={`${draftPlan.duration_weeks} weeks`} />
+            <StatPill icon={BookOpen} label="Lessons" value={draftPlan.lessons.length} />
           </div>
         </div>
 
         {/* Lessons accordion */}
         <div className="divide-y divide-slate-100">
-          {plan.lessons.map((lesson, i) => {
+          {draftPlan.lessons.map((lesson, i) => {
             const isOpen = expanded === i;
             return (
-              <button
-                key={i}
-                type="button"
-                onClick={() => setExpanded(isOpen ? null : i)}
-                className="flex w-full items-start gap-3 px-6 py-3.5 text-left transition hover:bg-slate-50"
-              >
-                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-500">
-                  {lesson.order}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-800">
-                    {lesson.title}
-                  </p>
-                  {isOpen && lesson.description && (
-                    <p className="mt-1.5 text-xs text-slate-500 leading-relaxed">
-                      {lesson.description}
+              <div key={i} className="px-6 py-3.5 transition hover:bg-slate-50">
+                <button
+                  type="button"
+                  onClick={() => setExpanded(isOpen ? null : i)}
+                  className="flex w-full items-start gap-3 text-left"
+                >
+                  <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-500">
+                    {lesson.order}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-800">
+                      {lesson.title}
                     </p>
+                    {isOpen && lesson.description && (
+                      <p className="mt-1.5 text-xs text-slate-500 leading-relaxed">
+                        {lesson.description}
+                      </p>
+                    )}
+                  </div>
+                  {isOpen ? (
+                    <ChevronDown size={15} className="mt-0.5 shrink-0 text-slate-400" />
+                  ) : (
+                    <ChevronRight size={15} className="mt-0.5 shrink-0 text-slate-400" />
                   )}
-                </div>
-                {isOpen ? (
-                  <ChevronDown size={15} className="mt-0.5 shrink-0 text-slate-400" />
-                ) : (
-                  <ChevronRight size={15} className="mt-0.5 shrink-0 text-slate-400" />
+                </button>
+                {isOpen && (
+                  <div className="mt-3 grid gap-3 rounded-xl border border-slate-200 bg-white p-3 md:grid-cols-[90px_1fr]">
+                    <div>
+                      <Label>Order</Label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={lesson.order}
+                        onChange={(e) => updateDraftLesson(i, "order", Number(e.target.value))}
+                        disabled={loading}
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-slate-400 focus:bg-white"
+                      />
+                    </div>
+                    <div>
+                      <Label>Lesson title</Label>
+                      <input
+                        value={lesson.title}
+                        onChange={(e) => updateDraftLesson(i, "title", e.target.value)}
+                        disabled={loading}
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-slate-400 focus:bg-white"
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <Label>Description</Label>
+                      <textarea
+                        value={lesson.description || ""}
+                        onChange={(e) => updateDraftLesson(i, "description", e.target.value)}
+                        disabled={loading}
+                        rows={3}
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-slate-400 focus:bg-white"
+                      />
+                    </div>
+                  </div>
                 )}
-              </button>
+              </div>
             );
           })}
         </div>

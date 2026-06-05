@@ -2,6 +2,9 @@ import type { SchoolBranding, SchoolBrandingPublic } from "@/types";
 
 export type BrandingLike = Partial<SchoolBranding | SchoolBrandingPublic> | null | undefined;
 
+export const BRANDING_CACHE_KEY = "erp_school_branding_cache";
+export const BRANDING_UPDATED_EVENT = "erp-branding-updated";
+
 export const DEFAULT_BRANDING: Omit<SchoolBranding, "id" | "school_id"> = {
   logo_url: null,
   favicon_url: null,
@@ -157,6 +160,30 @@ export function applyBrandingTheme(branding: BrandingLike) {
   root.style.setProperty("--erp-border-radius", `${theme.border_radius}px`);
   root.style.setProperty("--background", theme.background_color);
   root.style.setProperty("--foreground", theme.text_color);
+}
+
+export function getCachedBranding(): Partial<SchoolBranding> | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(BRANDING_CACHE_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Partial<SchoolBranding>;
+  } catch {
+    window.localStorage.removeItem(BRANDING_CACHE_KEY);
+    return null;
+  }
+}
+
+export function cacheBrandingTheme(branding: BrandingLike) {
+  if (typeof window === "undefined") return;
+  const theme = normalizeBranding(branding);
+  window.localStorage.setItem(BRANDING_CACHE_KEY, JSON.stringify(theme));
+  window.dispatchEvent(new CustomEvent(BRANDING_UPDATED_EVENT, { detail: theme }));
+}
+
+export function clearCachedBranding() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(BRANDING_CACHE_KEY);
 }
 
 export async function extractDominantColorFromImage(file: File): Promise<string> {

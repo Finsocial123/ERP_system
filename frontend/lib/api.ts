@@ -1,4 +1,5 @@
 import type { AuthResponse } from "@/types";
+import { clearCachedBranding } from "@/lib/branding";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
 const TOKEN_KEY = "erp_access_token";
@@ -28,6 +29,7 @@ export function getSavedAuth(): AuthResponse | null {
 export function clearAuth() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(AUTH_KEY);
+  clearCachedBranding();
 }
 
 export function dashboardPathForRole(role?: string, mustChangePassword = false) {

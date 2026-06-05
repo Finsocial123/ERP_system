@@ -22,6 +22,8 @@ from app.models.chats import ChatMessage, ChatRole, ChatSession
 from app.models.user import User
 from app.dependencies.auth import get_current_user
 
+
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
@@ -454,3 +456,6 @@ async def send_message_stream(
                 yield f"data: {json.dumps({'error': 'Something went wrong. Please try again.'})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+

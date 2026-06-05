@@ -1,65 +1,119 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 from app.client import client
-from app.models.lesson import LessonChunk
+from app.models.lesson import LessonChunk, Lesson
 import json
 from app.core.config import settings
+import re
+import logging
 
-# async def summarize_lesson(lesson_id: int, db: AsyncSession) -> dict:
+logger = logging.getLogger(__name__)
 
-
-#     result = await db.execute(
-#         select(models.LessonChunk)
-#         .where(models.LessonChunk.lesson_id == lesson_id)
-#         .order_by(models.LessonChunk.chunk_index)
-#         )
+# async def summarize_lesson(
+#     lesson_id: int,
+#     lesson_order: int,
+#     lesson_title: str,
+#     source: str | None,
+#     db: AsyncSession
+# ):
     
-#     chunks = result.scalars.all()
+#     """
+#     Fetch all chunks for a lesson and return them for summarization
+#     """
+
+#     stmt = (
+#         select(LessonChunk)
+#         .where(LessonChunk.lesson_id == lesson_id)
+#         .order_by(LessonChunk.chunk_index)
+#     )
+
+#     if source:
+#         stmt = stmt.where(LessonChunk.source == source)
+
+
+#     result = (await db.execute(stmt))
+
+#     chunks = result.scalars().all()
 
 #     if not chunks:
 #         return {"error": f"No content found for lesson {lesson_id}"}
     
 #     combined_text = "\n\n".join(chunk.content for chunk in chunks)
 
-#     return {
-#         "lesson_id": lesson_id,
-#         "content": combined_text
-#     }
+#     response = await client.chat.completions.create(
+#         model=settings.MODEL,
+#         messages=[
+#             {
+#                 "role": "system",
+#                 "content": "You are a lesson summarizer. Always respond with valid JSON only. No markdown, no explanation."
+#             },
+#             {
+#                 "role": "user",
+#                 "content": f"""Summarize this lesson content.
 
+#                 Lesson: {lesson_order}: {lesson_title}
+
+#                 Content:
+#                 {combined_text}
+
+#                 Return this exact JSON structure:
+#                 {{
+#                     "lesson_order": {lesson_order},
+#                     "lesson_title": "{lesson_title}",
+#                     "overview": "2-3 sentence overview of what the lesson covers",
+#                     "key_concepts": [
+#                         "concept 1",
+#                         "concept 2"
+#                     ],
+#                     "key_takeaway": "one essential sentence the student should remember"
+#                 }}"""
+#             }
+#         ]
+#     )
+
+#     raw = response.choices[0].message.content.strip()
+#     if raw.startswith("```"):
+#         raw = raw.split("```")[1]
+#         if raw.startswith("json"):
+#             raw = raw[4:]
+
+#     return json.loads(raw)
+
+
+
+
+SUMMARY_SOURCE = {"transcript", "pdf"}
 
 async def summarize_lesson(
     lesson_id: int,
-    lesson_order: int,
     lesson_title: str,
-    source: str | None,
+    lesson_order: int,
     db: AsyncSession
 ):
-    
-    """
-    Fetch all chunks for a lesson and return them for summarization
-    """
-
     stmt = (
         select(LessonChunk)
-        .where(LessonChunk.lesson_id == lesson_id)
-        .order_by(LessonChunk.chunk_index)
+            .where(
+                LessonChunk.lesson_id == lesson_id,
+                LessonChunk.source.in_(SUMMARY_SOURCE)
+            )
+            .order_by(LessonChunk.chunk_index)
     )
 
-    if source:
-        stmt = stmt.where(LessonChunk.source == source)
-
-
-    result = (await db.execute(stmt))
-
-    chunks = result.scalars().all()
+    chunks = (await db.execute(stmt)).scalars().all()
 
     if not chunks:
-        return {"error": f"No content found for lesson {lesson_id}"}
+        logger.warning(f"No chunks found for lesson {lesson_id}, skipping summary")
+        return None
     
     combined_text = "\n\n".join(chunk.content for chunk in chunks)
 
+    MAX_CHARS = 80_000  
+    if len(combined_text) > MAX_CHARS:
+        combined_text = combined_text[:MAX_CHARS]
+        logger.warning(f"Lesson {lesson_id} content truncated for summarization")
+
     response = await client.chat.completions.create(
-        model=settings.MODEL,
+        model=settings.MODEL,   
         messages=[
             {
                 "role": "system",
@@ -67,7 +121,8 @@ async def summarize_lesson(
             },
             {
                 "role": "user",
-                "content": f"""Summarize this lesson content.
+                "content": f"""
+                Summarize this lesson content.
 
                 Lesson: {lesson_order}: {lesson_title}
 
@@ -79,20 +134,46 @@ async def summarize_lesson(
                     "lesson_order": {lesson_order},
                     "lesson_title": "{lesson_title}",
                     "overview": "2-3 sentence overview of what the lesson covers",
-                    "key_concepts": [
-                        "concept 1",
-                        "concept 2"
-                    ],
+                    "key_concepts": ["concept 1", "concept 2"],
                     "key_takeaway": "one essential sentence the student should remember"
-                }}"""
-            }
+                }}
+                """,
+            },
         ]
     )
 
-    raw = response.choices[0].message.content.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.choices[0].message.content.strip())
 
-    return json.loads(raw)
+    try: 
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error(f"Summary JSON parse failed for lesson {lesson_id}: {e}\nRaw: {raw[:200]}")
+        return None
+    
+
+
+async def generate_and_save_summary(
+        lesson_id: int, 
+        lesson_order: int,
+        lesson_title: str,
+        session_factory
+    ):
+    async with session_factory() as db:
+
+        result = await db.execute(select(Lesson).where(Lesson.id == lesson_id))
+        lesson = result.scalars().first()
+        
+        if not lesson:
+            return None
+
+        summary = await summarize_lesson(
+            lesson_id=lesson_id,
+            lesson_order=lesson.order,
+            lesson_title=lesson.title,
+            db=db
+        )
+        if summary is not None:
+            lesson.summary = json.dumps(summary)
+            await db.commit()
+
+        return summary

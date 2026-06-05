@@ -36,6 +36,7 @@ class Lesson(Base):
         backref="lesson",
         cascade="all, delete-orphan"
     )
+    summary: Mapped[str] = mapped_column(Text, nullable=True)
 
 
 class LessonChunk(Base):
@@ -52,3 +53,4 @@ class LessonChunk(Base):
     end_time: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     lesson: Mapped["Lesson"] = relationship(back_populates="chunks")
+

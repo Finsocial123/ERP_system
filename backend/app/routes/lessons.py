@@ -3,11 +3,11 @@ from __future__ import annotations
 from io import BytesIO
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, BackgroundTasks
 from sqlalchemy.orm import Session
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.database import get_db, get_async_db
+from app.core.database import get_db, get_async_db, get_session_factory
 from app.dependencies.auth import current_school_id, require_roles
 from app.models.lesson import Lesson
 from app.models.user import User
@@ -25,6 +25,7 @@ from app.services.frame_analyzer import analyze_video_frames
 from app.services.embedder import embed_visual_frames
 from app.services.tools.summarizer import summarize_lesson
 from app.services.tools.quiz_generator import generate_quiz
+from app.services.tools.summarizer import generate_and_save_summary
 
 import asyncio
 from functools import partial
@@ -85,6 +86,7 @@ async def create_lesson(
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(*MANAGER_ROLES)),
     db: AsyncSession = Depends(get_async_db),
+    background_tasks= BackgroundTasks,
 ):
     # course = get_course_or_404(db, school_id, course_id)
     course = await async_get_course_or_404(db, school_id, course_id)
@@ -194,6 +196,9 @@ async def create_lesson(
             db=db
             # no segments for PDF
         )
+
+    
+    background_tasks.add_task(generate_and_save_summary, lesson.id, get_session_factory)
 
     return {
         "lesson_id": lesson.id,
@@ -306,58 +311,93 @@ def delete_lesson(
 
 #summary
 
-@router.post('/{lesson_id}/course/{course_id}/{source}/summary')
-async def generate_lesson_summary(
-    course_id: int, 
-    lesson_id: int,
-    source: str,
-    db: Annotated[AsyncSession, Depends(get_async_db)]
+# @router.post('/{lesson_id}/course/{course_id}/{source}/summary')
+# async def generate_lesson_summary(
+#     course_id: int, 
+#     lesson_id: int,
+#     source: str,
+#     db: Annotated[AsyncSession, Depends(get_async_db)]
+# ):
+    
+#     result = await db.execute(
+#         select(Course)
+#         .where(Course.id == course_id))
+    
+#     course = result.scalars().first()
+
+#     if not course:
+#         raise HTTPException(status_code=404, description="Course not found")
+    
+#     result = await db.execute(
+#         select(Lesson)
+#         .where(Lesson.id == lesson_id, Lesson.course_id == course_id)
+#     )
+
+#     lesson = result.scalars().first()
+
+#     if not lesson:
+#         HTTPException(status_code=404, detail="Lesson not found")
+
+#     result = (await db.execute(
+#         select(LessonChunk)
+#         .where(LessonChunk.lesson_id == lesson_id)
+#         .limit(1)
+#     ))
+
+#     chunks_exits = result.scalars().first()
+#     if not chunks_exits:
+#         raise HTTPException(
+#             status_code=422,
+#             detail="No content for this lesson. Upload a PDF or Video first"
+#         )
+
+#     try:
+#         summary = await summarize_lesson(
+#             lesson_id=lesson_id,
+#             lesson_order=lesson.order,
+#             lesson_title=lesson.title,
+#             source=source,
+#             db=db
+#         )
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+    
+#     return summary
+
+
+@router.get("/{lesson_id}/summary")
+async def get_lesson_summary(
+    lesson_id: int,     
+    db: Annotated[AsyncSession, Depends(get_async_db)],
+    session_factory: Annotated[async_sessionmaker, Depends(get_session_factory)]
 ):
     
     result = await db.execute(
-        select(Course)
-        .where(Course.id == course_id))
-    
-    course = result.scalars().first()
-
-    if not course:
-        raise HTTPException(status_code=404, description="Course not found")
-    
-    result = await db.execute(
         select(Lesson)
-        .where(Lesson.id == lesson_id, Lesson.course_id == course_id)
+        .where(Lesson.id == lesson_id)
     )
-
     lesson = result.scalars().first()
 
     if not lesson:
-        HTTPException(status_code=404, detail="Lesson not found")
+        raise HTTPException(status_code=404, detail="Lesson not found")
 
-    result = (await db.execute(
-        select(LessonChunk)
-        .where(LessonChunk.lesson_id == lesson_id)
-        .limit(1)
-    ))
-
-    chunks_exits = result.scalars().first()
-    if not chunks_exits:
-        raise HTTPException(
-            status_code=422,
-            detail="No content for this lesson. Upload a PDF or Video first"
-        )
-
-    try:
-        summary = await summarize_lesson(
-            lesson_id=lesson_id,
-            lesson_order=lesson.order,
-            lesson_title=lesson.title,
-            source=source,
-            db=db
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if lesson.summary:
+        return json.loads(lesson.summary)
     
+    # fallback
+    summary = await generate_and_save_summary(
+        lesson_id= lesson.id,
+        lesson_order=lesson.order,
+        lesson_title=lesson.title,
+        session_factory=session_factory
+    )
+
+    if summary is None:
+        raise HTTPException(status_code=422, detail="No content available to summarize")
+
+
     return summary
+
 
 
 #quiz generator

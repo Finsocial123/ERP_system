@@ -17,12 +17,10 @@ from app.models.assignment import Assignment
 from app.models.submission import Submission
 from app.models.communication import (
     Announcement,
-    Circular,
     Complaint,
     InAppNotification,
     InAppNotificationRead,
     SchoolEvent,
-    SupportTicket,
 )
 
 __all__ = [
@@ -55,12 +53,10 @@ __all__ = [
     "FeePayment",
     "FeeExpense",
     "Announcement",
-    "Circular",
     "Complaint",
     "InAppNotification",
     "InAppNotificationRead",
     "SchoolEvent",
-    "SupportTicket",
     "Course",
     "Lesson",
     "Enrollment",

@@ -9,13 +9,14 @@ import {
   Phone,
   Save,
   Search,
+  Upload,
   ShieldCheck,
   UserRound,
   Users,
 } from "lucide-react";
 
 import AppShell from "@/components/AppShell";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiUpload, fileUrl } from "@/lib/api";
 
 type AnyRecord = Record<string, any>;
 
@@ -171,6 +172,59 @@ function StudentTable({ students, search }: { students: StudentItem[]; search: s
       </div>
       {filtered.length === 0 && <div className="border-t border-slate-100 p-4 text-sm text-slate-500">No student matches this search.</div>}
     </div>
+  );
+}
+
+function TeacherPhotoUploader({ profile, onSaved }: { profile: ProfileResponse; onSaved: (profile: ProfileResponse) => void }) {
+  const teacher = profile.role_data?.teacher;
+  const [uploading, setUploading] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  if (profile.account.role !== "TEACHER" || !teacher) return null;
+
+  const photoUrl = fileUrl(teacher.photo_url);
+
+  const uploadPhoto = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setMessage(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const updated = await apiUpload<ProfileResponse>("/profile/teacher/photo", formData, { method: "POST" });
+      onSaved(updated);
+      setMessage("Profile photo updated successfully.");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to upload profile photo.");
+    } finally {
+      setUploading(false);
+      event.target.value = "";
+    }
+  };
+
+  return (
+    <SectionCard title="Teacher Profile Picture">
+      <div className="flex flex-wrap items-center gap-5">
+        <div className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-slate-100">
+          {photoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={photoUrl} alt="Teacher profile" className="h-full w-full object-cover" />
+          ) : (
+            <UserRound size={38} className="text-slate-400" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-slate-800">Upload PNG, JPG, JPEG, or WEBP image up to 3 MB.</p>
+          <p className="mt-1 text-sm text-slate-500">The uploaded teacher photo is stored on Cloudinary and saved in the teacher profile record.</p>
+          <label className="mt-4 inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-slate-950 px-5 py-3 text-sm font-bold text-white shadow-sm hover:bg-slate-800">
+            <Upload size={16} /> {uploading ? "Uploading..." : photoUrl ? "Change Photo" : "Upload Photo"}
+            <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={uploadPhoto} disabled={uploading} />
+          </label>
+          {message && <p className="mt-3 text-sm font-medium text-slate-600">{message}</p>}
+        </div>
+      </div>
+    </SectionCard>
   );
 }
 
@@ -620,6 +674,7 @@ export default function ProfilePage() {
             </div>
           </div>
 
+          <TeacherPhotoUploader profile={profile} onSaved={setProfile} />
           <EditableProfile profile={profile} onSaved={setProfile} />
           <AccountOverview profile={profile} />
           {content}

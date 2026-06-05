@@ -20,39 +20,12 @@ class CommunicationPriority(str, Enum):
     URGENT = "URGENT"
 
 
-class SupportTicketStatus(str, Enum):
-    OPEN = "OPEN"
-    IN_PROGRESS = "IN_PROGRESS"
-    RESOLVED = "RESOLVED"
-    CLOSED = "CLOSED"
-
-
 class ComplaintStatus(str, Enum):
     SUBMITTED = "SUBMITTED"
     UNDER_REVIEW = "UNDER_REVIEW"
     RESOLVED = "RESOLVED"
     REJECTED = "REJECTED"
     CLOSED = "CLOSED"
-
-
-class Circular(Base):
-    __tablename__ = "communication_circulars"
-
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    school_id: Mapped[int] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), index=True, nullable=False)
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    circular_no: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
-    title: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    issue_date: Mapped[date] = mapped_column(Date, default=date.today, index=True)
-    priority: Mapped[str] = mapped_column(String(20), default=CommunicationPriority.NORMAL.value, index=True)
-    status: Mapped[str] = mapped_column(String(20), default=CommunicationStatus.DRAFT.value, index=True)
-    audience_roles: Mapped[str | None] = mapped_column(Text, nullable=True)  # comma separated UserRole values; empty = all roles
-    attachment_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    author = relationship("User", foreign_keys=[created_by])
 
 
 class Announcement(Base):
@@ -94,27 +67,6 @@ class SchoolEvent(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     author = relationship("User", foreign_keys=[created_by])
-
-
-class SupportTicket(Base):
-    __tablename__ = "support_tickets"
-
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    school_id: Mapped[int] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), index=True, nullable=False)
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    assigned_to: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    subject: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    category: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
-    priority: Mapped[str] = mapped_column(String(20), default=CommunicationPriority.NORMAL.value, index=True)
-    status: Mapped[str] = mapped_column(String(30), default=SupportTicketStatus.OPEN.value, index=True)
-    resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-
-    creator = relationship("User", foreign_keys=[created_by])
-    assignee = relationship("User", foreign_keys=[assigned_to])
 
 
 class Complaint(Base):

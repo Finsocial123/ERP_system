@@ -37,12 +37,10 @@ from app.models import (  # noqa: F401
     User,
     PendingSchoolRegistration,
     Announcement,
-    Circular,
     Complaint,
     InAppNotification,
     InAppNotificationRead,
     SchoolEvent,
-    SupportTicket,
 )
 
 from app.routes import academic, attendance, reports,auth, dashboard, exams,fees, homework, people, schools, library, timetable, notice, communication, curriculum, meetings, assignments, chats, courses, enrollments, lessons, progress

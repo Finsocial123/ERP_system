@@ -7,7 +7,6 @@ from app.models.communication import (
     CommunicationPriority,
     CommunicationStatus,
     ComplaintStatus,
-    SupportTicketStatus,
 )
 from app.models.user import UserRole
 
@@ -16,45 +15,6 @@ class UserMini(BaseModel):
     id: int
     full_name: str
     role: str
-
-    model_config = {"from_attributes": True}
-
-
-class CircularCreate(BaseModel):
-    title: Annotated[str, Field(min_length=3, max_length=255)]
-    content: Annotated[str, Field(min_length=1)]
-    circular_no: str | None = Field(default=None, max_length=80)
-    issue_date: date | None = None
-    priority: CommunicationPriority = CommunicationPriority.NORMAL
-    status: CommunicationStatus = CommunicationStatus.PUBLISHED
-    audience_roles: list[UserRole] = []
-    attachment_url: str | None = Field(default=None, max_length=500)
-
-
-class CircularUpdate(BaseModel):
-    title: Annotated[str, Field(min_length=3, max_length=255)] | None = None
-    content: str | None = None
-    circular_no: str | None = Field(default=None, max_length=80)
-    issue_date: date | None = None
-    priority: CommunicationPriority | None = None
-    status: CommunicationStatus | None = None
-    audience_roles: list[UserRole] | None = None
-    attachment_url: str | None = Field(default=None, max_length=500)
-
-
-class CircularOut(BaseModel):
-    id: int
-    circular_no: str | None
-    title: str
-    content: str
-    issue_date: date
-    priority: str
-    status: str
-    audience_roles: list[str] = []
-    attachment_url: str | None = None
-    created_at: datetime
-    updated_at: datetime
-    author: UserMini | None = None
 
     model_config = {"from_attributes": True}
 
@@ -160,40 +120,6 @@ class EventOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class SupportTicketCreate(BaseModel):
-    subject: Annotated[str, Field(min_length=3, max_length=255)]
-    description: Annotated[str, Field(min_length=1)]
-    category: str | None = Field(default=None, max_length=120)
-    priority: CommunicationPriority = CommunicationPriority.NORMAL
-
-
-class SupportTicketUpdate(BaseModel):
-    subject: Annotated[str, Field(min_length=3, max_length=255)] | None = None
-    description: str | None = None
-    category: str | None = Field(default=None, max_length=120)
-    priority: CommunicationPriority | None = None
-    status: SupportTicketStatus | None = None
-    assigned_to: int | None = None
-    resolution: str | None = None
-
-
-class SupportTicketOut(BaseModel):
-    id: int
-    subject: str
-    description: str
-    category: str | None = None
-    priority: str
-    status: str
-    resolution: str | None = None
-    created_at: datetime
-    updated_at: datetime
-    resolved_at: datetime | None = None
-    creator: UserMini | None = None
-    assignee: UserMini | None = None
-
-    model_config = {"from_attributes": True}
-
-
 class ComplaintCreate(BaseModel):
     subject: Annotated[str, Field(min_length=3, max_length=255)]
     description: Annotated[str, Field(min_length=1)]
@@ -260,9 +186,7 @@ class NotificationOut(BaseModel):
 
 
 class CommunicationOverview(BaseModel):
-    circulars: int
     announcements: int
     upcoming_events: int
-    open_tickets: int
     open_complaints: int
     unread_notifications: int

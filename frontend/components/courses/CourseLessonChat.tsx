@@ -108,6 +108,8 @@ export default function CourseLessonChat({
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   /* ── Auto-scroll ── */
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -209,6 +211,18 @@ export default function CourseLessonChat({
     }
   };
 
+  const cancelStream = () => {
+    abortControllerRef.current?.abort();
+    setSending(false);
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.role === "assistant" && !last.content.trim()) {
+        return prev.slice(0, -1); // remove empty assistant bubble
+      }
+      return prev;
+    });
+  };
+
   /* ── Send message ── */
   const submitQuestion = async () => {
     const clean = question.trim();
@@ -231,6 +245,7 @@ export default function CourseLessonChat({
     try {
       const sid = await ensureSession();
       let answer = "";
+      abortControllerRef.current = new AbortController();
       await streamLessonChatMessage({
         sessionId: sid,
         content: clean,
@@ -238,6 +253,7 @@ export default function CourseLessonChat({
         language: lesson.language || "en",
         webSearch: false,
         enhancePrompt: false,
+        signal: abortControllerRef.current.signal,
         callbacks: {
           onToken: (token) => {
             answer += token;
@@ -265,6 +281,7 @@ export default function CourseLessonChat({
       setError(err instanceof Error ? err.message : "Failed to send question");
       setMessages((prev) => prev.filter((m) => m.id !== assistantId));
     } finally {
+      abortControllerRef.current = null;
       setSending(false);
     }
   };
@@ -294,6 +311,7 @@ export default function CourseLessonChat({
       courseTitle={courseTitle}
       bottomRef={bottomRef}
       embedded={embedded}
+      cancelStream={cancelStream}
     />
   );
 
@@ -380,6 +398,7 @@ type InnerProps = {
   submitQuestion: () => void;
   resetChat: () => void;
   openHistory: () => void;
+  cancelStream: () => void;
   loadSessionMessages: (sid: string) => void;
   deleteSession: (sid: string, e: React.MouseEvent) => void;
   lesson: LMSLesson;
@@ -411,6 +430,7 @@ function ChatInner({
   courseTitle,
   bottomRef,
   embedded,
+  cancelStream,
 }: InnerProps) {
   return (
     <>
@@ -643,7 +663,7 @@ function ChatInner({
             <>
               <button
                 type="button"
-                className={`clc-icon-btn${view === "history" ? " active" : ""}`}
+                className="clc-icon-btn"
                 onClick={openHistory}
                 title="Chat history"
               >
@@ -743,23 +763,29 @@ function ChatInner({
                   }
                 }}
               />
-              <button
-                type="button"
-                className="clc-send-btn"
-                onClick={submitQuestion}
-                disabled={sending || !question.trim()}
-                style={{
-                  background:
-                    sending || !question.trim() ? "#f1f5f9" : "#7c3aed",
-                  color: sending || !question.trim() ? "#94a3b8" : "white",
-                }}
-              >
-                {sending ? (
-                  <Loader2 size={15} className="clc-spin" />
-                ) : (
+              {sending ? (
+                <button
+                  type="button"
+                  className="clc-send-btn"
+                  onClick={cancelStream}
+                  style={{ background: "#fee2e2", color: "#dc2626" }}
+                >
+                  <X size={15} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="clc-send-btn"
+                  onClick={submitQuestion}
+                  disabled={!question.trim()}
+                  style={{
+                    background: !question.trim() ? "#f1f5f9" : "#7c3aed",
+                    color: !question.trim() ? "#94a3b8" : "white",
+                  }}
+                >
                   <Send size={15} />
-                )}
-              </button>
+                </button>
+              )}
             </div>
           </>
         )}

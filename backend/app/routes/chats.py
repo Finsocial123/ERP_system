@@ -68,15 +68,30 @@ async def get_session_messages(session_id: str, db: Annotated[AsyncSession, Depe
     return result.scalars().all()
 
 
+async def _get_embedding() -> list[float] | None:
+    if request.lesson_id is None:
+        return None
+    try:
+
+
 
 @router.post('/{session_id}/messages')
-async def send_message_stream(session_id: str, request: ChatRequest, db: Annotated[AsyncSession, Depends(get_async_db)], session_factory: Annotated[async_sessionmaker, Depends(get_session_factory)], current_user: User=Depends(get_current_user)):
+async def send_message_stream(
+    session_id: str, request: 
+    ChatRequest, db: Annotated[AsyncSession, Depends(get_async_db)], 
+    session_factory: Annotated[async_sessionmaker, Depends(get_session_factory)], 
+    current_user: User=Depends(get_current_user)):
+
     if not request.content or not request.content.strip():
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='Message content cannot be empty')
+    
     session = await _get_session_or_404(session_id, db)
+
     if session.user_id != current_user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, 'Not your session')
+    
     BLOCK_KEYWORDS = ['summarize', 'summary', 'overview', 'key points', 'summarise', 'quiz']
+
     if any((kw in request.content.lower() for kw in BLOCK_KEYWORDS)):
 
         async def redirect_generator():
@@ -85,44 +100,80 @@ async def send_message_stream(session_id: str, request: ChatRequest, db: Annotat
             yield f"data: {json.dumps({'status': 'done'})}\n\n"
         return StreamingResponse(redirect_generator(), media_type='text/event-stream')
     try:
-        if request.enhance_prompt:
-            enhance_response = await client.chat.completions.create(model=settings.MODEL, messages=[{'role': 'system', 'content': "You are a prompt enhancer. Rewrite the student's questions to be clearer, more specific, and more detailed. Return ONLY the rewritten question, nothing else."}, {'role': 'user', 'content': request.content}], stream=False)
-            enhanced_content = enhance_response.choices[0].message.content.strip()
-            if not enhanced_content:
-                enhanced_content = request.content
-        else:
-            enhanced_content = request.content
-    except Exception as e:
-        logger.warning(f'Prompt enhancement failed, falling back to original: {e}')
-        enhanced_content = request.content
-    user_msg = ChatMessage(session_id=session_id, role=ChatRole.USER, content=enhanced_content, user_id=current_user.id, is_enhanced=request.enhance_prompt)
-    db.add(user_msg)
-    await db.commit()
-    context = None
-    history = []
-    if request.lesson_id is not None:
 
         async def _get_embedding() -> list[float] | None:
+            if request.lesson_id is None:
+                return None
             try:
-                return await get_query_embedding(enhanced_content)
+                return await get_query_embedding(request.content)
             except Exception as e:
-                logger.error(f'Embedding failed for lesson_id={request.lesson_id}: {e}')
+                logger.error(f'Embedding failed: {e}')
                 return None
 
         async def _get_history() -> list[ChatMessage]:
-            result = await db.execute(select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at))
+            result = await db.execute(
+                select(ChatMessage)
+                .where(ChatMessage.session_id == session_id)
+                .order_by(ChatMessage.created_at)
+            )
             return list(result.scalars().all())
-        embedding, history = await asyncio.gather(_get_embedding(), await _get_history())
-        if embedding is not None:
+
+        async def _enhance() -> str:
             try:
-                async with session_factory() as rag_db:
-                    context = await search_chunks(embedding=embedding, db=rag_db, lesson_id=request.lesson_id, top_k=6)
+                enhance_response = await client.chat.completions.create(
+                    model=settings.MODEL,
+                    messages=[
+                        {'role': 'system', 'content': "You are a prompt enhancer. Rewrite the student's questions to be clearer, more specific, and more detailed. Return ONLY the rewritten question, nothing else."},
+                        {'role': 'user', 'content': request.content}
+                    ],
+                    stream=False
+                )
+                result = enhance_response.choices[0].message.content.strip()
+                return result if result else request.content
             except Exception as e:
-                logger.error(f'RAG chunk search failed for lesson_id={request.lesson_id}: {e}')
-                context = None
-    else:
-        result = await db.execute(select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at))
-        history = list(result.scalars().all())
+                logger.warning(f'Prompt enhancement failed, falling back to original: {e}')
+                return request.content
+        
+        async def _maybe_enhance() -> str:
+            if not request.enhance_prompt:
+                return request.content
+            return await _enhance()
+
+        embedding, history, enhanced_content = await asyncio.gather(
+            _get_embedding(),
+            _get_history(),
+            _maybe_enhance(),
+        )
+
+    except Exception as e:
+        logger.warning(f'Prompt enhancement failed, falling back to original: {e}')
+        enhanced_content = request.content
+        embedding = None
+        history = []
+
+    user_msg = ChatMessage(session_id=session_id, role=ChatRole.USER, content=enhanced_content, user_id=current_user.id, is_enhanced=request.enhance_prompt)
+    db.add(user_msg)
+    await db.commit()
+
+
+    # RAG
+
+    context = None
+
+    if embedding is not None:
+        try:
+            async with session_factory() as rag_db:
+                context = await search_chunks(
+                    embedding=embedding, db=rag_db, 
+                    lesson_id=request.lesson_id, 
+                    top_k=6
+                )
+                
+        except Exception as e:
+            logger.error(f'RAG chunk search failed for lesson_id={request.lesson_id}: {e}')
+            context = None
+
+
     logger.debug('CONTEXT: %s', str(context)[:200] if context else 'NO CONTEXT — lesson_id was not provided')
     if context:
         user_content = RAG_PROMPT_TEMPLATE.format(context=context, query=enhanced_content)

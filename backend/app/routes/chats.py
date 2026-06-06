@@ -67,6 +67,8 @@ async def get_session_messages(session_id: str, db: Annotated[AsyncSession, Depe
     result = await db.execute(select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at))
     return result.scalars().all()
 
+
+
 @router.post('/{session_id}/messages')
 async def send_message_stream(session_id: str, request: ChatRequest, db: Annotated[AsyncSession, Depends(get_async_db)], session_factory: Annotated[async_sessionmaker, Depends(get_session_factory)], current_user: User=Depends(get_current_user)):
     if not request.content or not request.content.strip():
@@ -142,9 +144,10 @@ async def send_message_stream(session_id: str, request: ChatRequest, db: Annotat
     logger.debug('MESSAGES: %s', json.dumps(messages, indent=2))
 
     async def event_generator():
-        full_response = []
         async with session_factory() as gen_db:
             try:
+                full_response = []
+          
                 if request.enhance_prompt:
                     yield f"data: {json.dumps({'enhanced_prompt': enhanced_content})}\n\n"
                 active_tools = TOOLS if request.web_search else []
@@ -197,6 +200,12 @@ async def send_message_stream(session_id: str, request: ChatRequest, db: Annotat
                     await _update_session_title(gen_db, session_id, enhanced_content)
                     await gen_db.commit()
                     yield f"data: {json.dumps({'status': 'done'})}\n\n"
+
+        
+            except asyncio.CancelledError:
+                await gen_db.rollback()
+                logger.info(f"Stream cancelled by client: session={session_id}")
+
             except Exception as e:
                 await gen_db.rollback()
                 logger.error(f'[chat error] session={session_id} error={e}', exc_info=True)

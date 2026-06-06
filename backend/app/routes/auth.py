@@ -11,13 +11,24 @@ from app.core.utils import build_school_code, generate_numeric_otp, generate_res
 from app.dependencies.auth import get_current_user
 from app.models.school import School
 from app.models.user import User, UserRole
+from app.models.people import Teacher
 from app.models.verification import PendingSchoolRegistration
-from app.schemas.auth import AuthResponse, ChangePasswordRequest, ForgotPasswordRequest, ForgotPasswordResponse, LoginRequest, ResetPasswordRequest, SchoolRegisterRequest, SchoolRegistrationOtpResponse, SchoolRegistrationVerifyRequest
+from app.schemas.auth import AuthResponse, ChangePasswordRequest, ForgotPasswordRequest, ForgotPasswordResponse, LoginRequest, ResetPasswordRequest, SchoolRegisterRequest, SchoolRegistrationOtpResponse, SchoolRegistrationVerifyRequest, UserPublic
 from app.schemas.common import MessageResponse
 from app.utils.email import EmailNotConfiguredError, send_password_reset_email, send_school_registration_otp_email
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
 router = APIRouter(prefix='/auth', tags=['Auth'])
+
+
+async def _build_user_public(db: AsyncSession, user: User) -> UserPublic:
+    """Build UserPublic, enriching with photo_url for teachers."""
+    user_public = UserPublic.model_validate(user)
+    if user.role == UserRole.TEACHER.value and user.id:
+        teacher = await async_query(db, Teacher).filter(Teacher.user_id == user.id).first()
+        if teacher and teacher.photo_url:
+            user_public.photo_url = teacher.photo_url
+    return user_public
 GENERIC_LOGIN_ERROR = 'Invalid school code, login ID, or password'
 GENERIC_RESET_MESSAGE = 'If this account exists, password reset instructions have been sent to the registered email.'
 LOGIN_ROLE_GROUPS = {'ADMIN': {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}, 'TEACHER': {UserRole.TEACHER.value}, 'STUDENT': {UserRole.STUDENT.value}, 'PARENT': {UserRole.PARENT.value}}
@@ -162,13 +173,15 @@ async def login(payload: LoginRequest, db: AsyncSession=Depends(get_async_db)):
     await db.commit()
     await db.refresh(user)
     token = create_access_token(user.id, {'role': user.role, 'school_id': user.school_id})
-    return AuthResponse(access_token=token, user=user, school=school)
+    user_public = await _build_user_public(db, user)
+    return AuthResponse(access_token=token, user=user_public, school=school)
 
 @router.get('/me', response_model=AuthResponse)
 async def me(current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
     school = await db.get(School, current_user.school_id) if current_user.school_id else None
     token = create_access_token(current_user.id, {'role': current_user.role, 'school_id': current_user.school_id})
-    return AuthResponse(access_token=token, user=current_user, school=school)
+    user_public = await _build_user_public(db, current_user)
+    return AuthResponse(access_token=token, user=user_public, school=school)
 
 @router.post('/change-password', response_model=MessageResponse)
 async def change_password(payload: ChangePasswordRequest, current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):

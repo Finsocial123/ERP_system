@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { Eye, EyeOff, School } from "lucide-react";
 
 import { apiFetch, dashboardPathForRole, fileUrl, saveAuth } from "@/lib/api";
-import { applyBrandingTheme, DEFAULT_BRANDING } from "@/lib/branding";
+import { applyBrandingTheme, cacheBrandingTheme, DEFAULT_BRANDING } from "@/lib/branding";
 import type { AuthResponse, SchoolBrandingPublic } from "@/types";
 import { AuthLink, Button, Card, Input, Label } from "@/components/ui";
 
@@ -48,6 +48,7 @@ export default function LoginPage() {
         .then((data) => {
           setBrandingPreview(data);
           applyBrandingTheme(data);
+          cacheBrandingTheme(data); // ← persist so AppShell finds it instantly after login redirect
         })
         .catch(() => {
           setBrandingPreview(null);

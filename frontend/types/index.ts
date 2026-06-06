@@ -7,6 +7,7 @@
     role: string;
     school_id?: number | null;
     must_change_password?: boolean;
+    photo_url?: string | null;
   };
 
   export type School = {

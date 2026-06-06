@@ -27,7 +27,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 
-import { apiFetch, clearAuth, dashboardPathForRole, fileUrl, getSavedAuth } from "@/lib/api";
+import { apiFetch, clearAuth, dashboardPathForRole, fileUrl, getSavedAuth, AUTH_PROFILE_UPDATED_EVENT } from "@/lib/api";
 import { BRANDING_UPDATED_EVENT, applyBrandingTheme, cacheBrandingTheme, getCachedBranding, normalizeBranding } from "@/lib/branding";
 import type { AuthResponse, SchoolBranding } from "@/types";
 
@@ -149,7 +149,11 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopOpen, setDesktopOpen] = useState(true);
   const [sidebarHydrated, setSidebarHydrated] = useState(false);
-  const [branding, setBranding] = useState<Partial<SchoolBranding> | null>(null);
+  // Initialize from cache synchronously to prevent branding color flash
+  const [branding, setBranding] = useState<Partial<SchoolBranding> | null>(() => {
+    if (typeof window === "undefined") return null;
+    return getCachedBranding();
+  });
   const [unreadNotifications, setUnreadNotifications] = useState(0);
 
   useEffect(() => {
@@ -230,6 +234,19 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
     window.addEventListener("erp_notifications_updated", refreshUnreadNotifications);
     return () => window.removeEventListener("erp_notifications_updated", refreshUnreadNotifications);
   }, [refreshUnreadNotifications]);
+
+  // Re-read auth from localStorage when profile photo (or other user fields) are updated
+  useEffect(() => {
+    const onAuthProfileUpdated = (event: Event) => {
+      const updated = (event as CustomEvent<AuthResponse>).detail;
+      setAuth((prev) => {
+        if (!prev) return prev;
+        return { ...prev, user: { ...prev.user, ...updated.user } };
+      });
+    };
+    window.addEventListener(AUTH_PROFILE_UPDATED_EVENT, onAuthProfileUpdated);
+    return () => window.removeEventListener(AUTH_PROFILE_UPDATED_EVENT, onAuthProfileUpdated);
+  }, []);
 
   const visibleNav = useMemo(() => {
     if (!auth) return [];
@@ -488,7 +505,16 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
           {/* Footer user card */}
           <div className="as-sidebar-foot">
             <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "9px 10px", borderRadius: 10, background: "rgba(255,255,255,0.04)" }}>
-              <div className="as-avatar" style={{ background: activeBranding.primary_color || roleGradient }}>{initials}</div>
+              {auth.user.photo_url ? (
+                <img
+                  src={fileUrl(auth.user.photo_url)}
+                  alt={auth.user.full_name}
+                  className="as-avatar"
+                  style={{ objectFit: "cover", background: "transparent" }}
+                />
+              ) : (
+                <div className="as-avatar" style={{ background: activeBranding.primary_color || roleGradient }}>{initials}</div>
+              )}
               <div style={{ minWidth: 0, flex: 1 }}>
                 <p style={{ fontSize: "0.78rem", fontWeight: 600, color: "#e2e8f0", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {auth.user.full_name}
@@ -542,7 +568,19 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
                 <Bell size={16} />
                 {unreadNotifications > 0 && <span className="as-bell-badge">{unreadNotifications > 99 ? "99+" : unreadNotifications}</span>}
               </button>
-              <div className="as-avatar" style={{ background: activeBranding.primary_color || roleGradient, width: 30, height: 30, fontSize: "0.65rem" }}>{initials}</div>
+              <div className="as-avatar" style={{ width: 30, height: 30, fontSize: "0.65rem", background: "transparent", flexShrink: 0 }}>
+                {auth.user.photo_url ? (
+                  <img
+                    src={fileUrl(auth.user.photo_url)}
+                    alt={auth.user.full_name}
+                    style={{ width: 30, height: 30, borderRadius: "50%", objectFit: "cover", display: "block" }}
+                  />
+                ) : (
+                  <div style={{ width: 30, height: 30, borderRadius: "50%", background: activeBranding.primary_color || roleGradient, display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontSize: "0.65rem", fontWeight: 800 }}>
+                    {initials}
+                  </div>
+                )}
+              </div>
               <button className="as-logout-btn" onClick={logout}>
                 <LogOut size={13} /> Logout
               </button>

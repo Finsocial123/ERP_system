@@ -5,6 +5,9 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.
 const TOKEN_KEY = "erp_access_token";
 const AUTH_KEY = "erp_auth";
 
+/** Fired when the saved auth user data is updated (e.g. after profile photo upload) */
+export const AUTH_PROFILE_UPDATED_EVENT = "erp_auth_profile_updated";
+
 export function getToken() {
   if (typeof window === "undefined") return null;
   return localStorage.getItem(TOKEN_KEY);
@@ -24,6 +27,18 @@ export function getSavedAuth(): AuthResponse | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Patch the persisted auth user object with new fields (e.g. photo_url after
+ * a profile picture upload) and broadcast an event so AppShell re-reads it.
+ */
+export function updateSavedAuthUser(patch: Partial<AuthResponse["user"]>) {
+  const saved = getSavedAuth();
+  if (!saved) return;
+  const updated: AuthResponse = { ...saved, user: { ...saved.user, ...patch } };
+  localStorage.setItem(AUTH_KEY, JSON.stringify(updated));
+  window.dispatchEvent(new CustomEvent(AUTH_PROFILE_UPDATED_EVENT, { detail: updated }));
 }
 
 export function clearAuth() {

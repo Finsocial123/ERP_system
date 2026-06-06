@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 
 import AppShell from "@/components/AppShell";
-import { apiFetch, apiUpload, fileUrl } from "@/lib/api";
+import { apiFetch, apiUpload, fileUrl, updateSavedAuthUser } from "@/lib/api";
 
 type AnyRecord = Record<string, any>;
 
@@ -97,7 +97,7 @@ function InfoCard({ label, value }: { label: string; value?: string | number | n
   return (
     <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
       <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{label}</p>
-      <p className="mt-1 break-words text-sm font-semibold text-slate-900">{safeValue(value)}</p>
+      <p className="mt-1 wrap-break-word text-sm font-semibold text-slate-900">{safeValue(value)}</p>
     </div>
   );
 }
@@ -194,6 +194,10 @@ function TeacherPhotoUploader({ profile, onSaved }: { profile: ProfileResponse; 
       formData.append("file", file);
       const updated = await apiUpload<ProfileResponse>("/profile/teacher/photo", formData, { method: "POST" });
       onSaved(updated);
+      // Persist the new photo_url into saved auth so navbar/sidebar update immediately
+      if (updated.role_data?.teacher?.photo_url) {
+        updateSavedAuthUser({ photo_url: updated.role_data.teacher.photo_url });
+      }
       setMessage("Profile photo updated successfully.");
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Failed to upload profile photo.");

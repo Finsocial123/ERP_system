@@ -35,6 +35,7 @@ class ParentLoginCreate(BaseModel):
 
 
 class StudentCreate(BaseModel):
+    academic_session_id: int | None = None
     create_login: bool = False
     password: str | None = Field(default=None, min_length=6, max_length=72)
     create_parent_login: bool = False
@@ -57,6 +58,7 @@ class StudentCreate(BaseModel):
 
 
 class StudentUpdate(BaseModel):
+    academic_session_id: int | None = None
     create_parent_login: bool = False
     parent_password: str | None = Field(default=None, min_length=6, max_length=72)
     admission_no: str | None = Field(default=None, min_length=1, max_length=80)
@@ -80,6 +82,7 @@ class StudentUpdate(BaseModel):
 
 class StudentRead(BaseModel):
     id: int
+    academic_session_id: int | None = None
     admission_no: str
     roll_number: str | None = None
     first_name: str
@@ -106,6 +109,7 @@ class StudentRead(BaseModel):
 
 
 class TeacherCreate(BaseModel):
+    academic_session_id: int | None = None
     employee_id: str = Field(min_length=1, max_length=80)
     full_name: str = Field(min_length=2, max_length=150)
     email: EmailStr | None = None
@@ -122,6 +126,7 @@ class TeacherCreate(BaseModel):
 
 
 class TeacherUpdate(BaseModel):
+    academic_session_id: int | None = None
     employee_id: str | None = Field(default=None, min_length=1, max_length=80)
     full_name: str | None = Field(default=None, min_length=2, max_length=150)
     email: EmailStr | None = None
@@ -139,6 +144,7 @@ class TeacherUpdate(BaseModel):
 
 class TeacherRead(BaseModel):
     id: int
+    academic_session_id: int | None = None
     employee_id: str
     full_name: str
     email: EmailStr | None = None
@@ -159,6 +165,7 @@ class TeacherRead(BaseModel):
 
 
 class TeacherSubjectCreate(BaseModel):
+    academic_session_id: int | None = None
     subject_id: int
     class_id: int | None = None
     section_id: int | None = None
@@ -166,6 +173,7 @@ class TeacherSubjectCreate(BaseModel):
 
 class TeacherSubjectRead(BaseModel):
     id: int
+    academic_session_id: int | None = None
     teacher_id: int
     subject_id: int
     class_id: int | None = None

@@ -9,7 +9,9 @@ export async function getChatSessions(): Promise<ChatSession[]> {
   return apiFetch<ChatSession[]>("/sessions");
 }
 
-export async function getChatMessages(sessionId: string): Promise<ChatMessage[]> {
+export async function getChatMessages(
+  sessionId: string,
+): Promise<ChatMessage[]> {
   return apiFetch<ChatMessage[]>(`/sessions/${sessionId}/messages`);
 }
 
@@ -39,6 +41,7 @@ export async function streamLessonChatMessage(params: {
   language?: string | null;
   webSearch?: boolean;
   enhancePrompt?: boolean;
+  signal?: AbortSignal;
   callbacks: StreamCallbacks;
 }): Promise<void> {
   const token = getToken();
@@ -69,7 +72,8 @@ export async function streamLessonChatMessage(params: {
         ? (data as { detail?: unknown }).detail
         : null;
 
-    const message = typeof detail === "string" ? detail : "Failed to send message";
+    const message =
+      typeof detail === "string" ? detail : "Failed to send message";
     throw new Error(message);
   }
 
@@ -101,7 +105,8 @@ export async function streamLessonChatMessage(params: {
       };
 
       if (payload.error) throw new Error(payload.error);
-      if (payload.enhanced_prompt) params.callbacks.onEnhancedPrompt?.(payload.enhanced_prompt);
+      if (payload.enhanced_prompt)
+        params.callbacks.onEnhancedPrompt?.(payload.enhanced_prompt);
       if (payload.status) params.callbacks.onStatus?.(payload.status);
       if (payload.token) params.callbacks.onToken(payload.token);
     }
@@ -117,7 +122,8 @@ export async function streamLessonChatMessage(params: {
     };
 
     if (payload.error) throw new Error(payload.error);
-    if (payload.enhanced_prompt) params.callbacks.onEnhancedPrompt?.(payload.enhanced_prompt);
+    if (payload.enhanced_prompt)
+      params.callbacks.onEnhancedPrompt?.(payload.enhanced_prompt);
     if (payload.status) params.callbacks.onStatus?.(payload.status);
     if (payload.token) params.callbacks.onToken(payload.token);
   }

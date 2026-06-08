@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.core.migrations import run_phase4_migrations, run_startup_migrations
+from app.core.redis import init_redis, close_redis          # ← NEW
 from app.models import (  # noqa: F401
     AcademicSession,
     ClassTeacherAssignment,
@@ -43,7 +44,11 @@ from app.models import (  # noqa: F401
     SchoolEvent,
 )
 
-from app.routes import academic, attendance, reports,auth, dashboard, exams,fees, homework, people, schools, library, timetable, notice, communication, curriculum, meetings, assignments, chats, courses, enrollments, lessons, progress
+from app.routes import (
+    academic, attendance, reports, auth, dashboard, exams, fees, homework,
+    people, schools, library, timetable, notice, communication, curriculum,
+    meetings, assignments, chats, courses, enrollments, lessons, progress,
+)
 
 Base.metadata.create_all(bind=engine)
 run_startup_migrations(engine)
@@ -62,6 +67,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------------------------
+# Redis lifecycle — graceful degradation if Redis is unavailable
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    await init_redis()
+
+
+@app.on_event("shutdown")
+async def shutdown_event() -> None:
+    await close_redis()
+
+
+# ---------------------------------------------------------------------------
+# Routers
+# ---------------------------------------------------------------------------
 
 app.include_router(auth.router)
 app.include_router(schools.router)

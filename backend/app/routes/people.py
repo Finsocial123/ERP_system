@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.meetings import TeacherClassOut
 from app.core.database import get_async_db
@@ -115,7 +115,9 @@ async def _ensure_parent_login(db: AsyncSession, school_id: int, guardian: Paren
 
 @router.get('/students', response_model=list[StudentRead])
 async def list_students(search: str | None=Query(default=None), class_id: int | None=Query(default=None), section_id: int | None=Query(default=None), status_value: str | None=Query(default=None, alias='status'), school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
-    query = async_query(db, Student).filter(Student.school_id == school_id, Student.is_active.is_(True))
+    query = async_query(db, Student).options(
+        selectinload(Student.guardian)
+    ).filter(Student.school_id == school_id, Student.is_active.is_(True))
     if search:
         like = f'%{search.strip()}%'
         query = query.filter(or_(Student.first_name.ilike(like), Student.last_name.ilike(like), Student.admission_no.ilike(like), Student.roll_number.ilike(like), Student.email.ilike(like)))

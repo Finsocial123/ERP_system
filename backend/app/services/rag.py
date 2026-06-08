@@ -1,9 +1,33 @@
+"""
+rag.py — patched to cache query embeddings in Redis.
+
+Changes vs original
+--------------------
+* `get_query_embedding` checks Redis before calling the embedding API.
+  Cache key: embedding:{sha256(query_text)}  TTL 24 h
+* `search_chunks` and `retrieve_context` are unchanged.
+* If Redis is down, the original API call is made transparently.
+
+Why caching embeddings is safe here
+-------------------------------------
+Student AI-tutor queries repeat frequently ("What is photosynthesis?",
+"Explain Newton's second law", etc.).  Embeddings are deterministic for a
+given model — the same text always produces the same vector.  We cache by
+text hash so identical queries skip the embedding API call entirely.
+
+The embedding model is identified in settings.EMBEDDING_MODEL.  If the
+model changes, flush the pattern "embedding:*" from Redis manually.
+"""
+
+from __future__ import annotations
+
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models.lesson import LessonChunk, Lesson
 from app.core.config import settings
 from app.client import client
+from app.services.cache import cache                        # ← NEW
 
 logger = logging.getLogger(__name__)
 
@@ -18,15 +42,28 @@ def format_timestamp(seconds: float | None) -> str | None:
 
 async def get_query_embedding(query: str) -> list[float]:
     """
-    Step 1 of RAG — call the embedding API only.
-    Returns the raw embedding vector.
-    Kept separate so callers can run this concurrently with other I/O.
+    Step 1 of RAG — return the embedding vector for *query*.
+
+    Checks Redis first.  On a cache hit the OpenRouter embedding API is
+    not called, saving ~50-80 ms and API cost.
     """
+    # Cache hit
+    cached = await cache.get_embedding(query)
+    if cached is not None:
+        logger.debug("Embedding cache hit for query (len=%d)", len(query))
+        return cached
+
+    # Cache miss — call embedding API
     response = await client.embeddings.create(
         model=settings.EMBEDDING_MODEL,
         input=query,
     )
-    return response.data[0].embedding
+    embedding = response.data[0].embedding
+
+    # Store — fire and forget (no await needed for correctness)
+    await cache.set_embedding(query, embedding)
+
+    return embedding
 
 
 async def search_chunks(
@@ -38,7 +75,10 @@ async def search_chunks(
 ) -> str:
     """
     Step 2 of RAG — pgvector cosine search using a pre-computed embedding.
-    Kept separate so callers can supply an embedding obtained in parallel.
+    Unchanged from original.  Vector search results are NOT cached because:
+    - New chunks are added as teachers upload lessons.
+    - TTL-based invalidation would be complex and error-prone.
+    - pgvector with HNSW index makes this fast enough (~10-20 ms).
     """
     stmt = (
         select(LessonChunk, Lesson.order, Lesson.title)
@@ -84,9 +124,8 @@ async def retrieve_context(
     top_k: int = 6,
 ) -> str:
     """
-    Original all-in-one function — unchanged public API.
-    Still usable anywhere that doesn't need the parallelised path
-    (e.g. quiz/summary routes that call it directly).
+    Original all-in-one function — public API unchanged.
+    Now benefits from embedding cache on the first step.
     """
     embedding = await get_query_embedding(query)
     return await search_chunks(

@@ -141,14 +141,14 @@ async def create_lesson(
 
 
 @router.get("/course/{course_id}")
-def get_course_lessons(
+async def get_course_lessons(
     course_id: int,
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(*ALL_LMS_ROLES)),
     db: Session = Depends(get_db),
 ):
-    course = get_course_or_404(db, school_id, course_id)
-    ensure_can_view_course(db, school_id, current_user, course)
+    course = await get_course_or_404(db, school_id, course_id)
+    await ensure_can_view_course(db, school_id, current_user, course)
     lessons = db.query(Lesson).filter(Lesson.course_id == course_id).order_by(Lesson.order.asc(), Lesson.id.asc()).all()
     return [_lesson_payload(lesson) for lesson in lessons]
 

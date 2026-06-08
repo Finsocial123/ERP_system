@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from typing import Annotated
+from requests import request
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -71,7 +72,6 @@ async def get_session_messages(session_id: str, db: Annotated[AsyncSession, Depe
 async def _get_embedding() -> list[float] | None:
     if request.lesson_id is None:
         return None
-    try:
 
 
 
@@ -120,6 +120,12 @@ async def send_message_stream(
 
         async def _enhance() -> str:
             try:
+                print("\n===== CHAT PAYLOAD =====")
+                print("LAST ROLE:", messages[-1]["role"])
+                print("LAST 5 MESSAGES:")
+                for m in messages[-5:]:
+                    print(m["role"], "=>", str(m.get("content"))[:100])
+                print("========================\n")
                 enhance_response = await client.chat.completions.create(
                     model=settings.MODEL,
                     messages=[
@@ -180,15 +186,30 @@ async def send_message_stream(
     else:
         user_content = enhanced_content
     raw_history = []
-    for i, msg in enumerate(history):
-        if i == len(history) - 1 and msg.role == ChatRole.USER:
-            raw_history.append({'role': 'user', 'content': user_content})
-        elif msg.role == ChatRole.ASSISTANT and msg.tool_calls is not None:
-            raw_history.append({'role': 'assistant', 'content': msg.content, 'tool_calls': msg.tool_calls})
+    for msg in history:
+        if msg.role == ChatRole.ASSISTANT and msg.tool_calls is not None:
+            raw_history.append({
+                'role': 'assistant',
+                'content': msg.content,
+                'tool_calls': msg.tool_calls
+            })
         elif msg.role == ChatRole.TOOL:
-            raw_history.append({'role': 'tool', 'tool_call_id': msg.tool_call_id, 'content': msg.content})
+            raw_history.append({
+                'role': 'tool',
+                'tool_call_id': msg.tool_call_id,
+                'content': msg.content
+            })
         else:
-            raw_history.append({'role': msg.role.value, 'content': msg.content})
+            raw_history.append({
+                'role': msg.role.value,
+                'content': msg.content
+            })
+
+    # append CURRENT user message
+    raw_history.append({
+        'role': 'user',
+        'content': user_content
+    })
     system_prompt = get_system_prompt(request.language)
     trimmed_history = trim_history(history=raw_history, system_prompt=system_prompt, rag_context=context, max_tokens=50000)
     messages = [{'role': 'system', 'content': system_prompt}] + trimmed_history

@@ -68,10 +68,6 @@ async def get_session_messages(session_id: str, db: Annotated[AsyncSession, Depe
     return result.scalars().all()
 
 
-async def _get_embedding() -> list[float] | None:
-    if request.lesson_id is None:
-        return None
-    try:
 
 
 

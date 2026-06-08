@@ -9,13 +9,13 @@ from app.services import notice_service
 router = APIRouter(prefix='/notices', tags=['Notice Board'])
 
 @router.post('/enhance', response_model=NoticeEnhanceOut)
-async def enhance_notice(payload: NoticeEnhanceRequest, current_user: User=Depends(require_roles(UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN, UserRole.TEACHER))):
-    enhanced = await notice_service.enhance_notice_content(payload.content, current_user)
+async def enhance_notice(payload: NoticeEnhanceRequest, db: AsyncSession=Depends(get_async_db), current_user: User=Depends(require_roles(UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN, UserRole.TEACHER))):
+    enhanced = await notice_service.enhance_notice_content(payload.content, current_user, db)
     return {'original': payload.content, 'enhanced': enhanced}
 
 @router.post('/generate', response_model=NoticeGenerateOut)
-async def generate_notice_from_description(payload: NoticeGenerateRequest, current_user: User=Depends(require_roles(UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN, UserRole.TEACHER))):
-    generated = await notice_service.generate_notice_content(payload.description, current_user)
+async def generate_notice_from_description(payload: NoticeGenerateRequest,db: AsyncSession=Depends(get_async_db), current_user: User=Depends(require_roles(UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN, UserRole.TEACHER))):
+    generated = await notice_service.generate_notice_content(payload.description, current_user, db)
     return {'description': payload.description, 'generated': generated}
 
 @router.post('/', response_model=NoticeOut, status_code=201)

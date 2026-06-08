@@ -102,10 +102,22 @@ async def get_meeting_join_url(
     user_id: int,
     full_name: str,
     is_moderator: bool,
+    user_role: str
 ) -> str:
     meeting = await db.get(Meeting, meeting_id)
     if not meeting or meeting.status == MeetingStatus.ENDED:
         raise ValueError("Meeting not found or already ended")
+    
+    # Set logout URL based on role
+    role_logout_urls = {
+        "TEACHER": "http://localhost:3000/teachers/meetings",
+        "STUDENT": "http://localhost:3000/students/meetings",
+        "SCHOOL_ADMIN": "http://localhost:3000/setup/meetings",
+        "SCHOOL_OWNER": "http://localhost:3000/setup/meetings",
+        "SUPER_ADMIN": "http://localhost:3000/setup/meetings",
+    }
+    logout_url = role_logout_urls.get(user_role, "http://localhost:3000")
+
 
     password = meeting.moderator_password if is_moderator else meeting.attendee_password
     return get_join_url(
@@ -113,6 +125,7 @@ async def get_meeting_join_url(
         full_name=full_name,
         password=password,
         user_id=str(user_id),
+        logout_url=logout_url,
     )
 
 

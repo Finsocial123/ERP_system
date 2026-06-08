@@ -31,7 +31,10 @@ async def list_meetings(skip: int=Query(0, ge=0), limit: int=Query(20, ge=1, le=
     return await meeting_service.list_meetings(db=db, current_user=current_user, skip=skip, limit=limit, status=status, meeting_type=meeting_type, search=search)
 
 @router.post('/teacher/class', response_model=MeetingCreateOut, status_code=201)
-async def teacher_create_class_meeting(payload: TeacherMeetingCreate, db: AsyncSession=Depends(get_async_db), current_user: User=Depends(require_roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER))):
+async def teacher_create_class_meeting(
+    payload: TeacherMeetingCreate, db: AsyncSession=Depends(get_async_db), 
+    current_user: User=Depends(require_roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER))
+):
     result = await db.execute(select(Teacher).where(Teacher.user_id == current_user.id, Teacher.school_id == current_user.school_id, Teacher.is_active == True))
     teacher = result.scalar_one_or_none()
     if not teacher:
@@ -42,23 +45,27 @@ async def teacher_create_class_meeting(payload: TeacherMeetingCreate, db: AsyncS
         raise HTTPException(403, str(e))
     except Exception as e:
         raise HTTPException(503, f'BBB service error: {str(e)}')
-    join_url = await meeting_service.get_meeting_join_url(db=db, meeting_id=meeting.id, user_id=current_user.id, full_name=teacher.full_name, is_moderator=True)
+    join_url = await meeting_service.get_meeting_join_url(db=db, meeting_id=meeting.id, user_id=current_user.id, full_name=teacher.full_name, is_moderator=True,     user_role=current_user.role)
     return {'meeting_id': meeting.id, 'join_url': join_url}
 
 @router.post('/admin/teachers', response_model=MeetingCreateOut, status_code=201)
-async def admin_create_teachers_meeting(payload: AdminMeetingCreate, db: AsyncSession=Depends(get_async_db), current_user: User=Depends(require_roles(UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN))):
+async def admin_create_teachers_meeting(
+    payload: AdminMeetingCreate, 
+    db: AsyncSession=Depends(get_async_db), 
+    current_user: User=Depends(require_roles(UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN))
+):
     try:
         meeting = await meeting_service.create_admin_teachers_meeting(db=db, school_id=current_user.school_id, title=payload.title, created_by_user_id=current_user.id)
     except Exception as e:
         raise HTTPException(503, f'BBB service error: {str(e)}')
-    join_url = await meeting_service.get_meeting_join_url(db=db, meeting_id=meeting.id, user_id=current_user.id, full_name=current_user.full_name, is_moderator=True)
+    join_url = await meeting_service.get_meeting_join_url(db=db, meeting_id=meeting.id, user_id=current_user.id, full_name=current_user.full_name, is_moderator=True, user_role=current_user.role)
     return {'meeting_id': meeting.id, 'join_url': join_url}
 
 @router.get('/{meeting_id}/join')
 async def join_meeting(meeting_id: int, db: AsyncSession=Depends(get_async_db), current_user: User=Depends(get_current_user)):
     is_moderator = current_user.role in (UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN, UserRole.TEACHER)
     try:
-        join_url = await meeting_service.get_meeting_join_url(db=db, meeting_id=meeting_id, user_id=current_user.id, full_name=current_user.full_name, is_moderator=is_moderator)
+        join_url = await meeting_service.get_meeting_join_url(db=db, meeting_id=meeting_id, user_id=current_user.id, full_name=current_user.full_name, is_moderator=is_moderator, user_role=current_user.role)
     except ValueError as e:
         raise HTTPException(404, str(e))
     return {'join_url': join_url}

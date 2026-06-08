@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 from app.models.notice import Notice, NoticeAudience, NoticeClassAudience, NoticeRead, NoticeStatus
 from app.models.people import Teacher, TeacherSubject, ClassTeacherAssignment 
 from app.models.people import Student
+from app.models.school import School
 from sqlalchemy import or_
 
 
@@ -589,23 +590,40 @@ def _check_audience(notice: Notice, user: User) -> None:
 
 # AI helpers
 
-async def enhance_notice_content(content: str, current_user: User) -> str:
+async def enhance_notice_content(
+    content: str, 
+    current_user: User,
+    db: AsyncSession,
+) -> str:
     """Rewrite an existing notice to be more professional"""
     if not _can_manage(current_user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
+    
+    school_result = await db.execute(
+        select(School).where(School.id == current_user.school_id)
+    )   
+    school = school_result.scalar_one_or_none()
+    school_name = school.name if school else "The School"
 
+    today = datetime.now(timezone.utc).strftime("%B %d, %Y")
+    
     response = await client.chat.completions.create(
         model=settings.MODEL,
         messages=[
             {
                 "role": "system",
-                "content":  """You are a professional notice writer for an educational institution.
-                                Rewrite the given notice to be:
-                                - Clear and professional
-                                - Formally structured with proper greeting and closing
-                                - Concise but complete
-                                - Appropriate for students and parents
-                                Return ONLY the rewritten notice, nothing else."""
+                "content": f"""
+                You are a professional notice writer for an educational institution.
+                School Name: {school_name}
+                Today's Date: {today}
+                Issued By: {current_user.full_name or current_user.email}
+                Rewrite the given notice to be:
+                - Clear and professional
+                - Formally structured with proper greeting and closing
+                - Concise but complete
+                - Appropriate for students and parents
+                Return ONLY the rewritten notice, nothing else.
+                """
             },
             {"role": "user", "content": content}
         ],
@@ -614,23 +632,41 @@ async def enhance_notice_content(content: str, current_user: User) -> str:
     return response.choices[0].message.content.strip()
 
 
-async def generate_notice_content(description: str, current_user: User) -> str:
+
+async def generate_notice_content(
+        description: str, 
+        current_user: User,
+        db: AsyncSession,
+    ) -> str:
     """Generate a full formal notice from a rough description"""
     if not _can_manage(current_user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
 
+    school_result = await db.execute(
+        select(School).where(School.id == current_user.school_id)
+    ) 
+    school = school_result.scalar_one_or_none()
+    school_name = school.name if school else "The School"
+
+    today = datetime.now(timezone.utc).strftime("%B %d, %Y")
+    
+    print(school_name, today)
     response = await client.chat.completions.create(
         model=settings.MODEL,
         messages=[
             {
                 "role": "system",
-                "content":  """You are a professional notice writer for an educational institution.
-                                Based on the admin's rough description, write a complete formal notice that is:
-                                - Clear and professional
-                                - Formally structured with proper greeting and closing
-                                - Concise but complete
-                                - Appropriate for students and parents
-                                Return ONLY the notice, nothing else."""
+                "content":  f"""You are a professional notice writer for an educational institution.
+                School Name: {school_name}
+                Today's Date: {today}
+                Issued By: {current_user.full_name or current_user.email}
+                Based on the admin's rough description, write a complete formal notice that is:
+                - Clear and professional
+                - Formally structured with proper greeting and closing
+                - Concise but complete
+                - Appropriate for students and parents
+                Return ONLY the notice, nothing else.
+                """
             },
             {"role": "user", "content": description}
         ],

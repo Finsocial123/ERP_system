@@ -229,10 +229,14 @@ function AIPanel({
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Describe what this notice should be about..."
+            placeholder="Describe the notice… (e.g. Holi holiday on March 14, classes resume March 17)"
             rows={2}
             className="w-full text-sm border border-violet-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-violet-300 resize-none"
           />
+          <p className="text-xs text-violet-400">
+            Tip: Include specific dates, event name, and any instructions for
+            better results.
+          </p>
           <button
             onClick={handleGenerate}
             disabled={loading || !description.trim()}

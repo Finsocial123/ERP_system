@@ -1,7 +1,6 @@
 from __future__ import annotations
 from fastapi import HTTPException, status
 from sqlalchemy import select, or_, func
-from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.academic import AcademicSession, SchoolClass, Section, Subject
 from app.models.course import Course
@@ -37,7 +36,7 @@ async def teacher_for_user(db: AsyncSession, school_id: int, user: User) -> Teac
     return await async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True), or_(*conditions)).first()
 
 async def student_for_user(db: AsyncSession, school_id: int, user: User) -> Student | None:
-    student = await async_query(db, Student).options(joinedload(Student.school_class), joinedload(Student.section)).filter(Student.school_id == school_id, Student.user_id == user.id).first()
+    student = await async_query(db, Student).filter(Student.school_id == school_id, Student.user_id == user.id).first()
     if student:
         return student
     conditions = []
@@ -49,7 +48,7 @@ async def student_for_user(db: AsyncSession, school_id: int, user: User) -> Stud
         conditions.append(Student.admission_no == user.login_id)
     if not conditions:
         return None
-    return await async_query(db, Student).options(joinedload(Student.school_class), joinedload(Student.section)).filter(Student.school_id == school_id, Student.is_active.is_(True), or_(*conditions)).first()
+    return await async_query(db, Student).filter(Student.school_id == school_id, Student.is_active.is_(True), or_(*conditions)).first()
 
 async def children_for_parent(db: AsyncSession, school_id: int, user: User) -> list[Student]:
     guardians = []
@@ -66,7 +65,7 @@ async def children_for_parent(db: AsyncSession, school_id: int, user: User) -> l
     guardian_ids = [guardian.id for guardian in guardians]
     if not guardian_ids:
         return []
-    return await async_query(db, Student).options(joinedload(Student.school_class), joinedload(Student.section)).filter(Student.school_id == school_id, Student.guardian_id.in_(guardian_ids), Student.is_active.is_(True)).order_by(Student.first_name.asc(), Student.id.asc()).all()
+    return await async_query(db, Student).filter(Student.school_id == school_id, Student.guardian_id.in_(guardian_ids), Student.is_active.is_(True)).order_by(Student.first_name.asc(), Student.id.asc()).all()
 
 def full_student_name(student: Student) -> str:
     return f"{student.first_name} {student.last_name or ''}".strip()
@@ -104,35 +103,16 @@ async def teacher_has_scope(db: AsyncSession, school_id: int, teacher: Teacher, 
     return bool(class_teacher_match)
 
 def course_matches_student(course: Course, student: Student) -> bool:
-    """Match LMS courses across academic sessions.
-
-    Courses remain global, while classes/sections are duplicated per session.
-    Prefer direct id matches, then fall back to matching the replicated
-    class/section names when relationships are already loaded.
-    """
     if course.school_id != student.school_id:
         return False
     if course.class_id is None or student.class_id is None:
         return False
-
-    class_matches = course.class_id == student.class_id
-    if not class_matches:
-        course_class = course.__dict__.get("school_class")
-        student_class = student.__dict__.get("school_class")
-        class_matches = bool(course_class and student_class and course_class.name == student_class.name)
-    if not class_matches:
+    if course.class_id != student.class_id:
         return False
-
-    if course.section_id is None:
-        return True
-    if course.section_id == student.section_id:
-        return True
-    course_section = course.__dict__.get("section")
-    student_section = student.__dict__.get("section")
-    return bool(course_section and student_section and course_section.name == student_section.name)
+    return course.section_id is None or course.section_id == student.section_id
 
 async def get_course_or_404(db: AsyncSession, school_id: int, course_id: int) -> Course:
-    course = await async_query(db, Course).options(joinedload(Course.school_class), joinedload(Course.section)).filter(Course.id == course_id, Course.school_id == school_id, Course.is_active.is_(True)).first()
+    course = await async_query(db, Course).filter(Course.id == course_id, Course.school_id == school_id, Course.is_active.is_(True)).first()
     if not course:
         raise HTTPException(status_code=404, detail='Course not found')
     return course

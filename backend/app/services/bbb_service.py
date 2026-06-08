@@ -44,12 +44,14 @@ def get_join_url(
     full_name: str,
     password: str,   
     user_id: str,
+    logout_url: str = "http:/localhost:3000",
 ) -> str:
     params = {
         "meetingID": meeting_id,
         "fullName": full_name,
         "password": password,
         "userID": user_id,
+        "logoutURL": logout_url
     }
     checksum = _checksum("join", params)
     return f"{settings.BBB_URL}/join?{urlencode(params)}&checksum={checksum}"

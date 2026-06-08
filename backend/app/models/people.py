@@ -29,11 +29,10 @@ class ParentGuardian(Base):
 
 class Student(Base):
     __tablename__ = "students"
-    __table_args__ = (UniqueConstraint("school_id", "academic_session_id", "admission_no", name="uq_student_school_session_admission_no"),)
+    __table_args__ = (UniqueConstraint("school_id", "admission_no", name="uq_student_school_admission_no"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), index=True)
-    academic_session_id: Mapped[int | None] = mapped_column(ForeignKey("academic_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     guardian_id: Mapped[int | None] = mapped_column(ForeignKey("parent_guardians.id", ondelete="SET NULL"), nullable=True)
     class_id: Mapped[int | None] = mapped_column(ForeignKey("school_classes.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -56,7 +55,6 @@ class Student(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    academic_session = relationship("AcademicSession")
     guardian = relationship("ParentGuardian", back_populates="students")
     school_class = relationship("SchoolClass")
     section = relationship("Section")
@@ -65,11 +63,10 @@ class Student(Base):
 
 class Teacher(Base):
     __tablename__ = "teachers"
-    __table_args__ = (UniqueConstraint("school_id", "academic_session_id", "employee_id", name="uq_teacher_school_session_employee_id"),)
+    __table_args__ = (UniqueConstraint("school_id", "employee_id", name="uq_teacher_school_employee_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), index=True)
-    academic_session_id: Mapped[int | None] = mapped_column(ForeignKey("academic_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     department_id: Mapped[int | None] = mapped_column(ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
 
@@ -88,7 +85,6 @@ class Teacher(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    academic_session = relationship("AcademicSession")
     department = relationship("Department")
     user = relationship("User")
     subject_assignments = relationship("TeacherSubject", back_populates="teacher", cascade="all, delete-orphan")
@@ -98,19 +94,17 @@ class Teacher(Base):
 class TeacherSubject(Base):
     __tablename__ = "teacher_subjects"
     __table_args__ = (
-        UniqueConstraint("school_id", "academic_session_id", "teacher_id", "subject_id", "class_id", "section_id", name="uq_teacher_subject_session_scope"),
+        UniqueConstraint("school_id", "teacher_id", "subject_id", "class_id", "section_id", name="uq_teacher_subject_scope"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), index=True)
-    academic_session_id: Mapped[int | None] = mapped_column(ForeignKey("academic_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     teacher_id: Mapped[int] = mapped_column(ForeignKey("teachers.id", ondelete="CASCADE"), index=True)
     subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id", ondelete="CASCADE"), index=True)
     class_id: Mapped[int | None] = mapped_column(ForeignKey("school_classes.id", ondelete="SET NULL"), nullable=True, index=True)
     section_id: Mapped[int | None] = mapped_column(ForeignKey("sections.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    academic_session = relationship("AcademicSession")
     teacher = relationship("Teacher", back_populates="subject_assignments")
     subject = relationship("Subject")
     school_class = relationship("SchoolClass")

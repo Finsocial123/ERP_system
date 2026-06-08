@@ -57,7 +57,7 @@ async def _student_course_rows(db: AsyncSession, school_id: int, user: User) -> 
     student = await student_for_user(db, school_id, user)
     if not student or not student.class_id:
         return []
-    courses = [course for course in await _base_course_query(db, school_id).filter(Course.status == 'PUBLISHED').order_by(Course.created_at.desc()).all() if course_matches_student(course, student)]
+    courses = await _base_course_query(db, school_id).filter(Course.class_id == student.class_id, Course.status == 'PUBLISHED', or_(Course.section_id.is_(None), Course.section_id == student.section_id)).order_by(Course.created_at.desc()).all()
     rows: list[CourseOut] = []
     for course in courses:
         enrollment = await ensure_enrollment_for_user_student(db, school_id, user, course)
@@ -69,7 +69,7 @@ async def _parent_course_rows(db: AsyncSession, school_id: int, user: User) -> l
     for child in await children_for_parent(db, school_id, user):
         if not child.user_id or not child.class_id:
             continue
-        courses = [course for course in await _base_course_query(db, school_id).filter(Course.status == 'PUBLISHED').order_by(Course.created_at.desc()).all() if course_matches_student(course, child)]
+        courses = await _base_course_query(db, school_id).filter(Course.class_id == child.class_id, Course.status == 'PUBLISHED', or_(Course.section_id.is_(None), Course.section_id == child.section_id)).order_by(Course.created_at.desc()).all()
         for course in courses:
             enrollment = await async_query(db, Enrollment).filter(Enrollment.student_id == child.user_id, Enrollment.course_id == course.id).first()
             progress = float(enrollment.progress or 0) if enrollment else 0
@@ -133,6 +133,7 @@ async def get_my_created_courses(school_id: int=Depends(current_school_id), curr
 @router.post('/', response_model=CourseOut, status_code=status.HTTP_201_CREATED)
 async def create_course(title: str=Form(..., min_length=2, max_length=255), description: Optional[str]=Form(None), class_id: int=Form(...), section_id: Optional[int]=Form(None), subject_id: Optional[int]=Form(None), teacher_id: Optional[int]=Form(None), status_value: str=Form('PUBLISHED', alias='status'), thumbnail: Optional[UploadFile]=File(None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
     await validate_course_scope(db, school_id, class_id, section_id, subject_id)
+    session = await current_session(db, school_id)
     assigned_teacher_user_id = current_user.id
     if current_user.role == UserRole.TEACHER.value:
         teacher = await teacher_for_user(db, school_id, current_user)
@@ -149,7 +150,7 @@ async def create_course(title: str=Form(..., min_length=2, max_length=255), desc
     if thumbnail and thumbnail.filename:
         result = upload_file(thumbnail.file, folder='lms/thumbnails', resource_type='image')
         thumbnail_url = result['url']
-    course = Course(school_id=school_id, class_id=class_id, section_id=section_id, subject_id=subject_id, academic_session_id=None, title=title.strip(), description=description.strip() if description else None, thumbnail_url=thumbnail_url, teacher_id=assigned_teacher_user_id, status=_safe_status(status_value), is_active=True)
+    course = Course(school_id=school_id, class_id=class_id, section_id=section_id, subject_id=subject_id, academic_session_id=session.id if session else None, title=title.strip(), description=description.strip() if description else None, thumbnail_url=thumbnail_url, teacher_id=assigned_teacher_user_id, status=_safe_status(status_value), is_active=True)
     db.add(course)
     await db.commit()
     await db.refresh(course)

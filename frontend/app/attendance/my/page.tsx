@@ -13,7 +13,7 @@ import {
 
 import AppShell from "@/components/AppShell";
 import { Card, Label } from "@/components/ui";
-import { apiFetch, getSavedAuth } from "@/lib/api";
+import { apiFetch, getSavedAuth, getSelectedAcademicSessionId, setSelectedAcademicSessionId } from "@/lib/api";
 import type { AcademicSession } from "@/types";
 
 type AttendanceRecord = {
@@ -110,9 +110,12 @@ export default function MyAttendancePage() {
     apiFetch<AcademicSession[]>("/academic-sessions")
       .then((s) => {
         setSessions(s);
+        const savedId = getSelectedAcademicSessionId();
+        const saved = savedId ? s.find((x) => String(x.id) === savedId) : null;
         const active = s.find((x) => x.is_active);
-        if (active) {
-          setSessionId(String(active.id));
+        const selected = saved || active;
+        if (selected) {
+          setSessionId(String(selected.id));
         }
       })
       .catch((e) => setError(e.message));
@@ -182,7 +185,7 @@ export default function MyAttendancePage() {
               <select
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm outline-none focus:border-slate-400"
                 value={sessionId}
-                onChange={(e) => setSessionId(e.target.value)}
+                onChange={(e) => { setSessionId(e.target.value); setSelectedAcademicSessionId(e.target.value); }}
               >
                 <option value="">Select session</option>
                 {sessions.map((s) => (

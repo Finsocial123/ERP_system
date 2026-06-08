@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, inspect, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.async_query import async_query
 from app.core.database import get_async_db
@@ -266,7 +267,11 @@ async def _teacher_for_user(db: AsyncSession, school_id: int, user: User, sessio
 
 
 async def _student_for_user(db: AsyncSession, school_id: int, user: User, session: AcademicSession | None) -> Student | None:
-    query = async_query(db, Student).filter(Student.school_id == school_id, Student.user_id == user.id)
+    query = async_query(db, Student).options(
+        selectinload(Student.school_class),
+        selectinload(Student.section),
+        selectinload(Student.guardian),
+    ).filter(Student.school_id == school_id, Student.user_id == user.id)
     query = _session_filter(query, Student, session)
     student = await query.first()
     if student:
@@ -280,7 +285,11 @@ async def _student_for_user(db: AsyncSession, school_id: int, user: User, sessio
         conditions.append(Student.admission_no == user.login_id)
     if not conditions:
         return None
-    query = async_query(db, Student).filter(Student.school_id == school_id, Student.is_active.is_(True), or_(*conditions))
+    query = async_query(db, Student).options(
+        selectinload(Student.school_class),
+        selectinload(Student.section),
+        selectinload(Student.guardian),
+    ).filter(Student.school_id == school_id, Student.is_active.is_(True), or_(*conditions))
     query = _session_filter(query, Student, session)
     return await query.first()
 
@@ -318,7 +327,11 @@ async def _children_for_parent(db: AsyncSession, school_id: int, user: User, ses
     guardian_ids = [guardian.id for guardian in guardians]
     if not guardian_ids:
         return []
-    query = async_query(db, Student).filter(
+    query = async_query(db, Student).options(
+        selectinload(Student.school_class),
+        selectinload(Student.section),
+        selectinload(Student.guardian),
+    ).filter(
         Student.school_id == school_id,
         Student.guardian_id.in_(guardian_ids),
         Student.is_active.is_(True),
@@ -432,7 +445,10 @@ async def _student_timetable_slots(db: AsyncSession, school_id: int, student: St
 
 
 async def _pending_homework_for_children(db: AsyncSession, school_id: int, children: list[Student], session: AcademicSession | None) -> int:
-    return sum((await _pending_homework_for_student(db, school_id, child, session) for child in children))
+    total = 0
+    for child in children:
+        total += await _pending_homework_for_student(db, school_id, child, session)
+    return total
 
 
 async def _teacher_exam_counts(db: AsyncSession, school_id: int, user: User, session: AcademicSession | None) -> dict[str, int]:
@@ -481,7 +497,10 @@ async def _published_exams_for_student(db: AsyncSession, school_id: int, student
 
 
 async def _published_exams_for_children(db: AsyncSession, school_id: int, children: list[Student], session: AcademicSession | None) -> int:
-    return sum((await _published_exams_for_student(db, school_id, child, session) for child in children))
+    total = 0
+    for child in children:
+        total += await _published_exams_for_student(db, school_id, child, session)
+    return total
 
 
 async def _recent_activities(db: AsyncSession, school_id: int, role: str, session: AcademicSession | None, limit: int = 8) -> list[dict[str, Any]]:
@@ -714,7 +733,9 @@ async def _student_dashboard(db: AsyncSession, school_id: int, user: User, sessi
 async def _parent_dashboard(db: AsyncSession, school_id: int, user: User, session: AcademicSession | None) -> dict[str, Any]:
     children = await _children_for_parent(db, school_id, user, session)
     pending_homework = await _pending_homework_for_children(db, school_id, children, session)
-    timetable_slots = sum((await _student_timetable_slots(db, school_id, child, session) for child in children))
+    timetable_slots = 0
+    for child in children:
+        timetable_slots += await _student_timetable_slots(db, school_id, child, session)
     published_results = await _published_exams_for_children(db, school_id, children, session)
     child_pending_fee_amount = await _pending_fee_amount_for_students(db, school_id, [child.id for child in children], session)
     low_att_count = 0

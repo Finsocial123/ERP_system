@@ -9,7 +9,7 @@ import {
 
 import AppShell from "@/components/AppShell";
 import { Button, Card, Input, Label } from "@/components/ui";
-import { apiFetch } from "@/lib/api";
+import { ACADEMIC_SESSION_CHANGED_EVENT, apiFetch, getSelectedAcademicSessionId, setSelectedAcademicSessionId } from "@/lib/api";
 import type { AcademicClass, AcademicSession, Section } from "@/types";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -171,11 +171,42 @@ export default function ReportsPage() {
       apiFetch<Section[]>("/sections"),
     ]).then(([s, c, sec]) => {
       setSessions(s); setClasses(c); setSections(sec);
+      const selected = getSelectedAcademicSessionId();
       const active = s.find((x) => x.is_active);
-      if (active) setSessionId(String(active.id));
+      const validSelected = selected && s.some((x) => String(x.id) === selected) ? selected : "";
+      const nextSessionId = validSelected || (active ? String(active.id) : "");
+      if (nextSessionId) {
+        setSessionId(nextSessionId);
+        setSelectedAcademicSessionId(nextSessionId);
+      }
     }).catch(() => {});
     loadOverview();
   }, []);
+
+  useEffect(() => {
+    const onSessionChange = () => {
+      const selected = getSelectedAcademicSessionId();
+      if (selected) setSessionId(selected);
+      setClassId("");
+      setSectionId("");
+    };
+    window.addEventListener(ACADEMIC_SESSION_CHANGED_EVENT, onSessionChange);
+    return () => window.removeEventListener(ACADEMIC_SESSION_CHANGED_EVENT, onSessionChange);
+  }, []);
+
+
+  useEffect(() => {
+    if (!sessionId) return;
+    Promise.all([
+      apiFetch<AcademicClass[]>("/classes"),
+      apiFetch<Section[]>("/sections"),
+    ]).then(([c, sec]) => {
+      setClasses(c);
+      setSections(sec);
+      setClassId("");
+      setSectionId("");
+    }).catch(() => {});
+  }, [sessionId]);
 
   useEffect(() => {
     if (tab === "overview") loadOverview();
@@ -183,7 +214,7 @@ export default function ReportsPage() {
     else if (tab === "students") loadStudents();
     else if (tab === "teachers") loadTeachers();
     else if (tab === "homework") loadHomework();
-  }, [tab]);
+  }, [tab, sessionId]);
 
   const loadOverview = async () => {
     setLoading(true); setError("");
@@ -301,7 +332,7 @@ export default function ReportsPage() {
                 <div>
                   <Label>Session</Label>
                   <select className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400"
-                    value={sessionId} onChange={(e) => setSessionId(e.target.value)}>
+                    value={sessionId} onChange={(e) => { setSessionId(e.target.value); setSelectedAcademicSessionId(e.target.value || null); }}>
                     <option value="">All sessions</option>
                     {sessions.map((s) => <option key={s.id} value={s.id}>{s.name}{s.is_active ? " ✓" : ""}</option>)}
                   </select>

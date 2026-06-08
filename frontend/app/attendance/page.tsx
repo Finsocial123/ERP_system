@@ -8,7 +8,7 @@ import {
 
 import AppShell from "@/components/AppShell";
 import { Button, Card, Input, Label } from "@/components/ui";
-import { apiFetch, getSavedAuth } from "@/lib/api";
+import { apiFetch, getSavedAuth, getSelectedAcademicSessionId, setSelectedAcademicSessionId } from "@/lib/api";
 import type { AcademicSession, Section } from "@/types";
 
 type AllowedClass = { id: number; name: string };
@@ -91,8 +91,11 @@ export default function AttendancePage() {
         setSessions(s);
         setClasses(c);
 
+        const savedId = getSelectedAcademicSessionId();
+        const saved = savedId ? s.find((x) => String(x.id) === savedId) : null;
         const active = s.find((x) => x.is_active);
-        if (active) setSessionId(String(active.id));
+        const selected = saved || active;
+        if (selected) setSessionId(String(selected.id));
 
         if (isTeacher && c.length === 0) {
           // teacher has no class assignments at all
@@ -263,7 +266,7 @@ export default function AttendancePage() {
               <select
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm outline-none focus:border-slate-400"
                 value={sessionId}
-                onChange={(e) => setSessionId(e.target.value)}
+                onChange={(e) => { setSessionId(e.target.value); setSelectedAcademicSessionId(e.target.value); }}
               >
                 <option value="">Select session</option>
                 {sessions.map((s) => (

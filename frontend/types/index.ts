@@ -71,6 +71,7 @@
 
   export type AcademicClass = {
     id: number;
+    academic_session_id?: number | null;
     name: string;
     code?: string | null;
     department_id?: number | null;
@@ -79,6 +80,7 @@
 
   export type Section = {
     id: number;
+    academic_session_id?: number | null;
     name: string;
     class_id: number;
     is_active: boolean;
@@ -86,6 +88,7 @@
 
   export type Subject = {
     id: number;
+    academic_session_id?: number | null;
     name: string;
     code?: string | null;
     department_id?: number | null;
@@ -95,6 +98,7 @@
 
   export type Department = {
     id: number;
+    academic_session_id?: number | null;
     name: string;
     code?: string | null;
     description?: string | null;
@@ -124,6 +128,7 @@
 
   export type Student = {
     id: number;
+    academic_session_id?: number | null;
     admission_no: string;
     roll_number?: string | null;
     first_name: string;
@@ -149,6 +154,7 @@
 
   export type Teacher = {
     id: number;
+    academic_session_id?: number | null;
     employee_id: string;
     full_name: string;
     email?: string | null;

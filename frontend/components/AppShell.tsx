@@ -27,9 +27,19 @@ import {
   ChevronRight,
 } from "lucide-react";
 
-import { apiFetch, clearAuth, dashboardPathForRole, fileUrl, getSavedAuth, AUTH_PROFILE_UPDATED_EVENT } from "@/lib/api";
+import {
+  ACADEMIC_SESSION_CHANGED_EVENT,
+  AUTH_PROFILE_UPDATED_EVENT,
+  apiFetch,
+  clearAuth,
+  dashboardPathForRole,
+  fileUrl,
+  getSavedAuth,
+  getSelectedAcademicSessionId,
+  setSelectedAcademicSessionId,
+} from "@/lib/api";
 import { BRANDING_UPDATED_EVENT, applyBrandingTheme, cacheBrandingTheme, getCachedBranding, normalizeBranding } from "@/lib/branding";
-import type { AuthResponse, SchoolBranding } from "@/types";
+import type { AcademicSession, AuthResponse, SchoolBranding } from "@/types";
 
 type NavItem = {
   href: string;
@@ -155,6 +165,8 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
     return getCachedBranding();
   });
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [academicSessions, setAcademicSessions] = useState<AcademicSession[]>([]);
+  const [selectedAcademicSessionId, setSelectedAcademicSessionState] = useState<string>("");
 
   useEffect(() => {
     const saved = getSavedAuth();
@@ -262,6 +274,65 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
     });
     return groups;
   }, [visibleNav]);
+
+
+
+  const canSelectPreviousSessions = auth ? ADMIN_ROLES.includes(auth.user.role) : false;
+
+  useEffect(() => {
+    if (!auth?.user.school_id) {
+      setAcademicSessions([]);
+      setSelectedAcademicSessionState("");
+      return;
+    }
+
+    let cancelled = false;
+    apiFetch<AcademicSession[]>("/academic-sessions")
+      .then((sessions) => {
+        if (cancelled) return;
+        setAcademicSessions(sessions);
+
+        const active = sessions.find((item) => item.is_active) || sessions[0];
+        const savedId = getSelectedAcademicSessionId();
+        const saved = savedId ? sessions.find((item) => String(item.id) === savedId) : null;
+        const next = saved && (canSelectPreviousSessions || saved.is_active) ? saved : active;
+
+        if (next) {
+          setSelectedAcademicSessionState(String(next.id));
+          setSelectedAcademicSessionId(next.id);
+        } else {
+          setSelectedAcademicSessionState("");
+          setSelectedAcademicSessionId(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAcademicSessions([]);
+          setSelectedAcademicSessionState("");
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, [auth?.user.school_id, auth?.user.role, canSelectPreviousSessions]);
+
+  useEffect(() => {
+    const onSessionChanged = (event: Event) => {
+      const next = (event as CustomEvent<string | null>).detail;
+      setSelectedAcademicSessionState(next || "");
+    };
+    window.addEventListener(ACADEMIC_SESSION_CHANGED_EVENT, onSessionChanged);
+    return () => window.removeEventListener(ACADEMIC_SESSION_CHANGED_EVENT, onSessionChanged);
+  }, []);
+
+  const handleAcademicSessionChange = (value: string) => {
+    const session = academicSessions.find((item) => String(item.id) === value);
+    if (!session) return;
+    if (!canSelectPreviousSessions && !session.is_active) return;
+    setSelectedAcademicSessionState(value);
+    setSelectedAcademicSessionId(value);
+    router.refresh();
+  };
+
 
   const logout = () => { clearAuth(); router.replace("/login"); };
 
@@ -393,6 +464,25 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
           display: flex; align-items: center; justify-content: center;
           font-size: 0.6rem; font-weight: 800;
           line-height: 1;
+        }
+        .as-session-select {
+          height: 34px;
+          max-width: 220px;
+          border-radius: 9px;
+          border: 1px solid #e2e8f0;
+          background: #fff;
+          color: #0f172a;
+          padding: 0 10px;
+          font-size: 0.78rem;
+          font-weight: 600;
+          outline: none;
+        }
+        .as-session-select:focus {
+          border-color: var(--erp-primary, #7c3aed);
+          box-shadow: 0 0 0 3px color-mix(in srgb, var(--erp-primary, #7c3aed) 15%, transparent);
+        }
+        @media (max-width: 720px) {
+          .as-session-select { max-width: 145px; }
         }
         .as-logout-btn {
           display: inline-flex; align-items: center; gap: 5px;
@@ -558,6 +648,25 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {academicSessions.length > 0 && (
+                <select
+                  className="as-session-select"
+                  value={selectedAcademicSessionId}
+                  onChange={(event) => handleAcademicSessionChange(event.target.value)}
+                  title="Academic session"
+                  aria-label="Select academic session"
+                >
+                  {academicSessions.map((session) => (
+                    <option
+                      key={session.id}
+                      value={session.id}
+                      disabled={!canSelectPreviousSessions && !session.is_active}
+                    >
+                      {session.name}{session.is_active ? " • Active" : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
               <button
                 type="button"
                 className={`as-icon-btn as-bell-btn${pathname === "/notifications" ? " active" : ""}`}
@@ -587,7 +696,7 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
             </div>
           </header>
 
-          <main style={{ padding: "24px 20px", minHeight: "calc(100vh - 60px)" }}>
+          <main key={selectedAcademicSessionId || "no-session"} style={{ padding: "24px 20px", minHeight: "calc(100vh - 60px)" }}>
             {children}
           </main>
         </div>

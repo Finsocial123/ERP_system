@@ -4,13 +4,31 @@ import { clearCachedBranding } from "@/lib/branding";
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
 const TOKEN_KEY = "erp_access_token";
 const AUTH_KEY = "erp_auth";
+const ACADEMIC_SESSION_KEY = "erp_selected_academic_session_id";
 
 /** Fired when the saved auth user data is updated (e.g. after profile photo upload) */
 export const AUTH_PROFILE_UPDATED_EVENT = "erp_auth_profile_updated";
+export const ACADEMIC_SESSION_CHANGED_EVENT = "erp_academic_session_changed";
 
 export function getToken() {
   if (typeof window === "undefined") return null;
   return localStorage.getItem(TOKEN_KEY);
+}
+
+
+export function getSelectedAcademicSessionId() {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(ACADEMIC_SESSION_KEY);
+}
+
+export function setSelectedAcademicSessionId(sessionId: number | string | null) {
+  if (typeof window === "undefined") return;
+  if (sessionId === null || sessionId === "") {
+    localStorage.removeItem(ACADEMIC_SESSION_KEY);
+  } else {
+    localStorage.setItem(ACADEMIC_SESSION_KEY, String(sessionId));
+  }
+  window.dispatchEvent(new CustomEvent(ACADEMIC_SESSION_CHANGED_EVENT, { detail: sessionId ? String(sessionId) : null }));
 }
 
 export function saveAuth(auth: AuthResponse) {
@@ -44,6 +62,7 @@ export function updateSavedAuthUser(patch: Partial<AuthResponse["user"]>) {
 export function clearAuth() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(AUTH_KEY);
+  localStorage.removeItem(ACADEMIC_SESSION_KEY);
   clearCachedBranding();
 }
 
@@ -60,6 +79,8 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
+  const selectedSessionId = getSelectedAcademicSessionId();
+  if (selectedSessionId) headers.set("X-Academic-Session-Id", selectedSessionId);
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -91,6 +112,8 @@ export async function apiUpload<T>(path: string, formData: FormData, options: Re
   const token = getToken();
   const headers = new Headers(options.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
+  const selectedSessionId = getSelectedAcademicSessionId();
+  if (selectedSessionId) headers.set("X-Academic-Session-Id", selectedSessionId);
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,

@@ -1,21 +1,19 @@
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.client import client
 from app.core.config import settings, MODEL
-from app.models.notice import Notice, NoticeAudience, NoticeRead, NoticeStatus
 from app.models.user import User, UserRole
 from app.schemas.notice import NoticeCreate, NoticeListOut, NoticeOut, NoticeUpdate, NoticePriority
 from sqlalchemy.dialects.postgresql import insert
 from app.models.notice import Notice, NoticeAudience, NoticeClassAudience, NoticeRead, NoticeStatus
-from app.models.people import Teacher, TeacherSubject, ClassTeacherAssignment 
-from app.models.people import Student
+from app.models.academic import AcademicSession
+from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.school import School
-from sqlalchemy import or_
 
 
 # Roles allowed to create/manage notices
@@ -31,6 +29,161 @@ ADMIN_VIEWER_ROLES = {
     UserRole.SCHOOL_OWNER.value,
     UserRole.SCHOOL_ADMIN.value,
 }
+
+
+async def _active_session_id(db: AsyncSession, school_id: int | None) -> int | None:
+    if not school_id:
+        return None
+
+    result = await db.execute(
+        select(AcademicSession.id)
+        .where(
+            AcademicSession.school_id == school_id,
+            AcademicSession.is_active.is_(True),
+        )
+        .order_by(AcademicSession.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _student_class_pairs_for_user(
+    db: AsyncSession, user_id: int, school_id: int, session_id: int | None = None
+) -> set[tuple[int, int | None]]:
+    stmt = select(Student.class_id, Student.section_id).where(
+        Student.user_id == user_id,
+        Student.school_id == school_id,
+        Student.is_active.is_(True),
+        Student.class_id.isnot(None),
+    )
+    if session_id is not None:
+        stmt = stmt.where(Student.academic_session_id == session_id)
+
+    result = await db.execute(stmt)
+    return {(row.class_id, row.section_id) for row in result.all()}
+
+
+async def _parent_child_class_pairs_for_user(
+    db: AsyncSession, user_id: int, school_id: int, session_id: int | None = None
+) -> set[tuple[int, int | None]]:
+    stmt = (
+        select(Student.class_id, Student.section_id)
+        .join(ParentGuardian, ParentGuardian.id == Student.guardian_id)
+        .where(
+            ParentGuardian.user_id == user_id,
+            ParentGuardian.school_id == school_id,
+            ParentGuardian.is_active.is_(True),
+            Student.school_id == school_id,
+            Student.is_active.is_(True),
+            Student.class_id.isnot(None),
+        )
+    )
+    if session_id is not None:
+        stmt = stmt.where(Student.academic_session_id == session_id)
+
+    result = await db.execute(stmt)
+    return {(row.class_id, row.section_id) for row in result.all()}
+
+
+async def _teacher_ids_for_user(
+    db: AsyncSession, user_id: int, school_id: int, session_id: int | None = None
+) -> list[int]:
+    stmt = select(Teacher.id).where(
+        Teacher.user_id == user_id,
+        Teacher.school_id == school_id,
+        Teacher.is_active.is_(True),
+    )
+    if session_id is not None:
+        stmt = stmt.where(Teacher.academic_session_id == session_id)
+
+    result = await db.execute(stmt.order_by(Teacher.id.desc()))
+    return list(dict.fromkeys(result.scalars().all()))
+
+
+async def _class_pairs_for_user(db: AsyncSession, user: User) -> set[tuple[int, int | None]]:
+    if not user.school_id:
+        return set()
+
+    session_id = await _active_session_id(db, user.school_id)
+
+    if user.role == UserRole.STUDENT.value:
+        return await _student_class_pairs_for_user(db, user.id, user.school_id, session_id)
+
+    if user.role == UserRole.PARENT.value:
+        return await _parent_child_class_pairs_for_user(db, user.id, user.school_id, session_id)
+
+    if user.role == UserRole.TEACHER.value:
+        return await _get_teacher_allowed_pairs(db, user.id, user.school_id, session_id)
+
+    return set()
+
+
+def _class_audience_condition_for_pairs(pairs: set[tuple[int, int | None]]):
+    valid_pairs = {(class_id, section_id) for class_id, section_id in pairs if class_id is not None}
+    if not valid_pairs:
+        return None
+
+    return NoticeClassAudience.class_id.in_({class_id for class_id, _ in valid_pairs}) & or_(
+        *[
+            (
+                (NoticeClassAudience.class_id == class_id)
+                & (
+                    NoticeClassAudience.section_id.is_(None)
+                    | (NoticeClassAudience.section_id == section_id)
+                )
+            )
+            for class_id, section_id in valid_pairs
+        ]
+    )
+
+
+async def _apply_viewer_filters(
+    query,
+    db: AsyncSession,
+    current_user: User,
+    include_created_by_self: bool = True,
+):
+    if current_user.role in ADMIN_VIEWER_ROLES:
+        return query
+
+    query = query.where(
+        ~Notice.audiences.any()
+        | Notice.audiences.any(NoticeAudience.role == current_user.role)
+    )
+
+    pairs = await _class_pairs_for_user(db, current_user)
+    pair_condition = _class_audience_condition_for_pairs(pairs)
+
+    if pair_condition is None:
+        class_visibility = ~Notice.class_audiences.any()
+    else:
+        class_visibility = ~Notice.class_audiences.any() | Notice.class_audiences.any(pair_condition)
+
+    if include_created_by_self:
+        class_visibility = class_visibility | (Notice.created_by == current_user.id)
+
+    return query.where(class_visibility)
+
+
+async def _assert_notice_visible(db: AsyncSession, notice: Notice, user: User) -> None:
+    if user.role in ADMIN_VIEWER_ROLES or notice.created_by == user.id:
+        return
+
+    if notice.audiences:
+        allowed_roles = {audience.role for audience in notice.audiences}
+        if user.role not in allowed_roles:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Not in this notice's audience")
+
+    if not notice.class_audiences:
+        return
+
+    user_pairs = await _class_pairs_for_user(db, user)
+    for audience in notice.class_audiences:
+        for class_id, section_id in user_pairs:
+            if audience.class_id == class_id and (audience.section_id is None or audience.section_id == section_id):
+                return
+
+    raise HTTPException(status.HTTP_403_FORBIDDEN, "Not in this notice's audience")
 
 
 def _can_manage(user: User) -> bool:
@@ -53,7 +206,7 @@ def _load_options():
 
 #     content = payload.content
 #     if getattr(payload, "enhance", False):
-#         content = await enhance_notice_content(content, current_user)
+#         content = await enhance_notice_content(content, current_user, db)
 
 #     notice = Notice(
 #         school_id=current_user.school_id,
@@ -106,7 +259,7 @@ async def create_notice(
 
     content = payload.content
     if getattr(payload, "enhance", False):
-        content = await enhance_notice_content(content, current_user)
+        content = await enhance_notice_content(content, current_user, db)
 
     notice = Notice(
         school_id=current_user.school_id,
@@ -155,25 +308,7 @@ async def get_notice(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Notice not found")
     
 
-    if notice.class_audiences and notice.created_by != current_user.id and current_user.role not in {
-    UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value
-    }:
-        if current_user.role == UserRole.STUDENT.value:
-            student_result = await db.execute(
-                select(Student.class_id, Student.section_id).where(
-                    Student.user_id == current_user.id,
-                    Student.school_id == current_user.school_id,
-                )
-            )
-            student = student_result.first()
-            if not student:
-                raise HTTPException(status.HTTP_403_FORBIDDEN, "Not in this notice's audience")
-            allowed_pairs = {(a.class_id, a.section_id) for a in notice.class_audiences}
-            if (student.class_id, student.section_id) not in allowed_pairs and \
-               (student.class_id, None) not in allowed_pairs:
-                raise HTTPException(status.HTTP_403_FORBIDDEN, "Not in this notice's audience")
-
-    _check_audience(notice, current_user)
+    await _assert_notice_visible(db, notice, current_user)
 
     read_result = await db.execute(
         select(NoticeRead).where(
@@ -215,77 +350,13 @@ async def list_notices(
         .where(Notice.school_id == current_user.school_id)
     )
 
-    if not created_by_self and current_user.role not in ADMIN_VIEWER_ROLES:
-        base_query = base_query.where(
-            ~Notice.audiences.any()
-            | Notice.audiences.any(NoticeAudience.role == current_user.role)
+    if not created_by_self:
+        base_query = await _apply_viewer_filters(
+            base_query,
+            db,
+            current_user,
+            include_created_by_self=True,
         )
-
-    if not created_by_self and current_user.role not in ADMIN_VIEWER_ROLES:
-        if current_user.role == UserRole.STUDENT.value:
-            student_result = await db.execute(
-                select(Student.class_id, Student.section_id).where(
-                    Student.user_id == current_user.id,
-                    Student.school_id == current_user.school_id,
-                    Student.is_active.is_(True),
-                )
-            )
-            student = student_result.first()
-            if student and student.class_id:
-                base_query = base_query.where(
-                    ~Notice.class_audiences.any()
-                    | Notice.class_audiences.any(
-                        (NoticeClassAudience.class_id == student.class_id)
-                        & (
-                            NoticeClassAudience.section_id.is_(None)
-                            | (NoticeClassAudience.section_id == student.section_id)
-                        )
-                    )
-                )
-            else:
-                base_query = base_query.where(~Notice.class_audiences.any())
-
-        elif current_user.role == UserRole.TEACHER.value:
-            teacher_result = await db.execute(
-                select(Teacher).where(
-                    Teacher.user_id == current_user.id,
-                    Teacher.school_id == current_user.school_id,
-                    Teacher.is_active.is_(True),
-                )
-            )
-            teacher = teacher_result.scalar_one_or_none()
-            if teacher:
-                subject_classes = select(
-                    TeacherSubject.class_id, TeacherSubject.section_id
-                ).where(TeacherSubject.teacher_id == teacher.id)
-                class_teacher_classes = select(
-                    ClassTeacherAssignment.class_id, ClassTeacherAssignment.section_id
-                ).where(ClassTeacherAssignment.teacher_id == teacher.id)
-                combined = subject_classes.union(class_teacher_classes)
-                pairs_result = await db.execute(combined)
-                pairs = pairs_result.all()
-                if pairs:
-                    class_conditions = [
-                        (NoticeClassAudience.class_id == p.class_id)
-                        & (
-                            NoticeClassAudience.section_id.is_(None)
-                            | (NoticeClassAudience.section_id == p.section_id)
-                        )
-                        for p in pairs
-                    ]
-                    base_query = base_query.where(
-                        ~Notice.class_audiences.any()
-                        | Notice.class_audiences.any(or_(*class_conditions))
-                        | (Notice.created_by == current_user.id)
-                    )
-                else:
-                    base_query = base_query.where(
-                        ~Notice.class_audiences.any()
-                        | (Notice.created_by == current_user.id)
-                    )
-        else:
-            base_query = base_query.where(~Notice.class_audiences.any())
-
 
     if created_by_self:
         base_query = base_query.where(Notice.created_by == current_user.id)
@@ -357,11 +428,12 @@ async def list_notices(
         )
     )
 
-    if current_user.role not in ADMIN_VIEWER_ROLES:
-        unread_query = unread_query.where(
-            ~Notice.audiences.any()
-            | Notice.audiences.any(NoticeAudience.role == current_user.role)
-        )
+    unread_query = await _apply_viewer_filters(
+        unread_query,
+        db,
+        current_user,
+        include_created_by_self=False,
+    )
 
     unread_result = await db.execute(unread_query)
     unread_count = unread_result.scalar_one()
@@ -516,38 +588,45 @@ async def delete_notice(
 
 
 async def _get_teacher_allowed_pairs(
-    db: AsyncSession, user_id: int, school_id: int
+    db: AsyncSession,
+    user_id: int,
+    school_id: int,
+    session_id: int | None = None,
 ) -> set[tuple[int, int | None]]:
+    """Return all classes/sections assigned to a teacher user.
+
+    A teacher user can have one Teacher row per academic session. Do not use
+    scalar_one_or_none() here because copied academic sessions can legitimately
+    create multiple active teacher rows for the same user_id.
     """
-    Returns the set of (class_id, section_id) pairs the teacher is allowed
-    to target, from both subject assignments and class-teacher assignments.
-    Returns None if the user has no Teacher profile (shouldn't happen but safe).
-    """
-    result = await db.execute(
-        select(Teacher)
-        .options(
-            selectinload(Teacher.subject_assignments),
-            selectinload(Teacher.class_teacher_assignments),
-        )
-        .where(
-            Teacher.user_id == user_id,
-            Teacher.school_id == school_id,
-            Teacher.is_active.is_(True),
-        )
-    )
-    teacher = result.scalar_one_or_none()
-    if not teacher:
+    if session_id is None:
+        session_id = await _active_session_id(db, school_id)
+
+    teacher_ids = await _teacher_ids_for_user(db, user_id, school_id, session_id)
+    if not teacher_ids:
         return set()
 
-    pairs: set[tuple[int, int | None]] = set()
+    subject_classes = select(
+        TeacherSubject.class_id, TeacherSubject.section_id
+    ).where(TeacherSubject.teacher_id.in_(teacher_ids))
 
-    for a in teacher.subject_assignments:
-        pairs.add((a.class_id, a.section_id))
+    class_teacher_classes = select(
+        ClassTeacherAssignment.class_id, ClassTeacherAssignment.section_id
+    ).where(ClassTeacherAssignment.teacher_id.in_(teacher_ids))
 
-    for a in teacher.class_teacher_assignments:
-        pairs.add((a.class_id, a.section_id))
+    if session_id is not None:
+        subject_classes = subject_classes.where(TeacherSubject.academic_session_id == session_id)
+        class_teacher_classes = class_teacher_classes.where(
+            ClassTeacherAssignment.academic_session_id == session_id
+        )
 
-    return pairs
+    combined = subject_classes.union(class_teacher_classes)
+    pairs_result = await db.execute(combined)
+    return {
+        (row.class_id, row.section_id)
+        for row in pairs_result.all()
+        if row.class_id is not None
+    }
 
 
 

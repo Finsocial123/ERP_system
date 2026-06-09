@@ -13,6 +13,7 @@ from app.models.school import School
 from app.models.user import User, UserRole
 from app.schemas.profile import ProfileResponse, ProfileUpdate
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from app.core.async_query import async_query
 router = APIRouter(prefix='/profile', tags=['Profile'])
 ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
@@ -72,16 +73,31 @@ def _teacher_payload(teacher: Teacher, maps: dict[str, dict[int, Any]] | None=No
 def _guardian_payload(guardian: ParentGuardian) -> dict[str, Any]:
     return {'id': guardian.id, 'full_name': guardian.full_name, 'relation': guardian.relation, 'email': guardian.email, 'phone': guardian.phone, 'alternate_phone': guardian.alternate_phone, 'occupation': guardian.occupation, 'address': guardian.address, 'user_id': guardian.user_id}
 
+
+def _student_eager_options():
+    """Relationships used by profile responses must be loaded explicitly.
+
+    Async SQLAlchemy cannot run implicit lazy database IO when code touches
+    attributes such as student.guardian. Without this, the profile page can
+    raise MissingGreenlet after moving to asyncpg/Supabase.
+    """
+    return (
+        selectinload(Student.guardian),
+        selectinload(Student.school_class),
+        selectinload(Student.section),
+    )
+
+
 async def _find_student_for_user(db: AsyncSession, user: User) -> Student | None:
     if not user.school_id:
         return None
-    student = await async_query(db, Student).filter(Student.school_id == user.school_id, Student.user_id == user.id).first()
+    student = await async_query(db, Student).options(*_student_eager_options()).filter(Student.school_id == user.school_id, Student.user_id == user.id).first()
     if student:
         return student
     identifiers = {item for item in [user.email, user.login_id] if item}
     if not identifiers:
         return None
-    matches = await async_query(db, Student).filter(Student.school_id == user.school_id, Student.email.in_(identifiers)).limit(2).all()
+    matches = await async_query(db, Student).options(*_student_eager_options()).filter(Student.school_id == user.school_id, Student.email.in_(identifiers)).limit(2).all()
     return matches[0] if len(matches) == 1 else None
 
 async def _find_teacher_for_user(db: AsyncSession, user: User) -> Teacher | None:
@@ -159,7 +175,7 @@ async def _build_parent_profile(db: AsyncSession, user: User, maps: dict[str, di
     guardian_ids = [item.id for item in guardians]
     children: list[dict[str, Any]] = []
     if guardian_ids:
-        students = await async_query(db, Student).filter(Student.school_id == user.school_id, Student.guardian_id.in_(guardian_ids)).order_by(Student.first_name.asc(), Student.admission_no.asc()).all()
+        students = await async_query(db, Student).options(*_student_eager_options()).filter(Student.school_id == user.school_id, Student.guardian_id.in_(guardian_ids), Student.is_active.is_(True)).order_by(Student.first_name.asc(), Student.admission_no.asc()).all()
         children = [{**_student_payload(student, maps), 'class_teachers': await _class_teacher_items(db, user.school_id, student.class_id, student.section_id, maps), 'subject_teachers': await _subject_teacher_items(db, user.school_id, student.class_id, student.section_id, maps)} for student in students]
     primary_guardian = guardians[0] if guardians else None
     return {'guardian': _guardian_payload(primary_guardian) if primary_guardian else None, 'guardians': [_guardian_payload(item) for item in guardians], 'children': children, 'children_count': len(children), 'message': None if guardians else 'No guardian record is linked to this parent login yet.'}
@@ -170,7 +186,7 @@ def _scope_key(class_id: int | None, section_id: int | None) -> tuple[int | None
 async def _students_for_scope(db: AsyncSession, school_id: int, class_id: int | None, section_id: int | None, maps: dict[str, dict[int, Any]]) -> list[dict[str, Any]]:
     if class_id is None:
         return []
-    query = async_query(db, Student).filter(Student.school_id == school_id, Student.class_id == class_id)
+    query = async_query(db, Student).options(*_student_eager_options()).filter(Student.school_id == school_id, Student.class_id == class_id, Student.is_active.is_(True))
     if section_id is not None:
         query = query.filter(Student.section_id == section_id)
     return [_student_payload(item, maps) for item in await query.order_by(Student.first_name.asc(), Student.admission_no.asc()).all()]

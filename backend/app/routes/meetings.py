@@ -35,8 +35,17 @@ async def teacher_create_class_meeting(
     payload: TeacherMeetingCreate, db: AsyncSession=Depends(get_async_db), 
     current_user: User=Depends(require_roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER))
 ):
-    result = await db.execute(select(Teacher).where(Teacher.user_id == current_user.id, Teacher.school_id == current_user.school_id, Teacher.is_active == True))
-    teacher = result.scalar_one_or_none()
+    result = await db.execute(
+        select(Teacher)
+        .where(
+            Teacher.user_id == current_user.id,
+            Teacher.school_id == current_user.school_id,
+            Teacher.is_active.is_(True),
+        )
+        .order_by(Teacher.academic_session_id.desc().nullslast(), Teacher.id.desc())
+        .limit(1)
+    )
+    teacher = result.scalars().first()
     if not teacher:
         raise HTTPException(403, 'No teacher profile found for this user')
     try:

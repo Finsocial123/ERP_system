@@ -31,7 +31,7 @@ async def create_teacher_class_meeting(
         query = query.where(TeacherSubject.section_id == section_id)
 
     result = await db.execute(query)
-    assignment = result.scalar_one_or_none()
+    assignment = result.scalars().first()
     if not assignment:
         raise PermissionError("Teacher does not teach this class")
 
@@ -168,7 +168,7 @@ async def get_active_meeting_for_class(
     )
 
     result = await db.execute(query)
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 async def list_meetings(
@@ -191,9 +191,16 @@ async def list_meetings(
 
     if current_user.role == UserRole.STUDENT.value:
         student_result = await db.execute(
-            select(Student).where(Student.user_id == current_user.id)
+            select(Student)
+            .where(
+                Student.user_id == current_user.id,
+                Student.school_id == current_user.school_id,
+                Student.is_active.is_(True),
+            )
+            .order_by(Student.academic_session_id.desc().nullslast(), Student.id.desc())
+            .limit(1)
         )
-        student = student_result.scalar_one_or_none()
+        student = student_result.scalars().first()
         if not student:
             return {"items": [], "total": 0}
 

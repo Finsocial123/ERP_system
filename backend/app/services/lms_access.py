@@ -132,7 +132,16 @@ def course_matches_student(course: Course, student: Student) -> bool:
     return bool(course_section and student_section and course_section.name == student_section.name)
 
 async def get_course_or_404(db: AsyncSession, school_id: int, course_id: int) -> Course:
-    course = await async_query(db, Course).options(joinedload(Course.school_class), joinedload(Course.section)).filter(Course.id == course_id, Course.school_id == school_id, Course.is_active.is_(True)).first()
+    # Load every relationship used by the LMS course detail/payload code up front.
+    # In AsyncSession, touching an unloaded relationship later (course.teacher,
+    # course.subject, etc.) triggers lazy I/O and raises MissingGreenlet.
+    course = await async_query(db, Course).options(
+        joinedload(Course.teacher),
+        joinedload(Course.school_class),
+        joinedload(Course.section),
+        joinedload(Course.subject),
+        joinedload(Course.academic_session),
+    ).filter(Course.id == course_id, Course.school_id == school_id, Course.is_active.is_(True)).first()
     if not course:
         raise HTTPException(status_code=404, detail='Course not found')
     return course
@@ -186,7 +195,17 @@ async def ensure_enrollment_for_user_student(db: AsyncSession, school_id: int, u
     return enrollment
 
 async def async_get_course_or_404(db: AsyncSession, school_id: int, course_id: int) -> Course:
-    result = await db.execute(select(Course).where(Course.id == course_id, Course.school_id == school_id, Course.is_active.is_(True)))
+    result = await db.execute(
+        select(Course)
+        .options(
+            joinedload(Course.teacher),
+            joinedload(Course.school_class),
+            joinedload(Course.section),
+            joinedload(Course.subject),
+            joinedload(Course.academic_session),
+        )
+        .where(Course.id == course_id, Course.school_id == school_id, Course.is_active.is_(True))
+    )
     course = result.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail='Course not found')

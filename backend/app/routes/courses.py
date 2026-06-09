@@ -5,7 +5,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 from app.core.database import get_async_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
-from app.models.academic import SchoolClass, Section, Subject
+from app.models.academic import AcademicSession, SchoolClass, Section, Subject
 from app.models.course import Course
 from app.models.enrollment import Enrollment
 from app.models.lesson import Lesson
@@ -29,16 +29,72 @@ def _safe_status(value: str | None) -> str:
         raise HTTPException(status_code=400, detail='Course status must be DRAFT, PUBLISHED, or ARCHIVED')
     return status_value
 
-async def _teacher_name(db: AsyncSession, school_id: int, teacher_user: User | None) -> str | None:
-    if not teacher_user:
+async def _teacher_name(db: AsyncSession, school_id: int, teacher_user_id: int | None, teacher_user: User | None=None) -> str | None:
+    """Resolve the displayed course teacher name without lazy-loading Course.teacher."""
+    if teacher_user_id is None and teacher_user is None:
         return None
-    teacher = await async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.user_id == teacher_user.id).first()
-    return teacher.full_name if teacher else teacher_user.full_name
+    if teacher_user_id is not None:
+        teacher = await async_query(db, Teacher).filter(
+            Teacher.school_id == school_id,
+            Teacher.user_id == teacher_user_id,
+            Teacher.is_active.is_(True),
+        ).order_by(Teacher.id.desc()).first()
+        if teacher:
+            return teacher.full_name
+    if teacher_user:
+        return teacher_user.full_name
+    if teacher_user_id is not None:
+        user = await async_query(db, User).filter(User.id == teacher_user_id).first()
+        return user.full_name if user else None
+    return None
+
+async def _related_item(db: AsyncSession, course: Course, attr_name: str, model, item_id: int | None):
+    """Return a related object without triggering SQLAlchemy async lazy loading."""
+    loaded = course.__dict__.get(attr_name)
+    if loaded is not None or item_id is None:
+        return loaded
+    query = async_query(db, model).filter(model.id == item_id)
+    if getattr(model, "school_id", None) is not None and course.school_id is not None:
+        query = query.filter(model.school_id == course.school_id)
+    return await query.first()
 
 async def _course_payload(db: AsyncSession, course: Course, progress: float | None=None, student: Student | None=None) -> CourseOut:
     lessons_count = await async_query(db, Lesson).filter(Lesson.course_id == course.id).count()
     enrolled_count = await async_query(db, Enrollment).filter(Enrollment.course_id == course.id).count()
-    return CourseOut(id=course.id, title=course.title, description=course.description, thumbnail_url=course.thumbnail_url, school_id=course.school_id, class_id=course.class_id, section_id=course.section_id, subject_id=course.subject_id, academic_session_id=course.academic_session_id, teacher_id=course.teacher_id, teacher_name=await _teacher_name(db, course.school_id or 0, course.teacher), class_name=course.school_class.name if course.school_class else None, section_name=course.section.name if course.section else None, subject_name=course.subject.name if course.subject else None, academic_session_name=course.academic_session.name if course.academic_session else None, status=course.status or 'PUBLISHED', is_active=bool(course.is_active), lessons_count=lessons_count, enrolled_students_count=enrolled_count, progress=progress, student_id=student.id if student else None, student_name=full_student_name(student) if student else None, admission_no=student.admission_no if student else None, created_at=course.created_at, updated_at=course.updated_at)
+
+    school_class = await _related_item(db, course, "school_class", SchoolClass, course.class_id)
+    section = await _related_item(db, course, "section", Section, course.section_id)
+    subject = await _related_item(db, course, "subject", Subject, course.subject_id)
+    academic_session = await _related_item(db, course, "academic_session", AcademicSession, course.academic_session_id)
+    teacher_user = course.__dict__.get("teacher")
+
+    return CourseOut(
+        id=course.id,
+        title=course.title,
+        description=course.description,
+        thumbnail_url=course.thumbnail_url,
+        school_id=course.school_id,
+        class_id=course.class_id,
+        section_id=course.section_id,
+        subject_id=course.subject_id,
+        academic_session_id=course.academic_session_id,
+        teacher_id=course.teacher_id,
+        teacher_name=await _teacher_name(db, course.school_id or 0, course.teacher_id, teacher_user),
+        class_name=school_class.name if school_class else None,
+        section_name=section.name if section else None,
+        subject_name=subject.name if subject else None,
+        academic_session_name=academic_session.name if academic_session else None,
+        status=course.status or 'PUBLISHED',
+        is_active=bool(course.is_active),
+        lessons_count=lessons_count,
+        enrolled_students_count=enrolled_count,
+        progress=progress,
+        student_id=student.id if student else None,
+        student_name=full_student_name(student) if student else None,
+        admission_no=student.admission_no if student else None,
+        created_at=course.created_at,
+        updated_at=course.updated_at,
+    )
 
 def _base_course_query(db: AsyncSession, school_id: int):
     return async_query(db, Course).options(joinedload(Course.teacher), joinedload(Course.school_class), joinedload(Course.section), joinedload(Course.subject), joinedload(Course.academic_session)).filter(Course.school_id == school_id, Course.is_active.is_(True))
@@ -77,6 +133,7 @@ async def _parent_course_rows(db: AsyncSession, school_id: int, user: User) -> l
             rows.append(await _course_payload(db, course, progress=progress, student=child))
     return rows
 
+
 async def _teacher_for_course_meta(
     db: AsyncSession,
     school_id: int,
@@ -96,13 +153,7 @@ async def _teacher_for_course_meta(
 
 
 def _teacher_meta_items(teachers: list[Teacher]) -> list[CourseMetaItem]:
-    """Return LMS teacher choices keyed by login user id without duplicates.
-
-    Teachers are copied when a new academic session is created, so the same
-    login user can appear in multiple Teacher rows. LMS courses store
-    Course.teacher_id as the User.id, therefore the dropdown must expose each
-    user only once. Duplicate ids were causing React's "same key" warning.
-    """
+    """Return LMS teacher choices keyed by login user id without duplicates."""
     seen_user_ids: set[int] = set()
     items: list[CourseMetaItem] = []
     for teacher in teachers:

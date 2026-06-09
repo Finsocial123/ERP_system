@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from app.dependencies.auth import current_school_id
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Annotated
 from datetime import datetime, timezone
@@ -138,7 +139,7 @@ async def get_my_submission(assignment_id: int, db: AsyncSession=Depends(get_asy
     return submission
 
 @router.post('/api/course/{course_id}/lessons/{lesson_id}/quiz')
-async def generate_lesson_quiz(course_id: int, lesson_id: int, request: QuizRequest, db: Annotated[AsyncSession, Depends(get_async_db)]):
+async def generate_lesson_quiz(course_id: int, lesson_id: int, request: QuizRequest, db: Annotated[AsyncSession, Depends(get_async_db)], school_id: int = Depends(current_school_id)):
     result = await db.execute(select(Course).where(course_id == Course.id))
     course = result.scalars().first()
     if not course:
@@ -151,7 +152,7 @@ async def generate_lesson_quiz(course_id: int, lesson_id: int, request: QuizRequ
     if not chunk_count:
         raise HTTPException(status_code=422, detail='No content found for this lesson. Upload a PDF or video first.')
     try:
-        quiz = await generate_quiz(lesson_id=lesson_id, num_questions=request.num_questions, difficulty=request.difficulty, db=db, include_answers=True)
+        quiz = await generate_quiz(lesson_id=lesson_id, num_questions=request.num_questions, difficulty=request.difficulty, db=db, include_answers=True, school_id=school_id)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail='Failed to parse quiz response')
     except Exception as e:

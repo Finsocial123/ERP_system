@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 from app.core.database import get_async_db
 from app.dependencies.auth import current_school_id, get_current_user, require_school_admin
-from app.dependencies.academic_session import selected_academic_session
+from app.dependencies.academic_session import selected_academic_session, require_writable_academic_session, writable_selected_academic_session, assert_item_session_is_writable
 from app.models.academic import AcademicSession, SchoolClass, Section, Subject
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.timetable import TimetableDay, TimetableEntry, TimetablePeriod
@@ -16,7 +16,7 @@ from app.schemas.common import MessageResponse
 from app.schemas.timetable import TimetableDayCreate, TimetableDayRead, TimetableDayUpdate, TimetableEntryCreate, TimetableEntryRead, TimetableEntryUpdate, TimetableGridResponse, TimetableMetaItem, TimetableMetaResponse, TimetablePeriodCreate, TimetablePeriodRead, TimetablePeriodUpdate
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
-router = APIRouter(prefix='/timetable', tags=['Phase 7 - Timetable Management'])
+router = APIRouter(prefix='/timetable', tags=['Phase 7 - Timetable Management'], dependencies=[Depends(require_writable_academic_session)])
 ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
 DEFAULT_DAYS = [('MONDAY', 'Monday', 1), ('TUESDAY', 'Tuesday', 2), ('WEDNESDAY', 'Wednesday', 3), ('THURSDAY', 'Thursday', 4), ('FRIDAY', 'Friday', 5), ('SATURDAY', 'Saturday', 6)]
 
@@ -326,7 +326,7 @@ async def list_entries(request: Request, class_id: int | None=Query(default=None
 @router.post('/entries', response_model=TimetableEntryRead, status_code=status.HTTP_201_CREATED)
 async def create_entry(payload: TimetableEntryCreate, request: Request, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     data = payload.model_dump()
-    session = await selected_academic_session(db, current_user.school_id, request, current_user, data.get('academic_session_id'))
+    session = await writable_selected_academic_session(db, current_user.school_id, request, current_user, data.get('academic_session_id'))
     if session:
         data['academic_session_id'] = session.id
     data['room'] = data.get('room') or None
@@ -345,6 +345,7 @@ async def create_entry(payload: TimetableEntryCreate, request: Request, current_
 @router.put('/entries/{entry_id}', response_model=TimetableEntryRead)
 async def update_entry(entry_id: int, payload: TimetableEntryUpdate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     item = await _get_or_404(db, TimetableEntry, entry_id, current_user.school_id, 'Timetable entry')
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     existing = {'class_id': item.class_id, 'section_id': item.section_id, 'day_id': item.day_id, 'period_id': item.period_id, 'subject_id': item.subject_id, 'teacher_id': item.teacher_id, 'room': item.room, 'note': item.note, 'academic_session_id': item.academic_session_id, 'is_active': item.is_active}
     existing.update(payload.model_dump(exclude_unset=True))
     existing['room'] = existing.get('room') or None
@@ -364,6 +365,7 @@ async def update_entry(entry_id: int, payload: TimetableEntryUpdate, current_use
 @router.delete('/entries/{entry_id}', response_model=MessageResponse)
 async def delete_entry(entry_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     item = await _get_or_404(db, TimetableEntry, entry_id, current_user.school_id, 'Timetable entry')
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     await db.delete(item)
     await db.commit()
     return {'message': 'Timetable entry deleted'}

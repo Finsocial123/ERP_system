@@ -2,7 +2,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from app.core.database import get_async_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
-from app.dependencies.academic_session import selected_academic_session
+from app.dependencies.academic_session import selected_academic_session, require_writable_academic_session, writable_selected_academic_session, assert_item_session_is_writable
 from app.models.academic import AcademicSession, SchoolClass, Section
 from app.models.attendance import AttendanceStatus, StudentAttendance
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher
@@ -10,7 +10,7 @@ from app.models.user import User, UserRole
 from app.schemas.attendance import AttendanceRead, AttendanceUpdate, BulkAttendanceCreate, DayAttendanceRecord, StudentAttendanceSummary
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
-router = APIRouter(prefix='/attendance', tags=['Phase 4 - Attendance'])
+router = APIRouter(prefix='/attendance', tags=['Phase 4 - Attendance'], dependencies=[Depends(require_writable_academic_session)])
 ADMIN_ROLES = [UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN]
 ALLOWED_ROLES = [*ADMIN_ROLES, UserRole.TEACHER]
 TEACHER_ROLE_VALUE = UserRole.TEACHER.value
@@ -84,7 +84,7 @@ async def teacher_allowed_classes(request: Request, school_id: int=Depends(curre
 
 @router.post('/bulk', response_model=list[AttendanceRead], status_code=status.HTTP_201_CREATED)
 async def bulk_mark_attendance(payload: BulkAttendanceCreate, request: Request, school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*ALLOWED_ROLES)), db: AsyncSession=Depends(get_async_db)):
-    session = await selected_academic_session(db, school_id, request, current_user, payload.session_id)
+    session = await writable_selected_academic_session(db, school_id, request, current_user, payload.session_id)
     await _validate_session(db, session.id if session else payload.session_id, school_id)
     await _validate_class(db, payload.class_id, school_id)
     await _assert_teacher_can_access_class(db, school_id, current_user, payload.class_id, session.id if session else payload.session_id)
@@ -133,7 +133,8 @@ async def update_attendance(attendance_id: int, payload: AttendanceUpdate, schoo
     record = await async_query(db, StudentAttendance).filter(StudentAttendance.id == attendance_id, StudentAttendance.school_id == school_id).first()
     if not record:
         raise HTTPException(status_code=404, detail='Attendance record not found')
-    await _assert_teacher_can_access_class(db, school_id, current_user, record.class_id)
+    await assert_item_session_is_writable(db, school_id, record, "session_id")
+    await _assert_teacher_can_access_class(db, school_id, current_user, record.class_id, record.session_id)
     record.status = payload.status
     record.note = payload.note
     record.marked_by = current_user.id

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.async_query import async_query
+from app.core.database import get_async_db
 from app.models.academic import AcademicSession
 from app.models.user import User, UserRole
+from app.dependencies.auth import get_current_user
 
 ADMIN_ROLE_VALUES = {
     UserRole.SUPER_ADMIN.value,
@@ -114,3 +116,106 @@ def apply_academic_session_filter(query, model, session_id: int | None):
     if session_id is not None and hasattr(model, "academic_session_id"):
         return query.filter(model.academic_session_id == session_id)
     return query
+
+
+SAFE_SESSION_METHODS = {"GET", "HEAD", "OPTIONS"}
+READ_ONLY_SESSION_DETAIL = (
+    "Selected academic session is read-only. Switch to the active academic session to create, update, or delete records."
+)
+
+
+def is_safe_session_method(request: Request) -> bool:
+    return request.method.upper() in SAFE_SESSION_METHODS
+
+
+async def assert_academic_session_is_writable(
+    db: AsyncSession,
+    school_id: int,
+    academic_session_id: int | None,
+) -> AcademicSession | None:
+    """Raise 403 when a write targets a non-active academic session.
+
+    This is a backend safety check. Frontend hiding buttons is useful, but the
+    API must still protect historical academic records from direct requests.
+    """
+    if academic_session_id is None:
+        return None
+    session = await get_academic_session_or_404(db, school_id, academic_session_id)
+    if not session.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=READ_ONLY_SESSION_DETAIL,
+        )
+    return session
+
+
+async def writable_selected_academic_session(
+    db: AsyncSession,
+    school_id: int,
+    request: Request | None = None,
+    current_user: User | None = None,
+    explicit_session_id: int | str | None = None,
+) -> AcademicSession | None:
+    """Resolve the selected session and require it to be active for writes."""
+    session = await selected_academic_session(
+        db=db,
+        school_id=school_id,
+        request=request,
+        current_user=current_user,
+        explicit_session_id=explicit_session_id,
+    )
+    if session is not None and not session.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=READ_ONLY_SESSION_DETAIL,
+        )
+    return session
+
+
+async def writable_selected_academic_session_id(
+    db: AsyncSession,
+    school_id: int,
+    request: Request | None = None,
+    current_user: User | None = None,
+    explicit_session_id: int | str | None = None,
+) -> int | None:
+    session = await writable_selected_academic_session(
+        db=db,
+        school_id=school_id,
+        request=request,
+        current_user=current_user,
+        explicit_session_id=explicit_session_id,
+    )
+    return session.id if session else None
+
+
+async def require_writable_academic_session(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+) -> None:
+    """Router dependency: non-GET requests cannot target previous sessions."""
+    if is_safe_session_method(request):
+        return
+    if not current_user.school_id:
+        return
+    await writable_selected_academic_session(
+        db=db,
+        school_id=current_user.school_id,
+        request=request,
+        current_user=current_user,
+    )
+
+
+async def assert_item_session_is_writable(
+    db: AsyncSession,
+    school_id: int,
+    item,
+    session_attr: str = "academic_session_id",
+) -> None:
+    """Protect direct item-id writes even when the client omits the session header."""
+    await assert_academic_session_is_writable(
+        db=db,
+        school_id=school_id,
+        academic_session_id=getattr(item, session_attr, None),
+    )

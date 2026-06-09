@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
 from app.core.database import get_async_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
-from app.dependencies.academic_session import selected_academic_session
+from app.dependencies.academic_session import selected_academic_session, require_writable_academic_session, writable_selected_academic_session, assert_item_session_is_writable, assert_academic_session_is_writable
 from app.models.academic import AcademicSession, SchoolClass, Section, Subject
 from app.models.exam import Exam, ExamMark, ExamSubject
 from app.models.people import Student, Teacher
@@ -38,7 +38,7 @@ from app.schemas.exam import (
 from app.utils.parent_scope import children_for_parent
 
 
-router = APIRouter(prefix="/exams", tags=["Phase 8 - Exam and Result Management"])
+router = APIRouter(prefix="/exams", tags=["Phase 8 - Exam and Result Management"], dependencies=[Depends(require_writable_academic_session)])
 
 ADMIN_ROLES = {
     UserRole.SUPER_ADMIN.value,
@@ -1025,7 +1025,7 @@ async def create_exam(
     current_user: User = Depends(require_roles(*MANAGER_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    session = await selected_academic_session(
+    session = await writable_selected_academic_session(
         db, school_id, request, current_user, payload.academic_session_id
     )
     academic_session_id = session.id if session else None
@@ -1068,11 +1068,14 @@ async def update_exam(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
     data = payload.model_dump(exclude_unset=True)
 
     class_id = data.get("class_id", exam.class_id)
     section_id = data.get("section_id", exam.section_id)
     academic_session_id = data.get("academic_session_id", exam.academic_session_id)
+    if "academic_session_id" in data:
+        await assert_academic_session_is_writable(db, school_id, academic_session_id)
 
     await _validate_exam_scope(db, school_id, class_id, section_id, academic_session_id)
 
@@ -1116,6 +1119,7 @@ async def delete_exam(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
     exam.is_active = False
     await db.commit()
     return MessageResponse(message="Exam deleted successfully")
@@ -1129,6 +1133,7 @@ async def publish_exam(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
 
     subjects_count = await _count(
         db,
@@ -1162,6 +1167,7 @@ async def unpublish_exam(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
     exam.result_status = "DRAFT"
     exam.published_at = None
     await db.commit()
@@ -1216,6 +1222,7 @@ async def auto_schedule_exam_timetable(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
 
     if not exam.start_date:
         raise HTTPException(status_code=400, detail="Set exam start date before using auto schedule")
@@ -1296,6 +1303,7 @@ async def create_exam_subject(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
 
     await _validate_exam_subject_scope(
         db,
@@ -1356,6 +1364,7 @@ async def update_exam_subject(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
     item = await _exam_subject_or_404(db, school_id, exam_subject_id, exam_id)
     data = payload.model_dump(exclude_unset=True)
 
@@ -1422,7 +1431,8 @@ async def delete_exam_subject(
     current_user: User = Depends(require_roles(*MANAGER_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    await _exam_or_404(db, school_id, exam_id)
+    exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
     item = await _exam_subject_or_404(db, school_id, exam_subject_id, exam_id)
     item.is_active = False
     await db.commit()
@@ -1475,6 +1485,7 @@ async def save_bulk_marks(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
     exam_subject = await _exam_subject_or_404(db, school_id, payload.exam_subject_id, exam.id)
 
     students = await _students_for_exam_query(db, exam).all()

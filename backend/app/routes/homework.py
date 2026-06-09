@@ -7,7 +7,7 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 from app.core.database import get_async_db
-from app.dependencies.academic_session import selected_academic_session
+from app.dependencies.academic_session import selected_academic_session, require_writable_academic_session, writable_selected_academic_session, assert_item_session_is_writable
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
 from app.models.academic import AcademicSession, SchoolClass, Section, Subject
 from app.models.homework import HomeworkAssignment, HomeworkSubmission
@@ -18,7 +18,7 @@ from app.schemas.common import MessageResponse
 from app.schemas.homework import HomeworkAssignmentRead, HomeworkCheckPayload, HomeworkMetaItem, HomeworkMetaResponse, HomeworkSubmissionRead, HomeworkStats, ParentHomeworkRead, StudentHomeworkRead
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
-router = APIRouter(prefix='/homework', tags=['Phase 5 - Homework and Assignment'])
+router = APIRouter(prefix='/homework', tags=['Phase 5 - Homework and Assignment'], dependencies=[Depends(require_writable_academic_session)])
 ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
 MANAGER_ROLES = [UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN, UserRole.TEACHER]
 UPLOAD_ROOT = Path(__file__).resolve().parents[2] / 'uploads'
@@ -246,7 +246,7 @@ async def list_assignments(request: Request, class_id: int | None=Query(default=
 async def create_assignment(request: Request, title: str=Form(..., min_length=2, max_length=180), description: str | None=Form(default=None), due_date: str=Form(...), class_id: int=Form(...), section_id: int | None=Form(default=None), subject_id: int | None=Form(default=None), teacher_id: int | None=Form(default=None), attachment: UploadFile | None=File(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
     await _validate_assignment_scope(db, school_id, class_id, section_id, subject_id)
     parsed_due_date = _parse_form_date(due_date)
-    session = await selected_academic_session(db, school_id, request=request, current_user=current_user)
+    session = await writable_selected_academic_session(db, school_id, request=request, current_user=current_user)
     assigned_teacher_id = teacher_id
     if current_user.role == UserRole.TEACHER.value:
         teacher = await _teacher_for_user(db, school_id, current_user, session.id if session else None)
@@ -265,6 +265,7 @@ async def create_assignment(request: Request, title: str=Form(..., min_length=2,
 @router.put('/assignments/{assignment_id}', response_model=HomeworkAssignmentRead)
 async def update_assignment(assignment_id: int, title: str=Form(..., min_length=2, max_length=180), description: str | None=Form(default=None), due_date: str=Form(...), class_id: int=Form(...), section_id: int | None=Form(default=None), subject_id: int | None=Form(default=None), attachment: UploadFile | None=File(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
     assignment = await _get_assignment_or_404(db, school_id, assignment_id)
+    await assert_item_session_is_writable(db, school_id, assignment)
     if not await _can_manage_assignment(db, school_id, current_user, assignment):
         raise HTTPException(status_code=403, detail='You can update only your own homework')
     await _validate_assignment_scope(db, school_id, class_id, section_id, subject_id)
@@ -285,6 +286,7 @@ async def update_assignment(assignment_id: int, title: str=Form(..., min_length=
 @router.delete('/assignments/{assignment_id}', response_model=MessageResponse)
 async def delete_assignment(assignment_id: int, school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
     assignment = await _get_assignment_or_404(db, school_id, assignment_id)
+    await assert_item_session_is_writable(db, school_id, assignment)
     if not await _can_manage_assignment(db, school_id, current_user, assignment):
         raise HTTPException(status_code=403, detail='You can delete only your own homework')
     assignment.is_active = False
@@ -336,6 +338,7 @@ async def submit_homework(assignment_id: int, request: Request, answer_text: str
     if not student:
         raise HTTPException(status_code=404, detail='Student profile not found for this login')
     assignment = await _get_assignment_or_404(db, school_id, assignment_id)
+    await assert_item_session_is_writable(db, school_id, assignment)
     if not _is_assignment_for_student(assignment, student):
         raise HTTPException(status_code=403, detail='This homework is not assigned to your class or section')
     submission = await async_query(db, HomeworkSubmission).filter(HomeworkSubmission.school_id == school_id, HomeworkSubmission.homework_id == assignment_id, HomeworkSubmission.student_id == student.id).first()
@@ -363,7 +366,12 @@ async def check_submission(submission_id: int, payload: HomeworkCheckPayload, sc
     submission = await async_query(db, HomeworkSubmission).filter(HomeworkSubmission.school_id == school_id, HomeworkSubmission.id == submission_id).first()
     if not submission:
         raise HTTPException(status_code=404, detail='Submission not found')
-    assignment = submission.homework
+    assignment = await async_query(db, HomeworkAssignment).filter(
+        HomeworkAssignment.school_id == school_id,
+        HomeworkAssignment.id == submission.homework_id,
+    ).first()
+    if assignment:
+        await assert_item_session_is_writable(db, school_id, assignment)
     if not assignment or not await _can_manage_assignment(db, school_id, current_user, assignment):
         raise HTTPException(status_code=403, detail='You can check submissions only for your own homework')
     submission.status = 'CHECKED'
@@ -371,7 +379,12 @@ async def check_submission(submission_id: int, payload: HomeworkCheckPayload, sc
     submission.checked_at = datetime.utcnow()
     await db.commit()
     await db.refresh(submission)
-    student = submission.student
+    student = await async_query(db, Student).filter(
+        Student.school_id == school_id,
+        Student.id == submission.student_id,
+    ).first()
+    if not student:
+        raise HTTPException(status_code=404, detail='Student not found for this submission')
     return HomeworkSubmissionRead(id=submission.id, homework_id=submission.homework_id, student_id=submission.student_id, student_name=_full_student_name(student), admission_no=student.admission_no, roll_number=student.roll_number, status=submission.status, answer_text=submission.answer_text, attachment_url=submission.attachment_url, attachment_filename=submission.attachment_filename, teacher_feedback=submission.teacher_feedback, submitted_at=submission.created_at, checked_at=submission.checked_at)
 
 @router.get('/parent/assignments', response_model=list[ParentHomeworkRead])

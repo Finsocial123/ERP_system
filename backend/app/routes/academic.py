@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.async_query import async_query
 from app.core.database import get_async_db
-from app.dependencies.academic_session import selected_academic_session_id
+from app.dependencies.academic_session import selected_academic_session_id, writable_selected_academic_session_id, assert_item_session_is_writable
 from app.dependencies.auth import current_school_id, get_current_user, require_school_admin
 from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject
 from app.models.people import ClassTeacherAssignment, Teacher, TeacherSubject
@@ -68,7 +68,7 @@ async def _session_id_for_payload(
     current_user: User,
     payload_session_id: int | None,
 ) -> int | None:
-    return await selected_academic_session_id(
+    return await writable_selected_academic_session_id(
         db=db,
         school_id=school_id,
         request=request,
@@ -359,6 +359,7 @@ async def update_department(
     db: AsyncSession = Depends(get_async_db),
 ):
     item = await _get_or_404(db, Department, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     values = payload.model_dump(exclude_unset=True)
     if "academic_session_id" in values:
         values["academic_session_id"] = await _session_id_for_payload(db, current_user.school_id, request, current_user, values.get("academic_session_id"))
@@ -376,6 +377,7 @@ async def delete_department(
     db: AsyncSession = Depends(get_async_db),
 ):
     item = await _get_or_404(db, Department, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     await db.delete(item)
     await db.commit()
     return {"message": "Department deleted"}
@@ -421,6 +423,7 @@ async def update_class(
     db: AsyncSession = Depends(get_async_db),
 ):
     item = await _get_or_404(db, SchoolClass, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     values = payload.model_dump(exclude_unset=True)
     session_id = values.get("academic_session_id", item.academic_session_id)
     if "academic_session_id" in values:
@@ -442,6 +445,7 @@ async def delete_class(
     db: AsyncSession = Depends(get_async_db),
 ):
     item = await _get_or_404(db, SchoolClass, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     await db.delete(item)
     await db.commit()
     return {"message": "Class deleted"}
@@ -491,6 +495,7 @@ async def update_section(
     db: AsyncSession = Depends(get_async_db),
 ):
     item = await _get_or_404(db, Section, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     values = payload.model_dump(exclude_unset=True)
     session_id = values.get("academic_session_id", item.academic_session_id)
     if "academic_session_id" in values:
@@ -512,6 +517,7 @@ async def delete_section(
     db: AsyncSession = Depends(get_async_db),
 ):
     item = await _get_or_404(db, Section, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     await db.delete(item)
     await db.commit()
     return {"message": "Section deleted"}
@@ -558,6 +564,7 @@ async def update_subject(
     db: AsyncSession = Depends(get_async_db),
 ):
     item = await _get_or_404(db, Subject, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     values = payload.model_dump(exclude_unset=True)
     session_id = values.get("academic_session_id", item.academic_session_id)
     if "academic_session_id" in values:
@@ -581,6 +588,7 @@ async def delete_subject(
     db: AsyncSession = Depends(get_async_db),
 ):
     item = await _get_or_404(db, Subject, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     await db.delete(item)
     await db.commit()
     return {"message": "Subject deleted"}

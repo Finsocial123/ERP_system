@@ -8,7 +8,7 @@ from app.core.database import get_async_db
 from app.core.async_query import async_query
 from app.core.security import get_password_hash
 from app.core.utils import generate_temporary_password, normalize_login_id
-from app.dependencies.academic_session import selected_academic_session_id
+from app.dependencies.academic_session import selected_academic_session_id, require_writable_academic_session, writable_selected_academic_session_id, assert_item_session_is_writable
 from app.dependencies.auth import current_school_id, require_school_admin, get_current_user
 from app.schemas.notice import AvailableClassOut
 from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject, SchoolClass
@@ -17,7 +17,7 @@ from app.models.school import School
 from app.models.user import User, UserRole
 from app.schemas.common import MessageResponse
 from app.schemas.people import ClassTeacherCreate, ClassTeacherRead, ParentLoginCreate, StudentCreate, StudentRead, StudentUpdate, TeacherCreate, TeacherRead, TeacherSubjectCreate, TeacherSubjectRead, TeacherUpdate
-router = APIRouter(tags=['Phase 2 - Student and Teacher Management'])
+router = APIRouter(tags=['Phase 2 - Student and Teacher Management'], dependencies=[Depends(require_writable_academic_session)])
 
 def _with_read_relationships(query, model):
     # Pydantic response serialization runs outside SQLAlchemy's async IO context.
@@ -145,7 +145,7 @@ async def list_students(request: Request, search: str | None=Query(default=None)
 @router.post('/students', response_model=StudentRead, status_code=status.HTTP_201_CREATED)
 async def create_student(payload: StudentCreate, request: Request, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     school_id = current_user.school_id
-    session_id = await selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=payload.academic_session_id)
+    session_id = await writable_selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=payload.academic_session_id)
     await _validate_same_school(db, SchoolClass, payload.class_id, school_id, 'Class')
     await _validate_same_school(db, Section, payload.section_id, school_id, 'Section')
     await _validate_section_belongs_to_class(db, payload.section_id, payload.class_id, school_id)
@@ -194,6 +194,7 @@ async def get_student(student_id: int, school_id: int=Depends(current_school_id)
 async def create_parent_login_for_student(student_id: int, payload: ParentLoginCreate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     school_id = current_user.school_id
     student = await _get_or_404(db, Student, student_id, school_id)
+    await assert_item_session_is_writable(db, school_id, student)
     if not student.guardian:
         raise HTTPException(status_code=400, detail='This student has no parent/guardian details')
     parent_user, temporary_password = await _ensure_parent_login(db, school_id, student.guardian, student.admission_no, payload.password)
@@ -207,9 +208,10 @@ async def create_parent_login_for_student(student_id: int, payload: ParentLoginC
 async def update_student(student_id: int, payload: StudentUpdate, request: Request, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     school_id = current_user.school_id
     student = await _get_or_404(db, Student, student_id, school_id)
+    await assert_item_session_is_writable(db, school_id, student)
     values = payload.model_dump(exclude_unset=True, exclude={'guardian', 'create_parent_login', 'parent_password'})
     if 'academic_session_id' in values:
-        values['academic_session_id'] = await selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=values.get('academic_session_id'))
+        values['academic_session_id'] = await writable_selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=values.get('academic_session_id'))
     class_id = values.get('class_id', student.class_id)
     section_id = values.get('section_id', student.section_id)
     if 'class_id' in values:
@@ -260,6 +262,7 @@ async def update_student(student_id: int, payload: StudentUpdate, request: Reque
 @router.patch('/students/{student_id}/suspend', response_model=StudentRead)
 async def suspend_student(student_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     student = await _get_or_404(db, Student, student_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, student)
     student.status = 'SUSPENDED'
     student.is_active = False
     if student.user_id:
@@ -272,6 +275,7 @@ async def suspend_student(student_id: int, current_user: User=Depends(require_sc
 @router.patch('/students/{student_id}/activate', response_model=StudentRead)
 async def activate_student(student_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     student = await _get_or_404(db, Student, student_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, student)
     student.status = 'ACTIVE'
     student.is_active = True
     if student.user_id:
@@ -284,6 +288,7 @@ async def activate_student(student_id: int, current_user: User=Depends(require_s
 @router.delete('/students/{student_id}', response_model=MessageResponse)
 async def delete_student(student_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     student = await _get_or_404(db, Student, student_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, student)
     student.status = 'DELETED'
     student.is_active = False
     if student.user_id:
@@ -311,7 +316,7 @@ async def list_teachers(request: Request, search: str | None=Query(default=None)
 @router.post('/teachers', response_model=TeacherRead, status_code=status.HTTP_201_CREATED)
 async def create_teacher(payload: TeacherCreate, request: Request, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     school_id = current_user.school_id
-    session_id = await selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=payload.academic_session_id)
+    session_id = await writable_selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=payload.academic_session_id)
     await _validate_same_school(db, Department, payload.department_id, school_id, 'Department')
     user_id = None
     temporary_password = None
@@ -343,8 +348,9 @@ async def list_class_teachers(request: Request, school_id: int=Depends(current_s
 @router.post('/teachers/class-teachers', response_model=ClassTeacherRead, status_code=status.HTTP_201_CREATED)
 async def assign_class_teacher(payload: ClassTeacherCreate, request: Request, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     school_id = current_user.school_id
-    session_id = await selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=payload.academic_session_id)
-    await _get_or_404(db, Teacher, payload.teacher_id, school_id)
+    session_id = await writable_selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=payload.academic_session_id)
+    teacher = await _get_or_404(db, Teacher, payload.teacher_id, school_id)
+    await assert_item_session_is_writable(db, school_id, teacher)
     await _validate_same_school(db, SchoolClass, payload.class_id, school_id, 'Class')
     await _validate_same_school(db, Section, payload.section_id, school_id, 'Section')
     await _validate_same_school(db, AcademicSession, session_id, school_id, 'Academic session')
@@ -360,6 +366,7 @@ async def assign_class_teacher(payload: ClassTeacherCreate, request: Request, cu
 @router.delete('/teachers/class-teachers/{assignment_id}', response_model=MessageResponse)
 async def delete_class_teacher_assignment(assignment_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     assignment = await _get_or_404(db, ClassTeacherAssignment, assignment_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, assignment)
     await db.delete(assignment)
     await db.commit()
     return {'message': 'Class teacher assignment removed'}
@@ -367,6 +374,7 @@ async def delete_class_teacher_assignment(assignment_id: int, current_user: User
 @router.delete('/teachers/subject-assignments/{assignment_id}', response_model=MessageResponse)
 async def delete_teacher_subject_assignment(assignment_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     assignment = await _get_or_404(db, TeacherSubject, assignment_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, assignment)
     await db.delete(assignment)
     await db.commit()
     return {'message': 'Teacher subject assignment removed'}
@@ -426,9 +434,10 @@ async def get_teacher(teacher_id: int, school_id: int=Depends(current_school_id)
 async def update_teacher(teacher_id: int, payload: TeacherUpdate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     school_id = current_user.school_id
     teacher = await _get_or_404(db, Teacher, teacher_id, school_id)
+    await assert_item_session_is_writable(db, school_id, teacher)
     values = payload.model_dump(exclude_unset=True)
     if 'academic_session_id' in values:
-        values['academic_session_id'] = await selected_academic_session_id(db, school_id, request=None, current_user=current_user, explicit_session_id=values.get('academic_session_id'))
+        values['academic_session_id'] = await writable_selected_academic_session_id(db, school_id, request=None, current_user=current_user, explicit_session_id=values.get('academic_session_id'))
     if 'department_id' in values:
         await _validate_same_school(db, Department, values.get('department_id'), school_id, 'Department')
     if 'employee_id' in values and teacher.user_id:
@@ -451,6 +460,7 @@ async def update_teacher(teacher_id: int, payload: TeacherUpdate, current_user: 
 @router.patch('/teachers/{teacher_id}/suspend', response_model=TeacherRead)
 async def suspend_teacher(teacher_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     teacher = await _get_or_404(db, Teacher, teacher_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, teacher)
     teacher.status = 'SUSPENDED'
     teacher.is_active = False
     if teacher.user_id:
@@ -464,6 +474,7 @@ async def suspend_teacher(teacher_id: int, current_user: User=Depends(require_sc
 @router.patch('/teachers/{teacher_id}/activate', response_model=TeacherRead)
 async def activate_teacher(teacher_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     teacher = await _get_or_404(db, Teacher, teacher_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, teacher)
     teacher.status = 'ACTIVE'
     teacher.is_active = True
     if teacher.user_id:
@@ -477,6 +488,7 @@ async def activate_teacher(teacher_id: int, current_user: User=Depends(require_s
 @router.delete('/teachers/{teacher_id}', response_model=MessageResponse)
 async def delete_teacher(teacher_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     teacher = await _get_or_404(db, Teacher, teacher_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, teacher)
     teacher.status = 'DELETED'
     teacher.is_active = False
     if teacher.user_id:
@@ -498,8 +510,9 @@ async def list_teacher_subjects(teacher_id: int, request: Request, school_id: in
 @router.post('/teachers/{teacher_id}/subjects', response_model=TeacherSubjectRead, status_code=status.HTTP_201_CREATED)
 async def assign_teacher_subject(teacher_id: int, payload: TeacherSubjectCreate, request: Request, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     school_id = current_user.school_id
-    session_id = await selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=payload.academic_session_id)
-    await _get_or_404(db, Teacher, teacher_id, school_id)
+    session_id = await writable_selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=payload.academic_session_id)
+    teacher = await _get_or_404(db, Teacher, teacher_id, school_id)
+    await assert_item_session_is_writable(db, school_id, teacher)
     await _validate_same_school(db, Subject, payload.subject_id, school_id, 'Subject')
     await _validate_same_school(db, SchoolClass, payload.class_id, school_id, 'Class')
     await _validate_same_school(db, Section, payload.section_id, school_id, 'Section')

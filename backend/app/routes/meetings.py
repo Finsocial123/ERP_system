@@ -36,7 +36,7 @@ async def teacher_create_class_meeting(
     current_user: User=Depends(require_roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER))
 ):
     result = await db.execute(select(Teacher).where(Teacher.user_id == current_user.id, Teacher.school_id == current_user.school_id, Teacher.is_active == True))
-    teacher = result.scalar_one_or_none()
+    teacher = result.scalars().first()
     if not teacher:
         raise HTTPException(403, 'No teacher profile found for this user')
     try:
@@ -123,9 +123,33 @@ async def get_class_students(
 
 @router.get('/{meeting_id}/join')
 async def join_meeting(meeting_id: int, db: AsyncSession=Depends(get_async_db), current_user: User=Depends(get_current_user)):
-    is_moderator = current_user.role in (UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN, UserRole.TEACHER)
+
+    meeting = await db.get(Meeting, meeting_id)
+
+    if not meeting: 
+        raise HTTPException(404, "Meeting not found")   
+    
+    if meeting.meeting_type == MeetingType.ADMIN_TEACHERS:
+        is_moderator = current_user.role in (
+            UserRole.SCHOOL_ADMIN,
+            UserRole.SCHOOL_OWNER, 
+            UserRole.SUPER_ADMIN, 
+        )
+    else:
+        is_moderator = current_user.role in (
+            UserRole.SCHOOL_ADMIN, 
+            UserRole.SCHOOL_OWNER, 
+            UserRole.SUPER_ADMIN, 
+            UserRole.TEACHER
+        )
+
     try:
-        join_url = await meeting_service.get_meeting_join_url(db=db, meeting_id=meeting_id, user_id=current_user.id, full_name=current_user.full_name, is_moderator=is_moderator, user_role=current_user.role)
+        join_url = await meeting_service.get_meeting_join_url(
+            db=db, 
+            meeting_id=meeting_id, 
+            user_id=current_user.id, 
+            full_name=current_user.full_name, is_moderator=is_moderator, user_role=current_user.role
+        )
     except ValueError as e:
         raise HTTPException(404, str(e))
     return {'join_url': join_url}

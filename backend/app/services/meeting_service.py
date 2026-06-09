@@ -135,6 +135,7 @@ async def get_meeting_join_url(
     }
     logout_url = role_logout_urls.get(user_role, "http://localhost:3000")
 
+    print(f"DEBUG role: {repr(user_role)}")
 
     password = meeting.moderator_password if is_moderator else meeting.attendee_password
     return get_join_url(
@@ -262,16 +263,16 @@ async def get_teacher_classes(
             SchoolClass.name.label("class_name"),
             Section.name.label("section_name"),
         )
-        .join(SchoolClass, SchoolClass.id == ClassTeacherAssignment.class_id)
-        .outerjoin(Section, Section.id == ClassTeacherAssignment.section_id)
+        .select_from(TeacherSubject)
+        .join(SchoolClass, SchoolClass.id == TeacherSubject.class_id)
+        .outerjoin(Section, Section.id == TeacherSubject.section_id)
         .where(
             TeacherSubject.school_id == school_id,
             TeacherSubject.teacher_id == teacher_id,
-            TeacherSubject.class_id.isnot(None)
+            TeacherSubject.class_id.isnot(None),
         )
         .distinct()
     )
-
     subject_classes = subject_result.all()
 
     class_teacher_result = await db.execute(
@@ -281,6 +282,7 @@ async def get_teacher_classes(
             SchoolClass.name.label("class_name"),
             Section.name.label("section_name"),
         )
+        .select_from(ClassTeacherAssignment)
         .join(SchoolClass, SchoolClass.id == ClassTeacherAssignment.class_id)
         .outerjoin(Section, Section.id == ClassTeacherAssignment.section_id)
         .where(

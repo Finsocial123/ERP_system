@@ -9,10 +9,9 @@ type MeetingStatus = "scheduled" | "live" | "ended";
 
 interface ClassOption {
   class_id: number;
-  class_name: string;
   section_id: number | null;
+  class_name: string;
   section_name: string | null;
-  subject_name: string;
 }
 
 interface MeetingOut {
@@ -102,33 +101,14 @@ function duration(start: string | null, end: string | null): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
 
-interface DeduplicatedClass {
-  class_id: number;
-  class_name: string;
-  section_id: number | null;
-  section_name: string | null;
-  subjects: string[];
-  key: string;
-}
-
-function deduplicateClasses(raw: ClassOption[]): DeduplicatedClass[] {
-  const map = new Map<string, DeduplicatedClass>();
-  for (const cls of raw) {
+function deduplicateClasses(raw: ClassOption[]): ClassOption[] {
+  const seen = new Set<string>();
+  return raw.filter((cls) => {
     const key = `${cls.class_id}-${cls.section_id ?? "null"}`;
-    if (map.has(key)) {
-      map.get(key)!.subjects.push(cls.subject_name);
-    } else {
-      map.set(key, {
-        class_id: cls.class_id,
-        class_name: cls.class_name,
-        section_id: cls.section_id,
-        section_name: cls.section_name,
-        subjects: [cls.subject_name],
-        key,
-      });
-    }
-  }
-  return Array.from(map.values());
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function Modal({
@@ -252,7 +232,7 @@ function TeacherMeetingForm({
   onClose: () => void;
   onCreated: (joinUrl: string) => void;
 }) {
-  const [classes, setClasses] = useState<DeduplicatedClass[]>([]);
+  const [classes, setClasses] = useState<ClassOption[]>([]);
   const [classesLoading, setClassesLoading] = useState(true);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [title, setTitle] = useState("");
@@ -260,19 +240,16 @@ function TeacherMeetingForm({
   const [error, setError] = useState("");
 
   useEffect(() => {
-    apiFetch<ClassOption[]>("/teachers/me/classes")
-      // .then((raw) => setClasses(deduplicateClasses(raw)))
-      .then((raw) => {
-        console.log("raw classes:", raw); // see what API returns
-        const deduped = deduplicateClasses(raw);
-        console.log("deduped:", deduped); // see what renders
-        setClasses(deduped);
-      })
+    apiFetch<{ classes: ClassOption[] }>("/meetings/teacher/my-classes")
+      .then(({ classes }) => setClasses(deduplicateClasses(classes)))
       .catch((e) => setError(e.message))
       .finally(() => setClassesLoading(false));
   }, []);
 
-  const selectedClass = classes.find((c) => c.key === selectedKey) ?? null;
+  const selectedClass =
+    classes.find(
+      (c) => `${c.class_id}-${c.section_id ?? "null"}` === selectedKey,
+    ) ?? null;
 
   async function handleCreate() {
     if (!selectedClass || !title.trim()) return;
@@ -336,11 +313,12 @@ function TeacherMeetingForm({
         ) : (
           <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
             {classes.map((cls) => {
-              const isSelected = cls.key === selectedKey;
+              const key = `${cls.class_id}-${cls.section_id ?? "null"}`;
+              const isSelected = key === selectedKey;
               return (
                 <button
-                  key={cls.key}
-                  onClick={() => setSelectedKey(isSelected ? null : cls.key)}
+                  key={key}
+                  onClick={() => setSelectedKey(isSelected ? null : key)}
                   className={`w-full text-left px-4 py-3 rounded-xl border text-sm transition-all ${
                     isSelected
                       ? "border-slate-900 bg-slate-900 text-white"
@@ -349,16 +327,11 @@ function TeacherMeetingForm({
                 >
                   <div className="font-medium">
                     {cls.class_name}
-                    {cls.section_name ? (
-                      <span className="ml-1 px-1.5 py-0.5 bg-current/10 rounded text-xs font-bold">
+                    {cls.section_name && (
+                      <span className="ml-1.5 px-1.5 py-0.5 rounded text-xs font-bold">
                         {cls.section_name}
                       </span>
-                    ) : null}
-                  </div>
-                  <div
-                    className={`text-xs mt-0.5 ${isSelected ? "text-slate-300" : "text-slate-400"}`}
-                  >
-                    {cls.subjects.join(", ")}
+                    )}
                   </div>
                 </button>
               );

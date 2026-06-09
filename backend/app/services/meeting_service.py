@@ -5,7 +5,8 @@ from sqlalchemy import select, func, or_
 from sqlalchemy.orm import joinedload
 
 from app.models.meeting import Meeting, MeetingType, MeetingStatus
-from app.models.people import Teacher, TeacherSubject, Student
+from app.models.people import Teacher, TeacherSubject, Student, ClassTeacherAssignment
+from app.models.academic import SchoolClass, Section
 from app.models.user import User, UserRole
 from app.services.bbb_service import create_bbb_meeting, get_join_url
 
@@ -22,22 +23,38 @@ async def create_teacher_class_meeting(
     title: str,
     created_by_user_id: int,
 ) -> Meeting:
-    query = select(TeacherSubject).where(
+    
+    subject_query =select(TeacherSubject).where(
         TeacherSubject.school_id == school_id,
         TeacherSubject.teacher_id == teacher_id,
         TeacherSubject.class_id == class_id,
     )
+
     if section_id:
-        query = query.where(TeacherSubject.section_id == section_id)
+        subject_query = subject_query.where(
+            TeacherSubject.section_id == section_id
+        )
+    subject_result = await db.execute(subject_query)
+    subject_assignment = subject_result.scalars().first()
 
-    result = await db.execute(query)
-    assignment = result.scalar_one_or_none()
-    if not assignment:
-        raise PermissionError("Teacher does not teach this class")
+    class_teacher_result = await db.execute(
+        select(ClassTeacherAssignment).where(
+            ClassTeacherAssignment.school_id == school_id,
+            ClassTeacherAssignment.teacher_id == teacher_id,
+            ClassTeacherAssignment.class_id == class_id,
+        )
+    )   
 
+    class_teacher_assignment = class_teacher_result.scalars().first()
+
+    if not subject_assignment and not class_teacher_assignment:
+        raise PermissionError("Teacher does not have access to this class")
+    
     meeting_id = f"school-{school_id}-class-{class_id}-{uuid.uuid4().hex[:8]}"
+
     attendee_pw, moderator_pw = _generate_passwords()
 
+     
     await create_bbb_meeting(
         meeting_id=meeting_id,
         title=title,
@@ -126,6 +143,7 @@ async def get_meeting_join_url(
         password=password,
         user_id=str(user_id),
         logout_url=logout_url,
+        is_moderator=is_moderator,
     )
 
 
@@ -189,7 +207,7 @@ async def list_meetings(
         )
     )
 
-    if current_user.role == UserRole.STUDENT.value:
+    if current_user.role == UserRole.STUDENT:
         student_result = await db.execute(
             select(Student).where(Student.user_id == current_user.id)
         )
@@ -202,10 +220,6 @@ async def list_meetings(
             Meeting.section_id == student.section_id,
             Meeting.meeting_type == MeetingType.TEACHER_CLASS, 
         )
-        if student.section_id:
-            query = query.where(
-                Meeting.section_id == student.section_id,
-            )
 
     elif current_user.role == UserRole.TEACHER.value:
         query = query.where(
@@ -232,3 +246,84 @@ async def list_meetings(
     items = result.scalars().all()
 
     return {"items": items, "total": total}
+
+
+
+async def get_teacher_classes(
+    db: AsyncSession,
+    school_id: int,
+    teacher_id: int,
+) -> list[dict]:
+    
+    subject_result = await db.execute(
+        select(
+            TeacherSubject.class_id,
+            TeacherSubject.section_id,
+            SchoolClass.name.label("class_name"),
+            Section.name.label("section_name"),
+        )
+        .join(SchoolClass, SchoolClass.id == ClassTeacherAssignment.class_id)
+        .outerjoin(Section, Section.id == ClassTeacherAssignment.section_id)
+        .where(
+            TeacherSubject.school_id == school_id,
+            TeacherSubject.teacher_id == teacher_id,
+            TeacherSubject.class_id.isnot(None)
+        )
+        .distinct()
+    )
+
+    subject_classes = subject_result.all()
+
+    class_teacher_result = await db.execute(
+        select(
+            ClassTeacherAssignment.class_id,
+            ClassTeacherAssignment.section_id,
+            SchoolClass.name.label("class_name"),
+            Section.name.label("section_name"),
+        )
+        .join(SchoolClass, SchoolClass.id == ClassTeacherAssignment.class_id)
+        .outerjoin(Section, Section.id == ClassTeacherAssignment.section_id)
+        .where(
+            ClassTeacherAssignment.school_id == school_id,
+            ClassTeacherAssignment.teacher_id == teacher_id,
+        )
+        .distinct()
+    )
+
+    class_teacher_classes = class_teacher_result.all()
+
+    seen = set()
+    classes = []
+    
+    for row in list(subject_classes) + list(class_teacher_classes):
+        key = (row.class_id, row.section_id)
+        if key not in seen:
+            seen.add(key)
+            classes.append({
+                "class_id": row.class_id,
+                "section_id": row.section_id,
+                "class_name": row.class_name,
+                "section_name": row.section_name,
+            })
+
+    return classes
+
+
+async def get_students_for_class(
+    db: AsyncSession,
+    school_id: int,
+    class_id: int,
+    section_id: int | None = None,
+) -> list[Student]:
+    query = select(Student).where(
+        Student.school_id == school_id,
+        Student.class_id == class_id,
+        Student.is_active == True,
+        Student.status == "ACTIVE",
+    )
+    if section_id:
+        query = query.where(Student.section_id == section_id)
+
+    result = await db.execute(query)
+    return result.scalars().all()
+

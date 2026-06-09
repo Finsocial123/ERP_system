@@ -61,6 +61,66 @@ async def admin_create_teachers_meeting(
     join_url = await meeting_service.get_meeting_join_url(db=db, meeting_id=meeting.id, user_id=current_user.id, full_name=current_user.full_name, is_moderator=True, user_role=current_user.role)
     return {'meeting_id': meeting.id, 'join_url': join_url}
 
+
+
+
+# all the classes teacher can create meeting for
+
+
+@router.get("/teacher/my-classes")
+async def get_my_classes(
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(require_roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER))
+): 
+    result = await db.execute(
+        select(Teacher).where(
+            Teacher.user_id == current_user.id,
+            Teacher.school_id == current_user.school_id,
+            Teacher.is_active == True,
+        )
+    )
+    teacher = result.scalars().first()
+    if not teacher:
+        raise HTTPException(403, "No teacher profile found")
+    
+    classes = await meeting_service.get_teacher_classes(
+        db=db,
+        school_id=current_user.school_id,
+        teacher_id=teacher.id,
+    )
+    
+    return {"classes": classes}
+
+
+# get studentw in a class
+
+@router.get("/class/{class_id}/students")
+async def get_class_students(
+    class_id: int,
+    section_id: int | None = Query(None),
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(require_roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER))
+):
+    students = await meeting_service.get_students_for_class(
+        db=db,
+        school_id=current_user.school_id,
+        class_id=class_id,
+        section_id=section_id,
+    )
+
+    return {
+        "total": len(students),
+        "students": [
+            {
+                "id": s.id,
+                "name": f"{s.first_name} {s.last_name or ''}".strip(),
+                "user_id": s.user_id,
+            }
+            for s in students
+        ]
+    }
+
+
 @router.get('/{meeting_id}/join')
 async def join_meeting(meeting_id: int, db: AsyncSession=Depends(get_async_db), current_user: User=Depends(get_current_user)):
     is_moderator = current_user.role in (UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN, UserRole.TEACHER)
@@ -77,3 +137,4 @@ async def end_meeting(meeting_id: int, db: AsyncSession=Depends(get_async_db), c
     except (ValueError, PermissionError) as e:
         raise HTTPException(403, str(e))
     return {'message': 'Meeting ended', 'meeting_id': meeting.id}
+

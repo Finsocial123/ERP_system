@@ -17,7 +17,7 @@ async def create_bbb_meeting(
     title: str,
     attendee_pw: str,
     moderator_pw: str,
-    record: bool = True,
+    record: bool = False,
 ) -> dict:
     params = {
         "meetingID": meeting_id,
@@ -25,7 +25,7 @@ async def create_bbb_meeting(
         "attendeePW": attendee_pw,
         "moderatorPW": moderator_pw,
         "record": "true" if record else "false",
-        "autoStartRecording": "true",
+        "autoStartRecording": "false",
         "allowStartStopRecording": "false",
     }
     params["checksum"] = _checksum("create", params)
@@ -44,14 +44,16 @@ def get_join_url(
     full_name: str,
     password: str,   
     user_id: str,
-    logout_url: str = "http:/localhost:3000",
+    logout_url: str = "http://localhost:3000",
+    is_moderator: bool = False
 ) -> str:
     params = {
         "meetingID": meeting_id,
         "fullName": full_name,
         "password": password,
         "userID": user_id,
-        "logoutURL": logout_url
+        "logoutURL": logout_url,
+        "role": "MODERATOR" if is_moderator else "VIEWER",
     }
     checksum = _checksum("join", params)
     return f"{settings.BBB_URL}/join?{urlencode(params)}&checksum={checksum}"

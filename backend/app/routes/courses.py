@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Optional
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 from app.core.database import get_async_db
@@ -15,7 +15,8 @@ from app.models.user import User, UserRole
 from app.models.video_watch_progress import VideoWatchProgress
 from app.schemas.common import MessageResponse
 from app.schemas.course import CourseMetaItem, CourseMetaResponse, CourseOut
-from app.services.lms_access import ALL_LMS_ROLES, ADMIN_ROLES, MANAGER_ROLES, can_manage_course, children_for_parent, current_session, ensure_can_manage_course, ensure_can_view_course, ensure_enrollment_for_user_student, full_student_name, get_course_or_404, course_matches_student, student_for_user, teacher_for_user, teacher_has_scope, validate_course_scope, validate_same_school
+from app.dependencies.academic_session import selected_academic_session
+from app.services.lms_access import ALL_LMS_ROLES, ADMIN_ROLES, MANAGER_ROLES, can_manage_course, children_for_parent, ensure_can_manage_course, ensure_can_view_course, ensure_enrollment_for_user_student, full_student_name, get_course_or_404, course_matches_student, student_for_user, teacher_for_user, teacher_has_scope, validate_course_scope, validate_same_school
 from app.utils.cloudinary import upload_file
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
@@ -76,15 +77,83 @@ async def _parent_course_rows(db: AsyncSession, school_id: int, user: User) -> l
             rows.append(await _course_payload(db, course, progress=progress, student=child))
     return rows
 
-@router.get('/meta', response_model=CourseMetaResponse)
-async def courses_meta(school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
-    class_query = async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True)).order_by(SchoolClass.name.asc())
-    section_query = async_query(db, Section).filter(Section.school_id == school_id, Section.is_active.is_(True)).order_by(Section.name.asc())
-    subject_query = async_query(db, Subject).filter(Subject.school_id == school_id, Subject.is_active.is_(True)).order_by(Subject.name.asc())
-    if current_user.role == UserRole.TEACHER.value:
-        teacher = await teacher_for_user(db, school_id, current_user)
+async def _teacher_for_course_meta(
+    db: AsyncSession,
+    school_id: int,
+    user: User,
+    session_id: int | None,
+) -> Teacher | None:
+    if session_id is not None:
+        teacher = await async_query(db, Teacher).filter(
+            Teacher.school_id == school_id,
+            Teacher.user_id == user.id,
+            Teacher.academic_session_id == session_id,
+            Teacher.is_active.is_(True),
+        ).first()
         if teacher:
-            teacher_subjects = await async_query(db, TeacherSubject).filter_by(school_id=school_id, teacher_id=teacher.id).all()
+            return teacher
+    return await teacher_for_user(db, school_id, user)
+
+
+def _teacher_meta_items(teachers: list[Teacher]) -> list[CourseMetaItem]:
+    """Return LMS teacher choices keyed by login user id without duplicates.
+
+    Teachers are copied when a new academic session is created, so the same
+    login user can appear in multiple Teacher rows. LMS courses store
+    Course.teacher_id as the User.id, therefore the dropdown must expose each
+    user only once. Duplicate ids were causing React's "same key" warning.
+    """
+    seen_user_ids: set[int] = set()
+    items: list[CourseMetaItem] = []
+    for teacher in teachers:
+        if teacher.user_id is None:
+            continue
+        user_id = int(teacher.user_id)
+        if user_id in seen_user_ids:
+            continue
+        seen_user_ids.add(user_id)
+        items.append(CourseMetaItem(id=user_id, name=teacher.full_name, extra=teacher.employee_id))
+    return items
+
+
+@router.get('/meta', response_model=CourseMetaResponse)
+async def courses_meta(
+    request: Request,
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
+    db: AsyncSession = Depends(get_async_db),
+):
+    session = await selected_academic_session(db, school_id, request=request, current_user=current_user)
+    session_id = session.id if session else None
+
+    class_query = async_query(db, SchoolClass).filter(
+        SchoolClass.school_id == school_id,
+        SchoolClass.is_active.is_(True),
+    )
+    section_query = async_query(db, Section).filter(
+        Section.school_id == school_id,
+        Section.is_active.is_(True),
+    )
+    subject_query = async_query(db, Subject).filter(
+        Subject.school_id == school_id,
+        Subject.is_active.is_(True),
+    )
+
+    if session_id is not None:
+        class_query = class_query.filter(SchoolClass.academic_session_id == session_id)
+        section_query = section_query.filter(Section.academic_session_id == session_id)
+        subject_query = subject_query.filter(Subject.academic_session_id == session_id)
+
+    if current_user.role == UserRole.TEACHER.value:
+        teacher = await _teacher_for_course_meta(db, school_id, current_user, session_id)
+        if teacher:
+            teacher_subjects_query = async_query(db, TeacherSubject).filter_by(
+                school_id=school_id,
+                teacher_id=teacher.id,
+            )
+            if session_id is not None:
+                teacher_subjects_query = teacher_subjects_query.filter(TeacherSubject.academic_session_id == session_id)
+            teacher_subjects = await teacher_subjects_query.all()
             class_ids = {item.class_id for item in teacher_subjects if item.class_id is not None}
             section_ids = {item.section_id for item in teacher_subjects if item.section_id is not None}
             subject_ids = {item.subject_id for item in teacher_subjects if item.subject_id is not None}
@@ -95,9 +164,23 @@ async def courses_meta(school_id: int=Depends(current_school_id), current_user: 
                 section_query = section_query.filter(Section.id.in_(section_ids))
             if subject_ids:
                 subject_query = subject_query.filter(Subject.id.in_(subject_ids))
-    session = await current_session(db, school_id)
-    teachers = await async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True), Teacher.user_id.isnot(None)).order_by(Teacher.full_name.asc()).all()
-    return CourseMetaResponse(classes=[CourseMetaItem(id=item.id, name=item.name, extra=item.code) for item in await class_query.all()], sections=[CourseMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in await section_query.all()], subjects=[CourseMetaItem(id=item.id, name=item.name, extra=item.code) for item in await subject_query.all()], teachers=[CourseMetaItem(id=int(item.user_id), name=item.full_name, extra=item.employee_id) for item in teachers if item.user_id], current_academic_session_id=session.id if session else None)
+
+    teacher_query = async_query(db, Teacher).filter(
+        Teacher.school_id == school_id,
+        Teacher.is_active.is_(True),
+        Teacher.user_id.isnot(None),
+    )
+    if session_id is not None:
+        teacher_query = teacher_query.filter(Teacher.academic_session_id == session_id)
+    teachers = await teacher_query.order_by(Teacher.full_name.asc(), Teacher.id.asc()).all()
+
+    return CourseMetaResponse(
+        classes=[CourseMetaItem(id=item.id, name=item.name, extra=item.code) for item in await class_query.order_by(SchoolClass.name.asc()).all()],
+        sections=[CourseMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in await section_query.order_by(Section.name.asc()).all()],
+        subjects=[CourseMetaItem(id=item.id, name=item.name, extra=item.code) for item in await subject_query.order_by(Subject.name.asc()).all()],
+        teachers=_teacher_meta_items(teachers),
+        current_academic_session_id=session_id,
+    )
 
 @router.get('/student/my', response_model=list[CourseOut])
 async def list_my_student_courses(school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(UserRole.STUDENT)), db: AsyncSession=Depends(get_async_db)):

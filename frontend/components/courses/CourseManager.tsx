@@ -427,7 +427,7 @@ export default function CourseManager({ mode }: Props) {
                 <Label>Teacher</Label>
                 <SelectBox value={courseForm.teacher_id} onChange={(value) => updateCourse("teacher_id", value)}>
                   <option value="">Use my account</option>
-                  {meta?.teachers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                  {meta?.teachers.map((item, index) => <option key={`course-teacher-${item.id}-${index}`} value={item.id}>{item.name}</option>)}
                 </SelectBox>
               </div>
             )}

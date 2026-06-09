@@ -117,6 +117,17 @@ const navItems: NavItem[] = [
   },
 ];
 
+
+function uniqueAcademicSessions(sessions: AcademicSession[]): AcademicSession[] {
+  const seen = new Set<string>();
+  return sessions.filter((session) => {
+    const key = String(session.id);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function formatRole(value: string) {
   return value
     .toLowerCase()
@@ -290,11 +301,12 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
     apiFetch<AcademicSession[]>("/academic-sessions")
       .then((sessions) => {
         if (cancelled) return;
-        setAcademicSessions(sessions);
+        const uniqueSessions = uniqueAcademicSessions(sessions);
+        setAcademicSessions(uniqueSessions);
 
-        const active = sessions.find((item) => item.is_active) || sessions[0];
+        const active = uniqueSessions.find((item) => item.is_active) || uniqueSessions[0];
         const savedId = getSelectedAcademicSessionId();
-        const saved = savedId ? sessions.find((item) => String(item.id) === savedId) : null;
+        const saved = savedId ? uniqueSessions.find((item) => String(item.id) === savedId) : null;
         const next = saved && (canSelectPreviousSessions || saved.is_active) ? saved : active;
 
         if (next) {
@@ -667,9 +679,9 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
                   title="Academic session"
                   aria-label="Select academic session"
                 >
-                  {academicSessions.map((session) => (
+                  {academicSessions.map((session, index) => (
                     <option
-                      key={session.id}
+                      key={`academic-session-${session.id}-${index}`}
                       value={session.id}
                       disabled={!canSelectPreviousSessions && !session.is_active}
                     >

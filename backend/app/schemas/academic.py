@@ -28,12 +28,14 @@ class AcademicSessionRead(BaseModel):
 
 
 class DepartmentCreate(BaseModel):
+    academic_session_id: int | None = None
     name: str = Field(min_length=2, max_length=120)
     code: str | None = None
     description: str | None = None
 
 
 class DepartmentUpdate(BaseModel):
+    academic_session_id: int | None = None
     name: str | None = Field(default=None, min_length=2, max_length=120)
     code: str | None = None
     description: str | None = None
@@ -42,6 +44,7 @@ class DepartmentUpdate(BaseModel):
 
 class DepartmentRead(BaseModel):
     id: int
+    academic_session_id: int | None = None
     name: str
     code: str | None = None
     description: str | None = None
@@ -51,12 +54,14 @@ class DepartmentRead(BaseModel):
 
 
 class ClassCreate(BaseModel):
+    academic_session_id: int | None = None
     name: str = Field(min_length=1, max_length=120)
     code: str | None = None
     department_id: int | None = None
 
 
 class ClassUpdate(BaseModel):
+    academic_session_id: int | None = None
     name: str | None = Field(default=None, min_length=1, max_length=120)
     code: str | None = None
     department_id: int | None = None
@@ -65,6 +70,7 @@ class ClassUpdate(BaseModel):
 
 class ClassRead(BaseModel):
     id: int
+    academic_session_id: int | None = None
     name: str
     code: str | None = None
     department_id: int | None = None
@@ -74,11 +80,13 @@ class ClassRead(BaseModel):
 
 
 class SectionCreate(BaseModel):
+    academic_session_id: int | None = None
     name: str = Field(min_length=1, max_length=80)
     class_id: int
 
 
 class SectionUpdate(BaseModel):
+    academic_session_id: int | None = None
     name: str | None = Field(default=None, min_length=1, max_length=80)
     class_id: int | None = None
     is_active: bool | None = None
@@ -86,6 +94,7 @@ class SectionUpdate(BaseModel):
 
 class SectionRead(BaseModel):
     id: int
+    academic_session_id: int | None = None
     name: str
     class_id: int
     is_active: bool
@@ -94,6 +103,7 @@ class SectionRead(BaseModel):
 
 
 class SubjectCreate(BaseModel):
+    academic_session_id: int | None = None
     name: str = Field(min_length=2, max_length=120)
     code: str | None = None
     department_id: int | None = None
@@ -101,6 +111,7 @@ class SubjectCreate(BaseModel):
 
 
 class SubjectUpdate(BaseModel):
+    academic_session_id: int | None = None
     name: str | None = Field(default=None, min_length=2, max_length=120)
     code: str | None = None
     department_id: int | None = None
@@ -110,6 +121,7 @@ class SubjectUpdate(BaseModel):
 
 class SubjectRead(BaseModel):
     id: int
+    academic_session_id: int | None = None
     name: str
     code: str | None = None
     department_id: int | None = None

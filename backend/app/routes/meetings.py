@@ -10,7 +10,7 @@ from app.models.user import User, UserRole
 from app.models.people import Teacher, TeacherSubject, Student
 from app.models.meeting import Meeting, MeetingStatus, MeetingType
 from app.services import meeting_service
-from app.schemas.meetings import MeetingListOut, TeacherClassOut, TeacherMeetingCreate, AdminMeetingCreate, MeetingCreateOut
+from app.schemas.meetings import MeetingListOut, TeacherClassOut, TeacherMeetingCreate, AdminMeetingCreate, MeetingCreateOut, TeacherMeetingSchedule, AdminMeetingSchedule, MeetingListItemOut
 router = APIRouter(prefix='/meetings', tags=['Meetings'])
 
 @router.get('/stats')
@@ -119,6 +119,105 @@ async def get_class_students(
             for s in students
         ]
     }
+
+
+
+# schedule meeting
+
+@router.post("/teacher/class/schedule", response_model=MeetingListItemOut, status_code=201)
+async def schedule_teacher_class_meeting(
+    payload: TeacherMeetingSchedule,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(require_roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER)),
+):
+    result = await db.execute(select(Teacher).where(
+        Teacher.user_id == current_user.id,
+        Teacher.school_id == current_user.school_id,
+        Teacher.is_active == True,
+    ))
+    teacher = result.scalars().first()
+
+    if not teacher:
+        raise HTTPException(403, "No teacher profile found")
+    try:
+        meeting = await meeting_service.schedule_teacher_class_meeting(
+            db=db, school_id=current_user.school_id, teacher_id=teacher.id,
+            class_id=payload.class_id, section_id=payload.section_id,
+            title=payload.title, scheduled_at=payload.scheduled_at,
+            created_by_user_id=current_user.id,
+        )
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    return meeting
+
+
+@router.post("/admin/teachers/schedule", response_model=MeetingListItemOut, status_code=201)
+async def schedule_admin_teachers_meeting(
+    payload: AdminMeetingSchedule,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(require_roles(UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN)),
+):
+    meeting = await meeting_service.schedule_admin_teachers_meeting(
+        db=db, school_id=current_user.school_id, title=payload.title,
+        scheduled_at=payload.scheduled_at, created_by_user_id=current_user.id,
+    )
+    return meeting
+
+
+@router.post("/{meeting_id}/start", response_model=MeetingCreateOut, status_code=200)
+async def start_scheduled_meeting(
+    meeting_id: int,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(require_roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN)),
+):
+    try:
+        meeting = await meeting_service.start_scheduled_meeting(
+            db=db, meeting_id=meeting_id, current_user=current_user
+        )
+    except (ValueError, PermissionError) as e:
+        raise HTTPException(403, str(e))
+    except Exception as e:
+        raise HTTPException(503, f"BBB service error: {str(e)}")
+
+    full_name = current_user.full_name
+    result = await db.execute(select(Teacher).where(
+        Teacher.user_id == current_user.id,
+        Teacher.school_id == current_user.school_id,
+    ))
+    teacher = result.scalar_one_or_none()
+    if teacher:
+        full_name = teacher.full_name
+
+    join_url = await meeting_service.get_meeting_join_url(
+        db=db, meeting_id=meeting.id, user_id=current_user.id,
+        full_name=full_name, is_moderator=True, user_role=current_user.role,
+    )
+    return {"meeting_id": meeting.id, "join_url": join_url}
+
+
+@router.delete("/{meeting_id}/cancel", status_code=200)
+async def cancel_scheduled_meeting(
+    meeting_id: int,
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(require_roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN)),
+):
+    try:
+        await meeting_service.cancel_scheduled_meeting(
+            db=db, meeting_id=meeting_id, current_user=current_user
+        )
+    except (ValueError, PermissionError) as e:
+        raise HTTPException(403, str(e))
+    return {"message": "Meeting cancelled"}
+
+
+
+
+
+
+
+
+
+# create meeting
 
 
 @router.get('/{meeting_id}/join')

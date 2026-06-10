@@ -228,9 +228,11 @@ function RecordingSection({
 function TeacherMeetingForm({
   onClose,
   onCreated,
+  onScheduled,
 }: {
   onClose: () => void;
   onCreated: (joinUrl: string) => void;
+  onScheduled: () => void;
 }) {
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [classesLoading, setClassesLoading] = useState(true);
@@ -238,6 +240,8 @@ function TeacherMeetingForm({
   const [title, setTitle] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [mode, setMode] = useState<"now" | "schedule">("now");
+  const [scheduledAt, setScheduledAt] = useState("");
 
   useEffect(() => {
     apiFetch<{ classes: ClassOption[] }>("/meetings/teacher/my-classes")
@@ -253,21 +257,39 @@ function TeacherMeetingForm({
 
   async function handleCreate() {
     if (!selectedClass || !title.trim()) return;
+    if (mode === "schedule" && !scheduledAt) {
+      setError("Please select a date and time");
+      setLoading(false);
+      return;
+    }
     setError("");
     setLoading(true);
     try {
-      const data = await apiFetch<CreateMeetingResponse>(
-        "/meetings/teacher/class",
-        {
+      if (mode === "now") {
+        const data = await apiFetch<CreateMeetingResponse>(
+          "/meetings/teacher/class",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              class_id: selectedClass.class_id,
+              section_id: selectedClass.section_id,
+              title: title.trim(),
+            }),
+          },
+        );
+        onCreated(data.join_url);
+      } else {
+        await apiFetch("/meetings/teacher/class/schedule", {
           method: "POST",
           body: JSON.stringify({
             class_id: selectedClass.class_id,
             section_id: selectedClass.section_id,
             title: title.trim(),
+            scheduled_at: new Date(scheduledAt).toISOString(),
           }),
-        },
-      );
-      onCreated(data.join_url);
+        });
+        onScheduled();
+      }
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -346,6 +368,44 @@ function TeacherMeetingForm({
         </p>
       )}
 
+      <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
+        <button
+          onClick={() => setMode("now")}
+          className={`flex-1 py-2 text-sm rounded-lg font-medium transition-all ${
+            mode === "now"
+              ? "bg-white shadow-sm text-slate-900"
+              : "text-slate-500"
+          }`}
+        >
+          Start Now
+        </button>
+        <button
+          onClick={() => setMode("schedule")}
+          className={`flex-1 py-2 text-sm rounded-lg font-medium transition-all ${
+            mode === "schedule"
+              ? "bg-white shadow-sm text-slate-900"
+              : "text-slate-500"
+          }`}
+        >
+          Schedule
+        </button>
+      </div>
+
+      {mode === "schedule" && (
+        <div>
+          <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">
+            Date & Time
+          </label>
+          <input
+            type="datetime-local"
+            value={scheduledAt}
+            onChange={(e) => setScheduledAt(e.target.value)}
+            min={new Date().toISOString().slice(0, 16)}
+            className={inputCls}
+          />
+        </div>
+      )}
+
       <div className="flex gap-3 pt-2 border-t border-slate-100">
         <button
           onClick={onClose}
@@ -353,14 +413,95 @@ function TeacherMeetingForm({
         >
           Cancel
         </button>
+
         <button
           onClick={handleCreate}
-          disabled={loading || !title.trim() || !selectedClass}
+          disabled={
+            loading ||
+            !title.trim() ||
+            !selectedClass ||
+            (mode === "schedule" && !scheduledAt)
+          }
           className="flex-1 py-2.5 text-sm bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-50 transition-colors font-medium"
         >
-          {loading ? "Starting..." : " Start Meeting"}
+          {loading
+            ? mode === "now"
+              ? "Starting..."
+              : "Scheduling..."
+            : mode === "now"
+              ? "Start Meeting"
+              : "Schedule Meeting"}
         </button>
       </div>
+    </div>
+  );
+}
+
+function ScheduledMeetingCard({
+  meeting,
+  currentUserId,
+  currentUserRole,
+  onStart,
+  onCancel,
+}: {
+  meeting: MeetingOut;
+  currentUserId: number;
+  currentUserRole: string;
+  onStart: (id: number) => void;
+  onCancel: (id: number) => void;
+}) {
+  const tm = TYPE_META[meeting.meeting_type];
+  const isOwner =
+    !!currentUserId && meeting.created_by_user_id === currentUserId;
+  const canManage =
+    isOwner ||
+    ["SCHOOL_ADMIN", "SCHOOL_OWNER", "SUPER_ADMIN"].includes(currentUserRole);
+
+  return (
+    <div className="bg-white rounded-2xl border border-blue-200 p-5 space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <h3 className="font-semibold text-slate-800 truncate">
+            {meeting.title}
+          </h3>
+          <p className="text-xs text-slate-400 mt-0.5">
+            {tm.label}
+            {meeting.class_name
+              ? ` · ${meeting.class_name}${meeting.section_name ?? ""}`
+              : ""}
+          </p>
+        </div>
+        <span className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium bg-blue-50 text-blue-700 shrink-0">
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+          Scheduled
+        </span>
+      </div>
+
+      <div className="bg-slate-50 rounded-xl px-4 py-3 text-sm">
+        <span className="text-slate-400 text-xs uppercase tracking-wider font-semibold">
+          Scheduled for
+        </span>
+        <p className="text-slate-800 font-medium mt-0.5">
+          {fmtTime(meeting.scheduled_at)}
+        </p>
+      </div>
+
+      {canManage && (
+        <div className="flex gap-2">
+          <button
+            onClick={() => onStart(meeting.id)}
+            className="flex-1 py-2 text-sm font-medium bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-colors"
+          >
+            Start Now
+          </button>
+          <button
+            onClick={() => onCancel(meeting.id)}
+            className="px-4 py-2 text-sm border border-red-200 text-red-600 rounded-xl hover:bg-red-50 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -706,7 +847,7 @@ function LaunchModal({
   );
 }
 
-type Tab = "live" | "past";
+type Tab = "live" | "scheduled" | "past";
 
 export default function MeetingsPage() {
   const auth = getSavedAuth();
@@ -737,6 +878,31 @@ export default function MeetingsPage() {
   const [endingId, setEndingId] = useState<number | null>(null);
   const [joining, setJoining] = useState<number | null>(null);
   const [ending, setEnding] = useState<number | null>(null);
+
+  const [scheduledMeetings, setScheduledMeetings] =
+    useState<MeetingListOut | null>(null);
+  const [scheduledLoading, setScheduledLoading] = useState(false);
+  const [scheduledError, setScheduledError] = useState("");
+  const [scheduledVersion, setScheduledVersion] = useState(0);
+
+  const fetchScheduled = useCallback(async () => {
+    setScheduledLoading(true);
+    setScheduledError("");
+    try {
+      const data = await apiFetch<MeetingListOut>(
+        "/meetings/?status=scheduled&limit=50",
+      );
+      setScheduledMeetings(data);
+    } catch (e: any) {
+      setScheduledError(e.message);
+    } finally {
+      setScheduledLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "scheduled") fetchScheduled();
+  }, [activeTab, fetchScheduled, scheduledVersion]);
 
   const fetchLive = useCallback(async () => {
     setLiveLoading(true);
@@ -785,6 +951,29 @@ export default function MeetingsPage() {
     const interval = setInterval(fetchLive, 30000);
     return () => clearInterval(interval);
   }, [activeTab, fetchLive]);
+
+  async function handleStart(meetingId: number) {
+    try {
+      const data = await apiFetch<CreateMeetingResponse>(
+        `/meetings/${meetingId}/start`,
+        { method: "POST" },
+      );
+      setScheduledVersion((v) => v + 1);
+      fetchLive();
+      setLaunchUrl(data.join_url);
+    } catch (e: any) {
+      alert(e.message);
+    }
+  }
+
+  async function handleCancel(meetingId: number) {
+    try {
+      await apiFetch(`/meetings/${meetingId}/cancel`, { method: "DELETE" });
+      setScheduledVersion((v) => v + 1);
+    } catch (e: any) {
+      alert(e.message);
+    }
+  }
 
   async function handleJoin(meetingId: number) {
     setJoining(meetingId);
@@ -868,6 +1057,7 @@ export default function MeetingsPage() {
           {(
             [
               ["live", "Live & Upcoming"],
+              ["scheduled", "Scheduled"],
               ["past", "Past Meetings"],
             ] as [Tab, string][]
           ).map(([tab, label]) => (
@@ -956,6 +1146,58 @@ export default function MeetingsPage() {
                       onView={setViewingMeeting}
                       joining={joining}
                       ending={ending}
+                    />
+                  ))}
+                </div>
+              ))}
+          </div>
+        )}
+
+        {activeTab === "scheduled" && (
+          <div className="space-y-4">
+            {scheduledLoading && (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="h-44 bg-white rounded-2xl border border-slate-100 animate-pulse"
+                  />
+                ))}
+              </div>
+            )}
+            {scheduledError && (
+              <div className="text-center py-16">
+                <p className="text-red-600 text-sm mb-3">{scheduledError}</p>
+                <button
+                  onClick={fetchScheduled}
+                  className="text-sm text-slate-500 underline"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+            {!scheduledLoading &&
+              !scheduledError &&
+              scheduledMeetings &&
+              (scheduledMeetings.items.length === 0 ? (
+                <div className="text-center py-24">
+                  <p className="text-slate-600 text-lg font-medium">
+                    No scheduled meetings
+                  </p>
+                  <p className="text-slate-400 text-sm mt-1">
+                    Schedule a meeting to see it here
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                  {scheduledMeetings.items.map((m) => (
+                    <ScheduledMeetingCard
+                      key={m.id}
+                      meeting={m}
+                      currentUserId={currentUserId}
+                      currentUserRole={currentUserRole}
+                      onStart={handleStart}
+                      onCancel={handleCancel}
                     />
                   ))}
                 </div>
@@ -1056,6 +1298,11 @@ export default function MeetingsPage() {
           <TeacherMeetingForm
             onClose={() => setCreatingTeacher(false)}
             onCreated={handleCreated}
+            onScheduled={() => {
+              setCreatingTeacher(false);
+              setScheduledVersion((v) => v + 1);
+              setActiveTab("scheduled");
+            }}
           />
         </Modal>
       )}

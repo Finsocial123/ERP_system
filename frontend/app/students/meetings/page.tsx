@@ -39,7 +39,7 @@ interface JoinResponse {
 
 const TYPE_META: Record<MeetingType, { label: string }> = {
   teacher_class: { label: "Class Session" },
-  admin_teachers: { label: "School Notice" },
+  admin_teachers: { label: "Staff Meeting" },
 };
 
 function fmt(dt: string | null) {
@@ -125,11 +125,8 @@ function LiveCard({
 
   return (
     <div className="relative bg-white rounded-2xl border-2 border-emerald-300 shadow-emerald-100 shadow-lg overflow-hidden">
-      {/* Top accent bar */}
       <div className="h-1 bg-gradient-to-r from-emerald-400 to-teal-400" />
-
       <div className="p-5">
-        {/* Live badge + type */}
         <div className="flex items-center justify-between mb-4">
           <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full">
             <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
@@ -139,13 +136,9 @@ function LiveCard({
             {timeAgo(meeting.started_at ?? meeting.created_at)}
           </span>
         </div>
-
-        {/* Title */}
         <h3 className="font-bold text-slate-900 text-lg mb-1 leading-tight">
           {meeting.title}
         </h3>
-
-        {/* Meta */}
         <div className="space-y-1 mb-5">
           <div className="flex items-center gap-2 text-sm text-slate-500">
             <span>{tm.label}</span>
@@ -168,8 +161,6 @@ function LiveCard({
             </div>
           )}
         </div>
-
-        {/* Join button */}
         <button
           onClick={() => onJoin(meeting.id)}
           disabled={joining === meeting.id}
@@ -184,6 +175,37 @@ function LiveCard({
             "Join Session"
           )}
         </button>
+      </div>
+    </div>
+  );
+}
+
+function ScheduledCard({ meeting }: { meeting: MeetingOut }) {
+  const tm = TYPE_META[meeting.meeting_type];
+
+  return (
+    <div className="bg-white rounded-2xl border border-blue-200 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">
+              UPCOMING
+            </span>
+          </div>
+          <h3 className="font-semibold text-slate-800 text-sm truncate">
+            {meeting.title}
+          </h3>
+          <p className="text-xs text-slate-400 mt-0.5">
+            {tm.label}
+            {meeting.class_name ? ` · ${meeting.class_name}` : ""}
+            {meeting.teacher_name ? ` · ${meeting.teacher_name}` : ""}
+          </p>
+        </div>
+        <div className="text-right shrink-0">
+          <p className="text-xs font-semibold text-blue-700">
+            {fmtTime(meeting.scheduled_at)}
+          </p>
+        </div>
       </div>
     </div>
   );
@@ -204,7 +226,6 @@ function PastCard({
       className="group bg-white rounded-2xl border border-slate-200 p-5 cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all duration-200"
     >
       <div className="flex items-start gap-4">
-        {/* Info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2 mb-1">
             <h3 className="font-semibold text-slate-800 truncate text-sm leading-tight">
@@ -216,7 +237,6 @@ function PastCard({
               </span>
             )}
           </div>
-
           <div className="text-xs text-slate-400 space-y-0.5">
             <p>
               {tm.label}
@@ -233,7 +253,6 @@ function PastCard({
             </p>
           </div>
         </div>
-
         <span className="text-slate-300 group-hover:text-slate-500 transition-colors text-sm shrink-0 mt-1">
           →
         </span>
@@ -256,7 +275,6 @@ function PastDetailModal({
   return (
     <Modal title={meeting.title} onClose={onClose}>
       <div className="space-y-5">
-        {/* Badges */}
         <div className="flex flex-wrap gap-2">
           <span className="text-xs px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 font-medium">
             {tm.label}
@@ -271,7 +289,6 @@ function PastDetailModal({
           )}
         </div>
 
-        {/* Details grid */}
         <div className="grid grid-cols-2 gap-3 bg-slate-50 rounded-xl p-4 text-sm">
           <div>
             <span className="text-slate-400 text-xs uppercase tracking-wider font-semibold">
@@ -320,7 +337,6 @@ function PastDetailModal({
           )}
         </div>
 
-        {/* Recording CTA */}
         {meeting.recording_url ? (
           <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 space-y-3">
             <div>
@@ -370,16 +386,19 @@ function EmptyState({ tab }: { tab: "live" | "past" }) {
 type Tab = "live" | "past";
 
 export default function StudentMeetingsPage() {
-  const auth = getSavedAuth();
-
   const [activeTab, setActiveTab] = useState<Tab>("live");
   const [skip, setSkip] = useState(0);
   const limit = 12;
 
   const [liveMeetings, setLiveMeetings] = useState<MeetingListOut | null>(null);
   const [pastMeetings, setPastMeetings] = useState<MeetingListOut | null>(null);
+  const [scheduledMeetings, setScheduledMeetings] =
+    useState<MeetingListOut | null>(null);
+
   const [liveLoading, setLiveLoading] = useState(true);
   const [pastLoading, setPastLoading] = useState(false);
+  const [scheduledLoading, setScheduledLoading] = useState(true);
+
   const [liveError, setLiveError] = useState("");
   const [pastError, setPastError] = useState("");
 
@@ -398,6 +417,20 @@ export default function StudentMeetingsPage() {
       setLiveError(e.message);
     } finally {
       setLiveLoading(false);
+    }
+  }, []);
+
+  const fetchScheduled = useCallback(async () => {
+    setScheduledLoading(true);
+    try {
+      const data = await apiFetch<MeetingListOut>(
+        "/meetings/?status=scheduled&limit=20",
+      );
+      setScheduledMeetings(data);
+    } catch {
+      // fail silently
+    } finally {
+      setScheduledLoading(false);
     }
   }, []);
 
@@ -421,7 +454,8 @@ export default function StudentMeetingsPage() {
 
   useEffect(() => {
     fetchLive();
-  }, [fetchLive]);
+    fetchScheduled();
+  }, [fetchLive, fetchScheduled]);
 
   useEffect(() => {
     if (activeTab === "past") fetchPast();
@@ -446,6 +480,7 @@ export default function StudentMeetingsPage() {
   }
 
   const liveCount = liveMeetings?.items.length ?? 0;
+  const scheduledCount = scheduledMeetings?.items.length ?? 0;
   const pastPages = pastMeetings ? Math.ceil(pastMeetings.total / limit) : 0;
   const pastPage = Math.floor(skip / limit) + 1;
 
@@ -525,34 +560,58 @@ export default function StudentMeetingsPage() {
               </div>
             )}
 
-            {!liveLoading &&
-              !liveError &&
-              liveMeetings &&
-              (liveMeetings.items.length === 0 ? (
-                <EmptyState tab="live" />
-              ) : (
-                <>
-                  <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
-                    <p className="text-sm text-emerald-800">
-                      <span className="font-semibold">
-                        Class is in session!
-                      </span>{" "}
-                      Join now to attend live. Your teacher can see who joins.
-                    </p>
-                  </div>
+            {!liveLoading && !liveError && liveMeetings && (
+              <>
+                {liveMeetings.items.length === 0 ? (
+                  scheduledCount > 0 ? (
+                    <div className="text-center py-12">
+                      <p className="text-slate-600 text-lg font-medium mb-1">
+                        No live sessions right now
+                      </p>
+                      <p className="text-slate-400 text-sm">
+                        Check the upcoming sessions below
+                      </p>
+                    </div>
+                  ) : (
+                    <EmptyState tab="live" />
+                  )
+                ) : (
+                  <>
+                    <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
+                      <p className="text-sm text-emerald-800">
+                        <span className="font-semibold">
+                          Class is in session!
+                        </span>{" "}
+                        Join now to attend live.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                      {liveMeetings.items.map((m) => (
+                        <LiveCard
+                          key={m.id}
+                          meeting={m}
+                          onJoin={handleJoin}
+                          joining={joining}
+                        />
+                      ))}
+                    </div>
+                  </>
+                )}
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-                    {liveMeetings.items.map((m) => (
-                      <LiveCard
-                        key={m.id}
-                        meeting={m}
-                        onJoin={handleJoin}
-                        joining={joining}
-                      />
-                    ))}
+                {!scheduledLoading && scheduledCount > 0 && (
+                  <div className="space-y-3 mt-2">
+                    <h2 className="text-sm font-semibold text-slate-600 uppercase tracking-wider">
+                      Coming Up
+                    </h2>
+                    <div className="space-y-2">
+                      {scheduledMeetings!.items.map((m) => (
+                        <ScheduledCard key={m.id} meeting={m} />
+                      ))}
+                    </div>
                   </div>
-                </>
-              ))}
+                )}
+              </>
+            )}
           </div>
         )}
 
@@ -594,7 +653,6 @@ export default function StudentMeetingsPage() {
                     <span className="font-semibold text-violet-600">REC</span>{" "}
                     have recordings you can watch anytime.
                   </div>
-
                   <div className="space-y-2">
                     {pastMeetings.items.map((m) => (
                       <PastCard
@@ -604,7 +662,6 @@ export default function StudentMeetingsPage() {
                       />
                     ))}
                   </div>
-
                   {pastPages > 1 && (
                     <div className="flex items-center justify-center gap-3 mt-4">
                       <button

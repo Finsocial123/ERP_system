@@ -80,3 +80,18 @@ async def end_bbb_meeting(meeting_id: str, moderator_pw: str) -> None:
 #         return None
     
 #     parsed = xmltodict.parse(r.text)
+
+
+
+async def is_meeting_running(meeting_id: str) -> bool:
+    params = {"meetingID": meeting_id}
+    params["checksum"] = _checksum("isMeetingRunning", params)
+
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{settings.BBB_URL}/isMeetingRunning",
+            params=params
+        )
+
+    result = xmltodict.parse(r.text)["response"]
+    return result.get("running") == "true"

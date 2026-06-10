@@ -62,17 +62,23 @@ from app.core.redis import get_redis
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
 # Constants
+# ---------------------------------------------------------------------------
+
 TTL_SUMMARY    = 7 * 24 * 3600   # 7 days  — summary is regenerated only when lesson content changes
 TTL_QUIZ       = 3 * 24 * 3600   # 3 days  — quiz variants per difficulty; fresh enough
 TTL_CURRICULUM = 24 * 3600       # 1 day   — curriculum plan for a given topic spec
+TTL_CHAT       = 24 * 3600       # 24 hours — chat responses for identical lesson questions
 
 LOCK_TTL       = 60              # seconds — lock expires if holder crashes
 LOCK_POLL_INTERVAL = 0.25        # seconds — how often waiters check for result
 LOCK_MAX_WAIT  = 55              # seconds — give up waiting after this
 
 
+# ---------------------------------------------------------------------------
 # Internal low-level helpers (mirrors cache.py style)
+# ---------------------------------------------------------------------------
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]   # 16 hex chars is plenty for keys
@@ -123,7 +129,10 @@ async def _delete_pattern(pattern: str) -> None:
         logger.debug("[AI_CACHE] DELETE pattern error %s: %s", pattern, exc)
 
 
+# ---------------------------------------------------------------------------
 # Request coalescing via Redis lock
+# ---------------------------------------------------------------------------
+
 @asynccontextmanager
 async def _lock(lock_key: str):
     """
@@ -185,7 +194,10 @@ async def _wait_for_result(cache_key: str, lock_key: str) -> Any | None:
     return None
 
 
+# ---------------------------------------------------------------------------
 # Key builders
+# ---------------------------------------------------------------------------
+
 class _AIKeys:
 
     @staticmethod
@@ -213,6 +225,15 @@ class _AIKeys:
     def curriculum_lock(school_id: int, spec_hash: str) -> str:
         return f"lock:ai:curriculum:{school_id}:{spec_hash}"
 
+    # Chat response cache
+    @staticmethod
+    def chat_response(school_id: int, lesson_id: int, language: str, question_hash: str) -> str:
+        return f"ai:chat:{school_id}:{lesson_id}:{language}:{question_hash}"
+
+    @staticmethod
+    def chat_lock(school_id: int, lesson_id: int, language: str, question_hash: str) -> str:
+        return f"lock:ai:chat:{school_id}:{lesson_id}:{language}:{question_hash}"
+
     # Invalidation patterns
     @staticmethod
     def lesson_pattern(school_id: int, lesson_id: int) -> str:
@@ -222,7 +243,35 @@ class _AIKeys:
 AIKeys = _AIKeys()
 
 
+def normalize_question(text: str) -> str:
+    """
+    Normalize a question for stable cache key generation.
+
+    Rules:
+    - Lowercase
+    - Collapse all whitespace to a single space
+    - Strip leading/trailing whitespace
+    - Strip trailing punctuation (? ! .)
+
+    This means "explain FastAPI?", "Explain FastAPI", and "  explain  fastapi  "
+    all map to the same cache key.
+    """
+    import re
+    text = text.lower().strip()
+    text = re.sub(r"\s+", " ", text)
+    text = text.rstrip("?.! ")
+    return text
+
+
+def question_hash(text: str) -> str:
+    """SHA-256 of the normalized question text (first 16 hex chars)."""
+    return _sha256(normalize_question(text))
+
+
+# ---------------------------------------------------------------------------
 # Public content-hash helper
+# ---------------------------------------------------------------------------
+
 def compute_content_hash(chunks_text: list[str]) -> str:
     """
     Hash the concatenated content of lesson chunks.
@@ -232,14 +281,20 @@ def compute_content_hash(chunks_text: list[str]) -> str:
     return _sha256(combined)
 
 
+# ---------------------------------------------------------------------------
 # AI Cache Service
+# ---------------------------------------------------------------------------
+
 class AICacheService:
     """
     Public API for AI response caching.
     All methods are safe to call even when Redis is down.
     """
 
+    # ------------------------------------------------------------------
     # Lesson Summary
+    # ------------------------------------------------------------------
+
     async def get_summary(self, school_id: int, lesson_id: int, content_hash: str) -> dict | None:
         key = AIKeys.summary(school_id, lesson_id, content_hash)
         result = await _get(key)
@@ -263,7 +318,10 @@ class AICacheService:
         lock_key = AIKeys.summary_lock(school_id, lesson_id, content_hash)
         return await _wait_for_result(cache_key, lock_key)
 
+    # ------------------------------------------------------------------
     # Quiz Generation
+    # ------------------------------------------------------------------
+
     async def get_quiz(
         self, school_id: int, lesson_id: int,
         num_questions: int, difficulty: str, content_hash: str
@@ -298,7 +356,10 @@ class AICacheService:
         lock_key = AIKeys.quiz_lock(school_id, lesson_id, num_questions, difficulty, content_hash)
         return await _wait_for_result(cache_key, lock_key)
 
+    # ------------------------------------------------------------------
     # Curriculum Generation
+    # ------------------------------------------------------------------
+
     async def get_curriculum(
         self, school_id: int, topic: str, audience: str,
         weeks: int, num_lessons: int, language: str
@@ -337,7 +398,113 @@ class AICacheService:
         lock_key = self.get_curriculum_lock_key(school_id, topic, audience, weeks, num_lessons, language)
         return await _wait_for_result(cache_key, lock_key)
 
+    # ------------------------------------------------------------------
+    # Chat Response Cache
+    # ------------------------------------------------------------------
+
+    def is_chat_cacheable(
+        self,
+        lesson_id: int | None,
+        history_len: int,
+        web_search: bool,
+        enhance_prompt: bool,
+    ) -> bool:
+        """
+        Returns True only when all safety conditions are met.
+
+        Rules (per spec):
+          - lesson_id must be present  (content-grounded response)
+          - history_len <= 1           (only first message in session; 1 = the
+                                        user message we are about to add, meaning
+                                        prior turns = 0)
+          - web_search must be False   (web results are time-sensitive)
+          - enhance_prompt must be False (prompt was rewritten — non-deterministic)
+        """
+        if lesson_id is None:
+            return False
+        if history_len > 1:
+            return False
+        if web_search:
+            return False
+        if enhance_prompt:
+            return False
+        return True
+
+    def _chat_key(self, school_id: int, lesson_id: int, language: str, q: str) -> str:
+        return AIKeys.chat_response(school_id, lesson_id, language, question_hash(q))
+
+    def _chat_lock_key(self, school_id: int, lesson_id: int, language: str, q: str) -> str:
+        return AIKeys.chat_lock(school_id, lesson_id, language, question_hash(q))
+
+    async def get_chat(
+        self, school_id: int, lesson_id: int, language: str, question: str
+    ) -> str | None:
+        key = self._chat_key(school_id, lesson_id, language, question)
+        result = await _get(key)
+        if result is not None:
+            logger.info("[AI_CACHE HIT] key=%s", key)
+            return result  # stored as plain string
+        logger.info("[AI_CACHE MISS] key=%s", key)
+        return None
+
+    async def set_chat(
+        self, school_id: int, lesson_id: int, language: str, question: str, response: str
+    ) -> None:
+        key = self._chat_key(school_id, lesson_id, language, question)
+        # Store as plain string (not JSON-wrapped dict) for simplicity
+        redis = get_redis()
+        if redis is None:
+            return
+        try:
+            await redis.setex(key, TTL_CHAT, response)
+            logger.info("[AI_CACHE STORE] key=%s ttl=%d", key, TTL_CHAT)
+        except Exception as exc:
+            logger.debug("[AI_CACHE] SET error key=%s: %s", key, exc)
+
+    def get_chat_lock_key(
+        self, school_id: int, lesson_id: int, language: str, question: str
+    ) -> str:
+        return self._chat_lock_key(school_id, lesson_id, language, question)
+
+    async def wait_for_chat(
+        self, school_id: int, lesson_id: int, language: str, question: str
+    ) -> str | None:
+        cache_key = self._chat_key(school_id, lesson_id, language, question)
+        lock_key = self._chat_lock_key(school_id, lesson_id, language, question)
+        # _wait_for_result returns parsed JSON; for chat we stored a raw string
+        # so we read directly from Redis
+        redis = get_redis()
+        if redis is None:
+            return None
+        deadline = time.monotonic() + LOCK_MAX_WAIT
+        attempt = 0
+        while time.monotonic() < deadline:
+            attempt += 1
+            await asyncio.sleep(LOCK_POLL_INTERVAL)
+            try:
+                raw = await redis.get(cache_key)
+                if raw is not None:
+                    logger.info(
+                        "[AI_LOCK WAIT] key=%s resolved_after_attempts=%d", lock_key, attempt
+                    )
+                    return raw
+                lock_exists = await redis.exists(lock_key)
+                if not lock_exists:
+                    logger.warning(
+                        "[AI_LOCK WAIT] key=%s lock_gone_without_result attempt=%d",
+                        lock_key, attempt,
+                    )
+                    return None
+            except Exception as exc:
+                logger.debug("[AI_CACHE] wait_for_chat error: %s", exc)
+                return None
+            logger.debug("[AI_LOCK WAIT] key=%s attempt=%d", lock_key, attempt)
+        logger.warning("[AI_LOCK WAIT] key=%s timed_out_after=%ds", lock_key, LOCK_MAX_WAIT)
+        return None
+
+    # ------------------------------------------------------------------
     # Cache Invalidation
+    # ------------------------------------------------------------------
 
     async def invalidate_lesson(self, school_id: int, lesson_id: int) -> None:
         """

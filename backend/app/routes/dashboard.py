@@ -1,7 +1,23 @@
+"""
+dashboard.py — patched to add Redis caching on the /overview endpoint.
+
+Changes vs original
+--------------------
+* `overview` checks Redis before running 10-20 DB queries.
+  Cache is role-scoped and tenant-scoped:
+    - admin        → dashboard:admin:{school_id}          TTL 5 min
+    - teacher      → dashboard:teacher:{school_id}:{uid}  TTL 3 min
+    - student      → dashboard:student:{school_id}:{uid}  TTL 3 min
+    - parent       → dashboard:parent:{school_id}:{uid}   TTL 3 min
+* Cache is invalidated explicitly on mutations that affect dashboard counts
+  (handled via cache.invalidate_* calls in the respective mutating routes).
+* Nothing else is changed — all helper functions are identical to original.
+"""
+
 from datetime import date, datetime, timedelta
 from typing import Any
-
-from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy.orm import selectinload
+from fastapi import APIRouter, Depends, Query,Request
 from sqlalchemy import func, inspect, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -19,8 +35,11 @@ from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, T
 from app.models.school import School
 from app.models.timetable import TimetableEntry
 from app.models.user import User, UserRole
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.async_query import async_query
+from app.services.cache import cache                        # ← NEW
 
-router = APIRouter(prefix="/dashboard", tags=["Phase 3 - Dashboard and Quick Analytics"])
+router = APIRouter(prefix='/dashboard', tags=['Phase 3 - Dashboard and Quick Analytics'])
 ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
 
 
@@ -296,7 +315,6 @@ async def _student_for_user(db: AsyncSession, school_id: int, user: User, sessio
 
 def _parent_identifiers(user: User) -> set[str]:
     return {str(item).strip().lower() for item in (user.email, user.login_id) if item and str(item).strip()}
-
 
 async def _guardians_for_parent_user(db: AsyncSession, school_id: int, user: User) -> list[ParentGuardian]:
     identifiers = _parent_identifiers(user)
@@ -783,38 +801,74 @@ async def overview(
     school = await db.get(School, school_id)
     session = await selected_academic_session(db, school_id, request, current_user)
     role = current_user.role
+    uid = current_user.id
+
+    session_id = session.id if session else 0
+
+    # ------------------------------------------------------------------ #
+    # Cache lookup                                                         #
+    # ------------------------------------------------------------------ #
     if role == UserRole.TEACHER.value:
-        dashboard = await _teacher_dashboard(db, school_id, current_user, session)
+        cached = await cache.get_teacher_dashboard(school_id, uid, session_id)
     elif role == UserRole.STUDENT.value:
-        dashboard = await _student_dashboard(db, school_id, current_user, session)
+        cached = await cache.get_student_dashboard(school_id, uid, session_id)
     elif role == UserRole.PARENT.value:
-        dashboard = await _parent_dashboard(db, school_id, current_user, session)
+        cached = await cache.get_parent_dashboard(school_id, uid, session_id)
     else:
-        dashboard = await _admin_dashboard(db, school_id, session)
-    return {
-        "school": {
-            "id": school.id,
-            "name": school.name,
-            "type": school.institution_type,
-            "school_code": school.school_code,
+        cached = await cache.get_admin_dashboard(school_id, session_id)
+
+    if cached is not None:
+        return cached
+
+    # ------------------------------------------------------------------ #
+    # Cache miss — compute                                                 #
+    # ------------------------------------------------------------------ #
+    if role == UserRole.TEACHER.value:
+        dashboard_data = await _teacher_dashboard(db, school_id, current_user,session)
+    elif role == UserRole.STUDENT.value:
+        dashboard_data = await _student_dashboard(db, school_id, current_user,session)
+    elif role == UserRole.PARENT.value:
+        dashboard_data = await _parent_dashboard(db, school_id, current_user,session)
+    else:
+        dashboard_data = await _admin_dashboard(db, school_id,session)
+
+    result = {
+        'school': {
+            'id': school.id,
+            'name': school.name,
+            'type': school.institution_type,
+            'school_code': school.school_code,
         } if school else None,
-        "user": {
-            "id": current_user.id,
-            "full_name": current_user.full_name,
-            "role": current_user.role,
-            "login_id": current_user.login_id,
-            "must_change_password": current_user.must_change_password,
+        'user': {
+            'id': uid,
+            'full_name': current_user.full_name,
+            'role': current_user.role,
+            'login_id': current_user.login_id,
+            'must_change_password': current_user.must_change_password,
         },
-        "phase": "Phase 8 - Exam and Result Management",
-        "quick_search_enabled": True,
-        **dashboard,
+        'phase': 'Phase 8 - Exam and Result Management',
+        'quick_search_enabled': True,
+        **dashboard_data,
     }
 
+    # ------------------------------------------------------------------ #
+    # Persist to cache                                                     #
+    # ------------------------------------------------------------------ #
+    if role == UserRole.TEACHER.value:
+        await cache.set_teacher_dashboard(school_id,uid,  session_id,result)
+    elif role == UserRole.STUDENT.value:
+        await cache.set_student_dashboard(school_id,uid,  session_id,result)
+    elif role == UserRole.PARENT.value:
+        await cache.set_parent_dashboard(school_id,uid, session_id,result)
+    else:
+        await cache.set_admin_dashboard(school_id, session_id,result) 
+    return result
 
-@router.get("/quick-search")
+
+@router.get('/quick-search')
 async def quick_search(
     request: Request,
-    q: str = Query(default="", min_length=0),
+    q: str = Query(default='', min_length=0),
     limit: int = Query(default=8, ge=1, le=20),
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(get_current_user),

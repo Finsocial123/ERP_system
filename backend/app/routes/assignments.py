@@ -13,7 +13,7 @@ from app.models.lesson import LessonChunk
 from app.models.submission import Submission
 from app.models.course import Course
 from app.models.enrollment import Enrollment
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.assignment import AssignmentCreate, AssignmentUpdate, QuizRequest
 from app.schemas.submission import GradeSubmission
 from app.utils.dependencies import require_role
@@ -21,8 +21,16 @@ from app.utils.cloudinary import upload_file
 from app.core.async_query import async_query
 router = APIRouter(prefix='/assignments', tags=['Assignments'])
 
-def course_owner_or_admin(course: Course, user: User):
-    if user.role != 'admin' and course.teacher_id != user.id:
+def course_owner_or_admin(course: Course | None, user: User):
+    admin_roles = {
+        UserRole.SUPER_ADMIN.value,
+        UserRole.SCHOOL_OWNER.value,
+        UserRole.SCHOOL_ADMIN.value,
+        'ADMIN',
+    }
+    if not course:
+        raise HTTPException(status_code=404, detail='Course not found')
+    if user.role not in admin_roles and course.teacher_id != user.id:
         raise HTTPException(status_code=403, detail='Not your course')
 
 @router.post('/{course_id}')
@@ -113,7 +121,7 @@ async def get_submissions(assignment_id: int, db: AsyncSession=Depends(get_async
     result = []
     for sub in submissions:
         student = await async_query(db, User).filter(User.id == sub.student_id).first()
-        result.append({'id': sub.id, 'student_id': sub.student_id, 'student_name': student.name if student else None, 'file_url': sub.file_url, 'grade': sub.grade, 'feedback': sub.feedback, 'submitted_at': sub.submitted_at})
+        result.append({'id': sub.id, 'student_id': sub.student_id, 'student_name': student.full_name if student else None, 'file_url': sub.file_url, 'grade': sub.grade, 'feedback': sub.feedback, 'submitted_at': sub.submitted_at})
     return result
 
 @router.put('/submissions/{submission_id}/grade')
@@ -143,7 +151,7 @@ async def generate_lesson_quiz(course_id: int, lesson_id: int, request: QuizRequ
     result = await db.execute(select(Course).where(course_id == Course.id))
     course = result.scalars().first()
     if not course:
-        raise HTTPException(status_code=404, description='Course not found')
+        raise HTTPException(status_code=404, detail='Course not found')
     result = await db.execute(select(Lesson).where(Lesson.id == lesson_id, Lesson.course_id == course_id))
     lesson = result.scalars().first()
     if not lesson:

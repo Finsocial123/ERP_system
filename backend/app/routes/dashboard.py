@@ -566,14 +566,26 @@ async def _admin_charts(db: AsyncSession, school_id: int, counts: dict[str, int]
         SchoolClass.is_active.is_(True),
     ), SchoolClass, session)
     class_rows = await class_query.order_by(SchoolClass.name.asc()).all()
-    students_by_class = []
-    for school_class in class_rows:
-        student_query = _session_filter(async_query(db, Student).filter(
+
+    students_by_class_map: dict[int, int] = {}
+    if class_rows:
+        student_count_query = _session_filter(async_query(
+            db,
+            Student.class_id,
+            func.count(Student.id),
+        ).filter(
             Student.school_id == school_id,
-            Student.class_id == school_class.id,
             Student.is_active.is_(True),
+            Student.class_id.in_([school_class.id for school_class in class_rows]),
         ), Student, session)
-        students_by_class.append({"label": school_class.name, "value": await _count(db, student_query)})
+        rows = await student_count_query.group_by(Student.class_id).all()
+        students_by_class_map = {int(class_id): int(count or 0) for class_id, count in rows if class_id is not None}
+
+    students_by_class = [
+        {"label": school_class.name, "value": students_by_class_map.get(school_class.id, 0)}
+        for school_class in class_rows
+    ]
+
     setup_summary = [
         {"label": "Classes", "value": counts["classes"]},
         {"label": "Sections", "value": counts["sections"]},

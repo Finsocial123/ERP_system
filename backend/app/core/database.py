@@ -111,9 +111,22 @@ def get_db():
 
 
 # Async engine: used by async FastAPI APIs
+async_engine_kwargs = {
+    "pool_pre_ping": True,
+    "echo": False,
+}
+
+if not ASYNC_DATABASE_URL.startswith("sqlite"):
+    async_engine_kwargs.update(
+        pool_size=10,
+        max_overflow=5,
+        pool_recycle=1800,
+        pool_timeout=30,
+    )
+
 async_engine = create_async_engine(
     ASYNC_DATABASE_URL,
-    pool_pre_ping=True,
+    **async_engine_kwargs,
 )
 
 

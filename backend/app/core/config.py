@@ -35,6 +35,10 @@ class Settings(BaseSettings):
 
     GOOGLE_CLIENT_ID: str = ""
 
+    # Runtime / performance
+    RUN_STARTUP_MIGRATIONS: bool = False
+    API_SLOW_LOG_MS: int = 1000
+
     # Email OTP / password reset
     OTP_EXPIRE_MINUTES: int = 10
     OTP_MAX_ATTEMPTS: int = 5

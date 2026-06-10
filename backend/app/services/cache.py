@@ -113,20 +113,20 @@ class _Keys:
         return f"current_session:{school_id}"
 
     @staticmethod
-    def dashboard_admin(school_id: int) -> str:
-        return f"dashboard:admin:{school_id}"
+    def dashboard_admin(school_id: int,session_id:int) -> str:
+        return f"dashboard:admin:{school_id}:{session_id}"
 
     @staticmethod
-    def dashboard_teacher(school_id: int, user_id: int) -> str:
-        return f"dashboard:teacher:{school_id}:{user_id}"
+    def dashboard_teacher(school_id: int, user_id: int,session_id:int) -> str:
+        return f"dashboard:teacher:{school_id}:{user_id}:{session_id}"
 
     @staticmethod
-    def dashboard_student(school_id: int, user_id: int) -> str:
-        return f"dashboard:student:{school_id}:{user_id}"
+    def dashboard_student(school_id: int, user_id: int,session_id:int) -> str:
+        return f"dashboard:student:{school_id}:{user_id}:{session_id}"
 
     @staticmethod
-    def dashboard_parent(school_id: int, user_id: int) -> str:
-        return f"dashboard:parent:{school_id}:{user_id}"
+    def dashboard_parent(school_id: int, user_id: int,session_id:int) -> str:
+        return f"dashboard:parent:{school_id}:{user_id}:{session_id}"
 
     @staticmethod
     def user_profile(user_id: int) -> str:
@@ -257,12 +257,12 @@ class CacheService:
         await _delete(CacheKeys.dashboard_student(school_id, user_id, session_id)) 
     
     async def invalidate_parent_dashboard(self, school_id: int, user_id: int,session_id:int) -> None: 
-        await _delete(CacheKeys.dashboard_student(school_id, user_id, session_id)) 
+        await _delete(CacheKeys.dashboard_parent(school_id, user_id, session_id)) 
     
-    async def invalidate_all_dashboards(self, school_id: int,session_id:int) -> None:
+    async def invalidate_all_dashboards(self, school_id: int) -> None:
         """Wipe all dashboard caches for a school (e.g. after bulk data change).""" 
         await _delete_pattern(f"dashboard:*:{school_id}:*") 
-        await _delete(CacheKeys.dashboard_admin(school_id,session_id))
+        await _delete(CacheKeys.dashboard_admin(school_id))
     # ------------------------------------------------------------------
     # User / teacher / student profiles
     # ------------------------------------------------------------------

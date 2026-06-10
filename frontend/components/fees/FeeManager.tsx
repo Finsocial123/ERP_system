@@ -177,34 +177,83 @@ export default function FeeManager() {
     [paymentForm.student_fee_record_id, records]
   );
 
-  const loadAll = async () => {
+  const [loadedTabs, setLoadedTabs] = useState<Partial<Record<TabKey, boolean>>>({});
+
+  const markLoaded = (tab: TabKey) => {
+    setLoadedTabs((previous) => ({ ...previous, [tab]: true }));
+  };
+
+  const currentSessionQuery = (metaData: FeeMeta | null = meta) => {
+    const sessionId = metaData?.current_academic_session_id;
+    return sessionId ? `academic_session_id=${sessionId}` : "";
+  };
+
+  const loadDashboardData = async (metaData: FeeMeta | null = meta) => {
+    const query = currentSessionQuery(metaData);
+    const separator = query ? "&" : "";
+    const [dashboardData, reportData] = await Promise.all([
+      apiFetch<FeeDashboard>(`/fees/dashboard${query ? `?${query}` : ""}`),
+      apiFetch<DailyCollectionReport>(`/fees/daily-collection?${query}${separator}report_date=${reportDate}`),
+    ]);
+    setDashboard(dashboardData);
+    setDailyReport(reportData);
+    markLoaded("dashboard");
+  };
+
+  const loadTabData = async (tab: TabKey = activeTab, force = false) => {
+    if (!force && loadedTabs[tab]) return;
     setLoading(true);
     setError("");
     try {
-      const [metaData, dashboardData, categoriesData, structuresData, assignmentsData, recordsData, paymentsData, expensesData, reportData] = await Promise.all([
-        apiFetch<FeeMeta>("/fees/meta"),
-        apiFetch<FeeDashboard>("/fees/dashboard"),
-        apiFetch<FeeCategory[]>("/fees/categories"),
-        apiFetch<FeeStructure[]>("/fees/structures"),
-        apiFetch<FeeAssignment[]>("/fees/assignments"),
-        apiFetch<StudentFeeRecord[]>("/fees/records"),
-        apiFetch<FeePayment[]>("/fees/payments"),
-        apiFetch<FeeExpense[]>("/fees/expenses"),
-        apiFetch<DailyCollectionReport>(`/fees/daily-collection?report_date=${reportDate}`),
-      ]);
-      setMeta(metaData);
-      setDashboard(dashboardData);
-      setCategories(categoriesData);
-      setStructures(structuresData);
-      setAssignments(assignmentsData);
-      setRecords(recordsData);
-      setPayments(paymentsData);
-      setExpenses(expensesData);
-      setDailyReport(reportData);
+      const query = currentSessionQuery();
+      const withQuery = (path: string, extra = "") => {
+        const params = [query, extra].filter(Boolean).join("&");
+        return params ? `${path}?${params}` : path;
+      };
 
+      if (tab === "dashboard") {
+        await loadDashboardData();
+      } else if (tab === "categories") {
+        setCategories(await apiFetch<FeeCategory[]>("/fees/categories"));
+        markLoaded(tab);
+      } else if (tab === "structures") {
+        setStructures(await apiFetch<FeeStructure[]>(withQuery("/fees/structures")));
+        markLoaded(tab);
+      } else if (tab === "assign") {
+        setAssignments(await apiFetch<FeeAssignment[]>(withQuery("/fees/assignments")));
+        markLoaded(tab);
+      } else if (tab === "records") {
+        setRecords(await apiFetch<StudentFeeRecord[]>(withQuery("/fees/records", "limit=150")));
+        markLoaded(tab);
+      } else if (tab === "payments") {
+        const [recordsData, paymentsData] = await Promise.all([
+          apiFetch<StudentFeeRecord[]>(withQuery("/fees/records", "status=PENDING&limit=250")),
+          apiFetch<FeePayment[]>(withQuery("/fees/payments", "limit=100")),
+        ]);
+        setRecords(recordsData);
+        setPayments(paymentsData);
+        markLoaded(tab);
+      } else if (tab === "expenses") {
+        setExpenses(await apiFetch<FeeExpense[]>(withQuery("/fees/expenses", "limit=100")));
+        markLoaded(tab);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load fee data");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadInitial = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const metaData = await apiFetch<FeeMeta>("/fees/meta");
+      setMeta(metaData);
       setStructureForm((prev) => ({ ...prev, academic_session_id: prev.academic_session_id || String(metaData.current_academic_session_id || "") }));
       setAssignmentForm((prev) => ({ ...prev, academic_session_id: prev.academic_session_id || String(metaData.current_academic_session_id || "") }));
       setRecordForm((prev) => ({ ...prev, academic_session_id: prev.academic_session_id || String(metaData.current_academic_session_id || "") }));
+      await loadDashboardData(metaData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load fee module");
     } finally {
@@ -213,23 +262,37 @@ export default function FeeManager() {
   };
 
   useEffect(() => {
-    loadAll();
+    loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!meta) return;
+    loadTabData(activeTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, meta?.current_academic_session_id]);
 
   const refreshReport = async () => {
     setError("");
     try {
-      setDailyReport(await apiFetch<DailyCollectionReport>(`/fees/daily-collection?report_date=${reportDate}`));
+      const query = currentSessionQuery();
+      const separator = query ? "&" : "";
+      setDailyReport(await apiFetch<DailyCollectionReport>(`/fees/daily-collection?${query}${separator}report_date=${reportDate}`));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load daily report");
     }
   };
 
+  const refreshCurrentTab = async () => {
+    await loadTabData(activeTab, true);
+  };
+
   const afterSave = async (success: string) => {
     setMessage(success);
     setSaving(false);
-    await loadAll();
+    setLoadedTabs({});
+    await loadDashboardData();
+    await loadTabData(activeTab, true);
   };
 
   const saveCategory = async (event: React.FormEvent) => {
@@ -436,7 +499,7 @@ export default function FeeManager() {
         ))}
         <button
           type="button"
-          onClick={loadAll}
+          onClick={refreshCurrentTab}
           className="ml-auto inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
         >
           <RefreshCw size={15} /> Refresh
@@ -448,7 +511,7 @@ export default function FeeManager() {
 
       {loading ? (
         <Card>
-          <p className="text-sm text-slate-500">Loading fee module...</p>
+          <p className="text-sm text-slate-500">Loading fee data...</p>
         </Card>
       ) : (
         <>

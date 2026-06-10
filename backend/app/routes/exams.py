@@ -1,7 +1,7 @@
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
 from app.core.database import get_async_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
+from app.dependencies.academic_session import selected_academic_session, require_writable_academic_session, writable_selected_academic_session, assert_item_session_is_writable, assert_academic_session_is_writable
 from app.models.academic import AcademicSession, SchoolClass, Section, Subject
 from app.models.exam import Exam, ExamMark, ExamSubject
 from app.models.people import Student, Teacher
@@ -37,7 +38,7 @@ from app.schemas.exam import (
 from app.utils.parent_scope import children_for_parent
 
 
-router = APIRouter(prefix="/exams", tags=["Phase 8 - Exam and Result Management"])
+router = APIRouter(prefix="/exams", tags=["Phase 8 - Exam and Result Management"], dependencies=[Depends(require_writable_academic_session)])
 
 ADMIN_ROLES = {
     UserRole.SUPER_ADMIN.value,
@@ -193,11 +194,15 @@ async def _teacher_for_user(
     db: AsyncSession,
     school_id: int,
     user: User,
+    academic_session_id: int | None = None,
 ) -> Teacher | None:
-    teacher = await async_query(db, Teacher).filter(
+    query = async_query(db, Teacher).filter(
         Teacher.school_id == school_id,
         Teacher.user_id == user.id,
-    ).first()
+    )
+    if academic_session_id is not None:
+        query = query.filter(Teacher.academic_session_id == academic_session_id)
+    teacher = await query.first()
 
     if teacher:
         return teacher
@@ -213,24 +218,31 @@ async def _teacher_for_user(
     if not conditions:
         return None
 
-    return await async_query(db, Teacher).filter(
+    query = async_query(db, Teacher).filter(
         Teacher.school_id == school_id,
         Teacher.is_active.is_(True),
         or_(*conditions),
-    ).first()
+    )
+    if academic_session_id is not None:
+        query = query.filter(Teacher.academic_session_id == academic_session_id)
+    return await query.first()
 
 
 async def _student_for_user(
     db: AsyncSession,
     school_id: int,
     user: User,
+    academic_session_id: int | None = None,
 ) -> Student | None:
-    student = await async_query(db, Student).options(
+    query = async_query(db, Student).options(
         *_student_load_options()
     ).filter(
         Student.school_id == school_id,
         Student.user_id == user.id,
-    ).first()
+    )
+    if academic_session_id is not None:
+        query = query.filter(Student.academic_session_id == academic_session_id)
+    student = await query.first()
 
     if student:
         return student
@@ -246,19 +258,23 @@ async def _student_for_user(
     if not conditions:
         return None
 
-    return await async_query(db, Student).options(
+    query = async_query(db, Student).options(
         *_student_load_options()
     ).filter(
         Student.school_id == school_id,
         Student.is_active.is_(True),
         or_(*conditions),
-    ).first()
+    )
+    if academic_session_id is not None:
+        query = query.filter(Student.academic_session_id == academic_session_id)
+    return await query.first()
 
 
 async def _children_for_parent(
     db: AsyncSession,
     school_id: int,
     user: User,
+    academic_session_id: int | None = None,
 ) -> list[Student]:
     children = await children_for_parent(db, school_id, user)
     child_ids = [child.id for child in children]
@@ -266,12 +282,16 @@ async def _children_for_parent(
     if not child_ids:
         return []
 
-    return await async_query(db, Student).options(
+    query = async_query(db, Student).options(
         *_student_load_options()
     ).filter(
         Student.school_id == school_id,
         Student.id.in_(child_ids),
-    ).order_by(
+    )
+    if academic_session_id is not None:
+        query = query.filter(Student.academic_session_id == academic_session_id)
+
+    return await query.order_by(
         Student.first_name.asc()
     ).all()
 
@@ -426,6 +446,9 @@ def _students_for_exam_query(db: AsyncSession, exam: Exam):
         Student.class_id == exam.class_id,
         Student.is_active.is_(True),
     )
+
+    if exam.academic_session_id is not None:
+        query = query.filter(Student.academic_session_id == exam.academic_session_id)
 
     if exam.section_id is not None:
         query = query.filter(Student.section_id == exam.section_id)
@@ -850,7 +873,7 @@ async def _report_card_for_student(
 
 
 def _exam_query_for_student(db: AsyncSession, school_id: int, student: Student):
-    return async_query(db, Exam).options(
+    query = async_query(db, Exam).options(
         *_exam_load_options()
     ).filter(
         Exam.school_id == school_id,
@@ -858,7 +881,10 @@ def _exam_query_for_student(db: AsyncSession, school_id: int, student: Student):
         Exam.is_active.is_(True),
         Exam.result_status == "PUBLISHED",
         or_(Exam.section_id.is_(None), Exam.section_id == student.section_id),
-    ).order_by(
+    )
+    if student.academic_session_id is not None:
+        query = query.filter(Exam.academic_session_id == student.academic_session_id)
+    return query.order_by(
         Exam.start_date.desc().nullslast(),
         Exam.id.desc(),
     )
@@ -866,37 +892,50 @@ def _exam_query_for_student(db: AsyncSession, school_id: int, student: Student):
 
 @router.get("/meta", response_model=ExamMetaResponse)
 async def exam_meta(
+    request: Request,
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(*MANAGER_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    session = await _current_session(db, school_id)
+    session = await selected_academic_session(db, school_id, request, current_user)
 
-    classes = await async_query(db, SchoolClass).filter(
+    classes_query = async_query(db, SchoolClass).filter(
         SchoolClass.school_id == school_id,
         SchoolClass.is_active.is_(True),
-    ).order_by(
+    )
+    if session:
+        classes_query = classes_query.filter(SchoolClass.academic_session_id == session.id)
+    classes = await classes_query.order_by(
         SchoolClass.name.asc()
     ).all()
 
-    sections = await async_query(db, Section).filter(
+    sections_query = async_query(db, Section).filter(
         Section.school_id == school_id,
         Section.is_active.is_(True),
-    ).order_by(
+    )
+    if session:
+        sections_query = sections_query.filter(Section.academic_session_id == session.id)
+    sections = await sections_query.order_by(
         Section.name.asc()
     ).all()
 
-    subjects = await async_query(db, Subject).filter(
+    subjects_query = async_query(db, Subject).filter(
         Subject.school_id == school_id,
         Subject.is_active.is_(True),
-    ).order_by(
+    )
+    if session:
+        subjects_query = subjects_query.filter(Subject.academic_session_id == session.id)
+    subjects = await subjects_query.order_by(
         Subject.name.asc()
     ).all()
 
-    teachers = await async_query(db, Teacher).filter(
+    teachers_query = async_query(db, Teacher).filter(
         Teacher.school_id == school_id,
         Teacher.is_active.is_(True),
-    ).order_by(
+    )
+    if session:
+        teachers_query = teachers_query.filter(Teacher.academic_session_id == session.id)
+    teachers = await teachers_query.order_by(
         Teacher.full_name.asc()
     ).all()
 
@@ -931,6 +970,7 @@ async def exam_meta(
 
 @router.get("", response_model=list[ExamRead])
 async def list_exams(
+    request: Request,
     class_id: int | None = None,
     section_id: int | None = None,
     status_filter: str | None = Query(default=None, alias="status"),
@@ -939,12 +979,16 @@ async def list_exams(
     current_user: User = Depends(require_roles(*MANAGER_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
+    session = await selected_academic_session(db, school_id, request, current_user)
+
     query = async_query(db, Exam).options(
         *_exam_load_options()
     ).filter(
         Exam.school_id == school_id,
         Exam.is_active.is_(True),
     )
+    if session:
+        query = query.filter(Exam.academic_session_id == session.id)
 
     if class_id:
         query = query.filter(Exam.class_id == class_id)
@@ -976,16 +1020,22 @@ async def list_exams(
 @router.post("", response_model=ExamRead, status_code=status.HTTP_201_CREATED)
 async def create_exam(
     payload: ExamCreate,
+    request: Request,
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(*MANAGER_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
+    session = await writable_selected_academic_session(
+        db, school_id, request, current_user, payload.academic_session_id
+    )
+    academic_session_id = session.id if session else None
+
     await _validate_exam_scope(
         db,
         school_id,
         payload.class_id,
         payload.section_id,
-        payload.academic_session_id,
+        academic_session_id,
     )
 
     exam = Exam(
@@ -995,7 +1045,7 @@ async def create_exam(
         description=(payload.description or "").strip() or None,
         class_id=payload.class_id,
         section_id=payload.section_id,
-        academic_session_id=payload.academic_session_id,
+        academic_session_id=academic_session_id,
         start_date=payload.start_date,
         end_date=payload.end_date,
         result_status="DRAFT",
@@ -1018,11 +1068,14 @@ async def update_exam(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
     data = payload.model_dump(exclude_unset=True)
 
     class_id = data.get("class_id", exam.class_id)
     section_id = data.get("section_id", exam.section_id)
     academic_session_id = data.get("academic_session_id", exam.academic_session_id)
+    if "academic_session_id" in data:
+        await assert_academic_session_is_writable(db, school_id, academic_session_id)
 
     await _validate_exam_scope(db, school_id, class_id, section_id, academic_session_id)
 
@@ -1066,6 +1119,7 @@ async def delete_exam(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
     exam.is_active = False
     await db.commit()
     return MessageResponse(message="Exam deleted successfully")
@@ -1079,6 +1133,7 @@ async def publish_exam(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
 
     subjects_count = await _count(
         db,
@@ -1112,6 +1167,7 @@ async def unpublish_exam(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
     exam.result_status = "DRAFT"
     exam.published_at = None
     await db.commit()
@@ -1166,6 +1222,7 @@ async def auto_schedule_exam_timetable(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
 
     if not exam.start_date:
         raise HTTPException(status_code=400, detail="Set exam start date before using auto schedule")
@@ -1246,6 +1303,7 @@ async def create_exam_subject(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
 
     await _validate_exam_subject_scope(
         db,
@@ -1306,6 +1364,7 @@ async def update_exam_subject(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
     item = await _exam_subject_or_404(db, school_id, exam_subject_id, exam_id)
     data = payload.model_dump(exclude_unset=True)
 
@@ -1372,7 +1431,8 @@ async def delete_exam_subject(
     current_user: User = Depends(require_roles(*MANAGER_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    await _exam_or_404(db, school_id, exam_id)
+    exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
     item = await _exam_subject_or_404(db, school_id, exam_subject_id, exam_id)
     item.is_active = False
     await db.commit()
@@ -1425,6 +1485,7 @@ async def save_bulk_marks(
     db: AsyncSession = Depends(get_async_db),
 ):
     exam = await _exam_or_404(db, school_id, exam_id)
+    await assert_item_session_is_writable(db, school_id, exam)
     exam_subject = await _exam_subject_or_404(db, school_id, payload.exam_subject_id, exam.id)
 
     students = await _students_for_exam_query(db, exam).all()
@@ -1561,22 +1622,27 @@ async def subject_result(
 
 @router.get("/my-timetable", response_model=list[ExamTimetableItem])
 async def my_exam_timetable(
+    request: Request,
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(UserRole.STUDENT.value)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    student = await _student_for_user(db, school_id, current_user)
+    session = await selected_academic_session(db, school_id, request, current_user)
+    student = await _student_for_user(db, school_id, current_user, session.id if session else None)
     if not student:
         return []
 
-    exams = await async_query(db, Exam).options(
+    exams_query = async_query(db, Exam).options(
         *_exam_load_options()
     ).filter(
         Exam.school_id == school_id,
         Exam.class_id == student.class_id,
         Exam.is_active.is_(True),
         or_(Exam.section_id.is_(None), Exam.section_id == student.section_id),
-    ).order_by(
+    )
+    if student.academic_session_id is not None:
+        exams_query = exams_query.filter(Exam.academic_session_id == student.academic_session_id)
+    exams = await exams_query.order_by(
         Exam.start_date.asc().nullslast(),
         Exam.id.asc(),
     ).all()
@@ -1613,21 +1679,26 @@ async def my_exam_timetable(
 
 @router.get("/my-children-timetable", response_model=list[ExamTimetableItem])
 async def my_children_exam_timetable(
+    request: Request,
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(UserRole.PARENT.value)),
     db: AsyncSession = Depends(get_async_db),
 ):
+    session = await selected_academic_session(db, school_id, request, current_user)
     items: list[ExamTimetableItem] = []
 
-    for child in await _children_for_parent(db, school_id, current_user):
-        exams = await async_query(db, Exam).options(
+    for child in await _children_for_parent(db, school_id, current_user, session.id if session else None):
+        exams_query = async_query(db, Exam).options(
             *_exam_load_options()
         ).filter(
             Exam.school_id == school_id,
             Exam.class_id == child.class_id,
             Exam.is_active.is_(True),
             or_(Exam.section_id.is_(None), Exam.section_id == child.section_id),
-        ).order_by(
+        )
+        if child.academic_session_id is not None:
+            exams_query = exams_query.filter(Exam.academic_session_id == child.academic_session_id)
+        exams = await exams_query.order_by(
             Exam.start_date.asc().nullslast(),
             Exam.id.asc(),
         ).all()
@@ -1640,11 +1711,13 @@ async def my_children_exam_timetable(
 
 @router.get("/my-report-cards", response_model=list[StudentReportCard])
 async def my_report_cards(
+    request: Request,
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(UserRole.STUDENT.value)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    student = await _student_for_user(db, school_id, current_user)
+    session = await selected_academic_session(db, school_id, request, current_user)
+    student = await _student_for_user(db, school_id, current_user, session.id if session else None)
     if not student:
         return []
 
@@ -1654,13 +1727,15 @@ async def my_report_cards(
 
 @router.get("/my-children-report-cards", response_model=list[ParentReportCard])
 async def my_children_report_cards(
+    request: Request,
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(UserRole.PARENT.value)),
     db: AsyncSession = Depends(get_async_db),
 ):
+    session = await selected_academic_session(db, school_id, request, current_user)
     cards: list[ParentReportCard] = []
 
-    for child in await _children_for_parent(db, school_id, current_user):
+    for child in await _children_for_parent(db, school_id, current_user, session.id if session else None):
         exams = await _exam_query_for_student(db, school_id, child).all()
         for exam in exams:
             card = await _report_card_for_student(db, exam, child)

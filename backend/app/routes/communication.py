@@ -1,7 +1,7 @@
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -139,6 +139,48 @@ def _visible_notification_query(db: AsyncSession, user: User):
     )
 
 
+
+
+async def _load_announcement_for_response(db: AsyncSession, item_id: int) -> Announcement:
+    result = await db.execute(
+        select(Announcement)
+        .options(selectinload(Announcement.author))
+        .where(Announcement.id == item_id)
+    )
+    item = result.scalar_one()
+    return item
+
+
+async def _load_event_for_response(db: AsyncSession, item_id: int) -> SchoolEvent:
+    result = await db.execute(
+        select(SchoolEvent)
+        .options(selectinload(SchoolEvent.author))
+        .where(SchoolEvent.id == item_id)
+    )
+    item = result.scalar_one()
+    return item
+
+
+async def _load_complaint_for_response(db: AsyncSession, item_id: int) -> Complaint:
+    result = await db.execute(
+        select(Complaint)
+        .options(selectinload(Complaint.creator), selectinload(Complaint.assignee))
+        .where(Complaint.id == item_id)
+    )
+    item = result.scalar_one()
+    return item
+
+
+async def _load_notification_for_response(db: AsyncSession, item_id: int) -> InAppNotification:
+    result = await db.execute(
+        select(InAppNotification)
+        .options(selectinload(InAppNotification.author))
+        .where(InAppNotification.id == item_id)
+    )
+    item = result.scalar_one()
+    return item
+
+
 def _create_notification(
     db: AsyncSession,
     *,
@@ -189,8 +231,7 @@ async def create_announcement(payload: AnnouncementCreate, current_user: User=De
     if item.status == CommunicationStatus.PUBLISHED.value:
         _broadcast_notification(db, school_id=school_id, title=item.title, message=item.message[:250], category='ANNOUNCEMENT', priority=item.priority, audience_csv=audience_csv, created_by=current_user.id, link='/communication')
     await db.commit()
-    await db.refresh(item)
-    return _announcement_out(item)
+    return _announcement_out(await _load_announcement_for_response(db, item.id))
 
 
 @router.get('/announcements', response_model=list[AnnouncementOut])
@@ -217,8 +258,7 @@ async def update_announcement(announcement_id: int, payload: AnnouncementUpdate,
     for key, value in data.items():
         setattr(item, key, value.value if hasattr(value, 'value') else value)
     await db.commit()
-    await db.refresh(item)
-    return _announcement_out(item)
+    return _announcement_out(await _load_announcement_for_response(db, item.id))
 
 
 @router.delete('/announcements/{announcement_id}', response_model=MessageResponse)
@@ -254,8 +294,7 @@ async def create_event(payload: EventCreate, current_user: User=Depends(require_
     if item.status == CommunicationStatus.PUBLISHED.value:
         _broadcast_notification(db, school_id=school_id, title=f'Event: {item.title}', message=(item.description or item.title)[:250], category='MEETING' if (item.category or '').upper() == 'MEETING' else 'EVENT', priority='NORMAL', audience_csv=audience_csv, created_by=current_user.id, link='/communication')
     await db.commit()
-    await db.refresh(item)
-    return _event_out(item)
+    return _event_out(await _load_event_for_response(db, item.id))
 
 
 @router.get('/events', response_model=list[EventOut])
@@ -284,8 +323,7 @@ async def update_event(event_id: int, payload: EventUpdate, current_user: User=D
     for key, value in data.items():
         setattr(item, key, value.value if hasattr(value, 'value') else value)
     await db.commit()
-    await db.refresh(item)
-    return _event_out(item)
+    return _event_out(await _load_event_for_response(db, item.id))
 
 
 @router.delete('/events/{event_id}', response_model=MessageResponse)
@@ -306,8 +344,7 @@ async def create_complaint(payload: ComplaintCreate, current_user: User=Depends(
     await db.flush()
     _notify_admins(db, school_id, 'New complaint submitted', item.subject, 'COMPLAINT', None if payload.is_anonymous else current_user.id)
     await db.commit()
-    await db.refresh(item)
-    return _complaint_out(item, current_user)
+    return _complaint_out(await _load_complaint_for_response(db, item.id), current_user)
 
 
 @router.get('/complaints', response_model=list[ComplaintOut])
@@ -342,8 +379,7 @@ async def update_complaint(complaint_id: int, payload: ComplaintUpdate, current_
         if item.created_by:
             _create_notification(db, school_id=item.school_id, title='Complaint status updated', message=f"Your complaint '{item.subject}' is now {item.status.replace('_', ' ').title()}.", category='COMPLAINT', priority='NORMAL', target_user_id=item.created_by, created_by=current_user.id, link='/communication')
     await db.commit()
-    await db.refresh(item)
-    return _complaint_out(item, current_user)
+    return _complaint_out(await _load_complaint_for_response(db, item.id), current_user)
 
 
 @router.post('/notifications', response_model=NotificationOut, status_code=status.HTTP_201_CREATED)
@@ -351,8 +387,7 @@ async def create_notification(payload: NotificationCreate, current_user: User=De
     item = InAppNotification(school_id=_school_id(current_user), created_by=current_user.id, title=payload.title, message=payload.message, category=payload.category, priority=payload.priority.value, target_role=payload.target_role.value if payload.target_role else None, target_user_id=payload.target_user_id, link=payload.link, expires_at=payload.expires_at)
     db.add(item)
     await db.commit()
-    await db.refresh(item)
-    return _notification_out(item, set())
+    return _notification_out(await _load_notification_for_response(db, item.id), set())
 
 
 @router.get('/notifications', response_model=list[NotificationOut])

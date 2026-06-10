@@ -43,6 +43,7 @@ export default function LessonSummaryGenerator({
       }
 
       const data = await res.json();
+      console.log(data)
       setSummary(data);
       setState("completed");
     } catch (err) {

@@ -41,6 +41,7 @@ async def create_teacher_class_meeting(
     subject_result = await db.execute(subject_query)
     subject_assignment = subject_result.scalars().first()
 
+<<<<<<< HEAD
     class_teacher_result = await db.execute(
         select(ClassTeacherAssignment).where(
             ClassTeacherAssignment.school_id == school_id,
@@ -48,6 +49,12 @@ async def create_teacher_class_meeting(
             ClassTeacherAssignment.class_id == class_id,
         )
     )   
+=======
+    result = await db.execute(query)
+    assignment = result.scalars().first()
+    if not assignment:
+        raise PermissionError("Teacher does not teach this class")
+>>>>>>> 57080fa34ca0d6e02d306be8705b825d5a0fec8d
 
     class_teacher_assignment = class_teacher_result.scalars().first()
 
@@ -207,7 +214,11 @@ async def get_active_meeting_for_class(
     )
 
     result = await db.execute(query)
+<<<<<<< HEAD
     return result().first()
+=======
+    return result.scalars().first()
+>>>>>>> 57080fa34ca0d6e02d306be8705b825d5a0fec8d
 
 
 async def list_meetings(
@@ -236,9 +247,16 @@ async def list_meetings(
 
     if current_user.role == UserRole.STUDENT.value:
         student_result = await db.execute(
-            select(Student).where(Student.user_id == current_user.id)
+            select(Student)
+            .where(
+                Student.user_id == current_user.id,
+                Student.school_id == current_user.school_id,
+                Student.is_active.is_(True),
+            )
+            .order_by(Student.academic_session_id.desc().nullslast(), Student.id.desc())
+            .limit(1)
         )
-        student = student_result.scalar_one_or_none()
+        student = student_result.scalars().first()
         if not student:
             print(f"DEBUG: No student profile found for user_id={current_user.id}")
             return {"items": [], "total": 0}

@@ -1,7 +1,8 @@
 from datetime import date
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from app.core.database import get_async_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
+from app.dependencies.academic_session import selected_academic_session, require_writable_academic_session, writable_selected_academic_session, assert_item_session_is_writable
 from app.models.academic import AcademicSession, SchoolClass, Section
 from app.models.attendance import AttendanceStatus, StudentAttendance
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher
@@ -9,7 +10,7 @@ from app.models.user import User, UserRole
 from app.schemas.attendance import AttendanceRead, AttendanceUpdate, BulkAttendanceCreate, DayAttendanceRecord, StudentAttendanceSummary
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
-router = APIRouter(prefix='/attendance', tags=['Phase 4 - Attendance'])
+router = APIRouter(prefix='/attendance', tags=['Phase 4 - Attendance'], dependencies=[Depends(require_writable_academic_session)])
 ADMIN_ROLES = [UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN]
 ALLOWED_ROLES = [*ADMIN_ROLES, UserRole.TEACHER]
 TEACHER_ROLE_VALUE = UserRole.TEACHER.value
@@ -33,57 +34,66 @@ def _is_teacher(user: User) -> bool:
     """Check if the user's role is TEACHER (compares string value, not enum)."""
     return user.role == TEACHER_ROLE_VALUE
 
-async def _get_teacher(db: AsyncSession, school_id: int, user: User) -> Teacher | None:
+async def _get_teacher(db: AsyncSession, school_id: int, user: User, academic_session_id: int | None=None) -> Teacher | None:
     """Resolve the Teacher record for the logged-in user."""
-    return await async_query(db, Teacher).filter(Teacher.user_id == user.id, Teacher.school_id == school_id).first()
+    query = async_query(db, Teacher).filter(Teacher.user_id == user.id, Teacher.school_id == school_id)
+    if academic_session_id is not None:
+        query = query.filter(Teacher.academic_session_id == academic_session_id)
+    return await query.first()
 
-async def _teacher_allowed_class_ids(db: AsyncSession, school_id: int, teacher: Teacher) -> set[int]:
+async def _teacher_allowed_class_ids(db: AsyncSession, school_id: int, teacher: Teacher, academic_session_id: int | None=None) -> set[int]:
     """
     Return the set of class_ids a teacher is allowed to take attendance for.
     ONLY ClassTeacherAssignment is used — a teacher must be assigned as the
     class teacher of a class. Subject teacher assignment does NOT grant access.
     """
-    return {row.class_id for row in await async_query(db, ClassTeacherAssignment).filter(ClassTeacherAssignment.teacher_id == teacher.id, ClassTeacherAssignment.school_id == school_id).all()}
+    query = async_query(db, ClassTeacherAssignment).filter(ClassTeacherAssignment.teacher_id == teacher.id, ClassTeacherAssignment.school_id == school_id)
+    if academic_session_id is not None:
+        query = query.filter(ClassTeacherAssignment.academic_session_id == academic_session_id)
+    return {row.class_id for row in await query.all()}
 
-async def _assert_teacher_can_access_class(db: AsyncSession, school_id: int, user: User, class_id: int) -> None:
+async def _assert_teacher_can_access_class(db: AsyncSession, school_id: int, user: User, class_id: int, academic_session_id: int | None=None) -> None:
     """
     Raise 403 if a TEACHER tries to access a class they are not assigned to.
     Admin roles pass through unconditionally.
     """
     if not _is_teacher(user):
         return
-    teacher = await _get_teacher(db, school_id, user)
+    teacher = await _get_teacher(db, school_id, user, academic_session_id)
     if not teacher:
         raise HTTPException(status_code=403, detail='No teacher profile found for your account. Contact admin.')
-    allowed = await _teacher_allowed_class_ids(db, school_id, teacher)
+    allowed = await _teacher_allowed_class_ids(db, school_id, teacher, academic_session_id)
     if class_id not in allowed:
         raise HTTPException(status_code=403, detail='You are not assigned to this class.')
 
 @router.get('/my-classes', response_model=list[dict])
-async def teacher_allowed_classes(school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*ALLOWED_ROLES)), db: AsyncSession=Depends(get_async_db)):
+async def teacher_allowed_classes(request: Request, school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*ALLOWED_ROLES)), db: AsyncSession=Depends(get_async_db)):
+    session = await selected_academic_session(db, school_id, request, current_user)
+    session_id = session.id if session else None
     if _is_teacher(current_user):
-        teacher = await _get_teacher(db, school_id, current_user)
+        teacher = await _get_teacher(db, school_id, current_user, session_id)
         if not teacher:
             return []
-        allowed_ids = await _teacher_allowed_class_ids(db, school_id, teacher)
+        allowed_ids = await _teacher_allowed_class_ids(db, school_id, teacher, session_id)
         if not allowed_ids:
             return []
-        classes = await async_query(db, SchoolClass).filter(SchoolClass.id.in_(allowed_ids), SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True)).order_by(SchoolClass.name).all()
+        classes = await async_query(db, SchoolClass).filter(SchoolClass.id.in_(allowed_ids), SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True), SchoolClass.academic_session_id == session_id).order_by(SchoolClass.name).all()
     else:
-        classes = await async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True)).order_by(SchoolClass.name).all()
+        classes = await async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True), SchoolClass.academic_session_id == session_id).order_by(SchoolClass.name).all()
     return [{'id': c.id, 'name': c.name} for c in classes]
 
 @router.post('/bulk', response_model=list[AttendanceRead], status_code=status.HTTP_201_CREATED)
-async def bulk_mark_attendance(payload: BulkAttendanceCreate, school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*ALLOWED_ROLES)), db: AsyncSession=Depends(get_async_db)):
-    await _validate_session(db, payload.session_id, school_id)
+async def bulk_mark_attendance(payload: BulkAttendanceCreate, request: Request, school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*ALLOWED_ROLES)), db: AsyncSession=Depends(get_async_db)):
+    session = await writable_selected_academic_session(db, school_id, request, current_user, payload.session_id)
+    await _validate_session(db, session.id if session else payload.session_id, school_id)
     await _validate_class(db, payload.class_id, school_id)
-    await _assert_teacher_can_access_class(db, school_id, current_user, payload.class_id)
+    await _assert_teacher_can_access_class(db, school_id, current_user, payload.class_id, session.id if session else payload.session_id)
     if payload.section_id:
         sec = await async_query(db, Section).filter(Section.id == payload.section_id, Section.school_id == school_id).first()
         if not sec:
             raise HTTPException(status_code=404, detail='Section not found')
     student_ids = [e.student_id for e in payload.entries]
-    students = await async_query(db, Student).filter(Student.id.in_(student_ids), Student.school_id == school_id).all()
+    students = await async_query(db, Student).filter(Student.id.in_(student_ids), Student.school_id == school_id, Student.academic_session_id == payload.session_id).all()
     found_ids = {s.id for s in students}
     missing = set(student_ids) - found_ids
     if missing:
@@ -106,11 +116,12 @@ async def bulk_mark_attendance(payload: BulkAttendanceCreate, school_id: int=Dep
     return results
 
 @router.get('/sheet', response_model=list[DayAttendanceRecord])
-async def get_attendance_sheet(session_id: int=Query(...), class_id: int=Query(...), date: date=Query(...), section_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*ALLOWED_ROLES)), db: AsyncSession=Depends(get_async_db)):
-    await _validate_session(db, session_id, school_id)
+async def get_attendance_sheet(request: Request, session_id: int=Query(...), class_id: int=Query(...), date: date=Query(...), section_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*ALLOWED_ROLES)), db: AsyncSession=Depends(get_async_db)):
+    session = await selected_academic_session(db, school_id, request, current_user, session_id)
+    await _validate_session(db, session.id if session else session_id, school_id)
     await _validate_class(db, class_id, school_id)
-    await _assert_teacher_can_access_class(db, school_id, current_user, class_id)
-    q = async_query(db, Student).filter(Student.school_id == school_id, Student.class_id == class_id, Student.is_active.is_(True))
+    await _assert_teacher_can_access_class(db, school_id, current_user, class_id, session.id if session else session_id)
+    q = async_query(db, Student).filter(Student.school_id == school_id, Student.class_id == class_id, Student.is_active.is_(True), Student.academic_session_id == session_id)
     if section_id:
         q = q.filter(Student.section_id == section_id)
     students = await q.order_by(Student.roll_number, Student.first_name).all()
@@ -122,7 +133,8 @@ async def update_attendance(attendance_id: int, payload: AttendanceUpdate, schoo
     record = await async_query(db, StudentAttendance).filter(StudentAttendance.id == attendance_id, StudentAttendance.school_id == school_id).first()
     if not record:
         raise HTTPException(status_code=404, detail='Attendance record not found')
-    await _assert_teacher_can_access_class(db, school_id, current_user, record.class_id)
+    await assert_item_session_is_writable(db, school_id, record, "session_id")
+    await _assert_teacher_can_access_class(db, school_id, current_user, record.class_id, record.session_id)
     record.status = payload.status
     record.note = payload.note
     record.marked_by = current_user.id
@@ -131,11 +143,12 @@ async def update_attendance(attendance_id: int, payload: AttendanceUpdate, schoo
     return record
 
 @router.get('/summary', response_model=list[StudentAttendanceSummary])
-async def attendance_summary(session_id: int=Query(...), class_id: int=Query(...), section_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*ALLOWED_ROLES)), db: AsyncSession=Depends(get_async_db)):
-    await _validate_session(db, session_id, school_id)
+async def attendance_summary(request: Request, session_id: int=Query(...), class_id: int=Query(...), section_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*ALLOWED_ROLES)), db: AsyncSession=Depends(get_async_db)):
+    session = await selected_academic_session(db, school_id, request, current_user, session_id)
+    await _validate_session(db, session.id if session else session_id, school_id)
     await _validate_class(db, class_id, school_id)
-    await _assert_teacher_can_access_class(db, school_id, current_user, class_id)
-    q = async_query(db, Student).filter(Student.school_id == school_id, Student.class_id == class_id, Student.is_active.is_(True))
+    await _assert_teacher_can_access_class(db, school_id, current_user, class_id, session.id if session else session_id)
+    q = async_query(db, Student).filter(Student.school_id == school_id, Student.class_id == class_id, Student.is_active.is_(True), Student.academic_session_id == session_id)
     if section_id:
         q = q.filter(Student.section_id == section_id)
     students = await q.order_by(Student.first_name).all()
@@ -159,16 +172,18 @@ async def attendance_summary(session_id: int=Query(...), class_id: int=Query(...
     return summaries
 
 @router.get('/by-date', response_model=list[AttendanceRead])
-async def attendance_by_date(session_id: int=Query(...), class_id: int=Query(...), date: date=Query(...), section_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*ALLOWED_ROLES)), db: AsyncSession=Depends(get_async_db)):
-    await _assert_teacher_can_access_class(db, school_id, current_user, class_id)
+async def attendance_by_date(request: Request, session_id: int=Query(...), class_id: int=Query(...), date: date=Query(...), section_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*ALLOWED_ROLES)), db: AsyncSession=Depends(get_async_db)):
+    session = await selected_academic_session(db, school_id, request, current_user, session_id)
+    await _assert_teacher_can_access_class(db, school_id, current_user, class_id, session.id if session else session_id)
     q = async_query(db, StudentAttendance).filter(StudentAttendance.school_id == school_id, StudentAttendance.class_id == class_id, StudentAttendance.date == date, StudentAttendance.session_id == session_id)
     if section_id:
         q = q.filter(StudentAttendance.section_id == section_id)
     return await q.all()
 
 @router.get('/my', response_model=list[AttendanceRead])
-async def my_attendance(session_id: int=Query(...), school_id: int=Depends(current_school_id), current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
-    student = await async_query(db, Student).filter(Student.user_id == current_user.id, Student.school_id == school_id).first()
+async def my_attendance(request: Request, session_id: int=Query(...), school_id: int=Depends(current_school_id), current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
+    session = await selected_academic_session(db, school_id, request, current_user, session_id)
+    student = await async_query(db, Student).filter(Student.user_id == current_user.id, Student.school_id == school_id, Student.academic_session_id == (session.id if session else session_id)).first()
     if student:
         return await async_query(db, StudentAttendance).filter(StudentAttendance.school_id == school_id, StudentAttendance.student_id == student.id, StudentAttendance.session_id == session_id).order_by(StudentAttendance.date.desc()).all()
     if current_user.role == UserRole.PARENT.value:
@@ -176,7 +191,7 @@ async def my_attendance(session_id: int=Query(...), school_id: int=Depends(curre
         if not parent_guardians:
             return []
         guardian_ids = [pg.id for pg in parent_guardians]
-        children = await async_query(db, Student).filter(Student.school_id == school_id, Student.guardian_id.in_(guardian_ids), Student.is_active.is_(True)).all()
+        children = await async_query(db, Student).filter(Student.school_id == school_id, Student.guardian_id.in_(guardian_ids), Student.is_active.is_(True), Student.academic_session_id == (session.id if session else session_id)).all()
         if not children:
             return []
         child_ids = [child.id for child in children]

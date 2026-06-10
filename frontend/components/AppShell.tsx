@@ -117,6 +117,17 @@ const navItems: NavItem[] = [
   },
 ];
 
+
+function uniqueAcademicSessions(sessions: AcademicSession[]): AcademicSession[] {
+  const seen = new Set<string>();
+  return sessions.filter((session) => {
+    const key = String(session.id);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function formatRole(value: string) {
   return value
     .toLowerCase()
@@ -240,7 +251,7 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     refreshUnreadNotifications();
-  }, [auth?.user.id, auth?.user.school_id, pathname, refreshUnreadNotifications]);
+  }, [auth?.user.id, auth?.user.school_id, refreshUnreadNotifications]);
 
   useEffect(() => {
     window.addEventListener("erp_notifications_updated", refreshUnreadNotifications);
@@ -290,11 +301,12 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
     apiFetch<AcademicSession[]>("/academic-sessions")
       .then((sessions) => {
         if (cancelled) return;
-        setAcademicSessions(sessions);
+        const uniqueSessions = uniqueAcademicSessions(sessions);
+        setAcademicSessions(uniqueSessions);
 
-        const active = sessions.find((item) => item.is_active) || sessions[0];
+        const active = uniqueSessions.find((item) => item.is_active) || uniqueSessions[0];
         const savedId = getSelectedAcademicSessionId();
-        const saved = savedId ? sessions.find((item) => String(item.id) === savedId) : null;
+        const saved = savedId ? uniqueSessions.find((item) => String(item.id) === savedId) : null;
         const next = saved && (canSelectPreviousSessions || saved.is_active) ? saved : active;
 
         if (next) {
@@ -353,6 +365,8 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
   const initials = getInitials(auth.user.full_name);
   const activeBranding = normalizeBranding(branding || { logo_url: auth.school?.logo_url || null });
   const logoSrc = fileUrl(activeBranding.logo_url);
+  const selectedAcademicSession = academicSessions.find((session) => String(session.id) === selectedAcademicSessionId);
+  const isReadOnlyAcademicSession = Boolean(selectedAcademicSession && !selectedAcademicSession.is_active && canSelectPreviousSessions);
 
   return (
     <AppShellContext.Provider value={true}>
@@ -483,6 +497,15 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
         }
         @media (max-width: 720px) {
           .as-session-select { max-width: 145px; }
+        }
+        .as-readonly-banner {
+          margin: 0;
+          padding: 9px 20px;
+          border-bottom: 1px solid #fde68a;
+          background: #fffbeb;
+          color: #92400e;
+          font-size: 0.78rem;
+          font-weight: 600;
         }
         .as-logout-btn {
           display: inline-flex; align-items: center; gap: 5px;
@@ -656,9 +679,9 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
                   title="Academic session"
                   aria-label="Select academic session"
                 >
-                  {academicSessions.map((session) => (
+                  {academicSessions.map((session, index) => (
                     <option
-                      key={session.id}
+                      key={`academic-session-${session.id}-${index}`}
                       value={session.id}
                       disabled={!canSelectPreviousSessions && !session.is_active}
                     >
@@ -696,7 +719,13 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
             </div>
           </header>
 
-          <main key={selectedAcademicSessionId || "no-session"} style={{ padding: "24px 20px", minHeight: "calc(100vh - 60px)" }}>
+          {isReadOnlyAcademicSession && (
+            <div className="as-readonly-banner" role="status">
+              Viewing read-only academic session: {selectedAcademicSession?.name}. You can search, view, print, or export old records, but editing is locked. Switch to the active session to add or update data.
+            </div>
+          )}
+
+          <main key={selectedAcademicSessionId || "no-session"} style={{ padding: "24px 20px", minHeight: isReadOnlyAcademicSession ? "calc(100vh - 99px)" : "calc(100vh - 60px)" }}>
             {children}
           </main>
         </div>

@@ -77,7 +77,7 @@ export default function QuizGeneratorPage() {
         {/* Error Message */}
         {error && (
           <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
-            <AlertCircle className="text-red-600 flex-shrink-0 mt-0.5" />
+            <AlertCircle className="text-red-600 shrink-0 mt-0.5" />
             <div>
               <h3 className="font-semibold text-red-900">Error</h3>
               <p className="text-red-700">{error}</p>

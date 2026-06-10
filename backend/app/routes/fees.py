@@ -13,6 +13,7 @@ from app.core.async_query import async_query
 from app.core.config import settings
 from app.core.database import get_async_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
+from app.dependencies.academic_session import require_writable_academic_session, assert_item_session_is_writable, assert_academic_session_is_writable
 from app.models.academic import AcademicSession, SchoolClass, Section
 from app.models.fee import (
     FeeAssignment,
@@ -57,7 +58,7 @@ from app.schemas.fee import (
 from app.utils.parent_scope import children_for_parent
 
 
-router = APIRouter(prefix="/fees", tags=["Phase 6 - Fee Management"])
+router = APIRouter(prefix="/fees", tags=["Phase 6 - Fee Management"], dependencies=[Depends(require_writable_academic_session)])
 
 ADMIN_ROLES = (
     UserRole.SUPER_ADMIN.value,
@@ -993,7 +994,7 @@ async def create_structure(
     db: AsyncSession = Depends(get_async_db),
 ):
     await _validate_category(db, school_id, payload.category_id)
-    await _get_or_404(db, AcademicSession, payload.academic_session_id, school_id, "Academic session")
+    await assert_academic_session_is_writable(db, school_id, payload.academic_session_id)
 
     structure = FeeStructure(school_id=school_id, **payload.model_dump())
     db.add(structure)
@@ -1013,13 +1014,14 @@ async def update_structure(
     db: AsyncSession = Depends(get_async_db),
 ):
     structure = await _get_or_404(db, FeeStructure, structure_id, school_id, "Fee structure")
+    await assert_item_session_is_writable(db, school_id, structure)
     data = payload.model_dump(exclude_unset=True)
 
     if "category_id" in data and data["category_id"] is not None:
         await _validate_category(db, school_id, data["category_id"])
 
     if "academic_session_id" in data:
-        await _get_or_404(db, AcademicSession, data["academic_session_id"], school_id, "Academic session")
+        await assert_academic_session_is_writable(db, school_id, data["academic_session_id"])
 
     for key, value in data.items():
         setattr(structure, key, value)
@@ -1039,6 +1041,7 @@ async def delete_structure(
     db: AsyncSession = Depends(get_async_db),
 ):
     structure = await _get_or_404(db, FeeStructure, structure_id, school_id, "Fee structure")
+    await assert_item_session_is_writable(db, school_id, structure)
     structure.is_active = False
     await db.commit()
     return MessageResponse(message="Fee structure deactivated")
@@ -1092,7 +1095,7 @@ async def create_assignment(
     db: AsyncSession = Depends(get_async_db),
 ):
     structure = await _validate_structure(db, school_id, payload.fee_structure_id)
-    await _get_or_404(db, AcademicSession, payload.academic_session_id, school_id, "Academic session")
+    await assert_academic_session_is_writable(db, school_id, payload.academic_session_id)
     await _validate_class_scope(db, school_id, payload.class_id, payload.section_id)
 
     if payload.student_id:
@@ -1125,6 +1128,7 @@ async def generate_assignment_records(
     db: AsyncSession = Depends(get_async_db),
 ):
     assignment = await _assignment_with_relations(db, school_id, assignment_id)
+    await assert_item_session_is_writable(db, school_id, assignment)
     await _generate_records_for_assignment(db, school_id, assignment)
     await db.commit()
     await db.refresh(assignment)
@@ -1142,6 +1146,7 @@ async def update_assignment(
     db: AsyncSession = Depends(get_async_db),
 ):
     assignment = await _get_or_404(db, FeeAssignment, assignment_id, school_id, "Fee assignment")
+    await assert_item_session_is_writable(db, school_id, assignment)
 
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(assignment, key, value)
@@ -1161,6 +1166,7 @@ async def delete_assignment(
     db: AsyncSession = Depends(get_async_db),
 ):
     assignment = await _get_or_404(db, FeeAssignment, assignment_id, school_id, "Fee assignment")
+    await assert_item_session_is_writable(db, school_id, assignment)
     assignment.is_active = False
     await db.commit()
     return MessageResponse(message="Fee assignment deactivated. Existing student fee records are kept for audit.")
@@ -1210,7 +1216,7 @@ async def create_record(
 ):
     await _validate_student_scope(db, school_id, payload.student_id)
     await _validate_structure(db, school_id, payload.fee_structure_id)
-    await _get_or_404(db, AcademicSession, payload.academic_session_id, school_id, "Academic session")
+    await assert_academic_session_is_writable(db, school_id, payload.academic_session_id)
 
     record = StudentFeeRecord(
         school_id=school_id,
@@ -1238,6 +1244,7 @@ async def update_record(
     db: AsyncSession = Depends(get_async_db),
 ):
     record = await _get_or_404(db, StudentFeeRecord, record_id, school_id, "Student fee record")
+    await assert_item_session_is_writable(db, school_id, record)
     data = payload.model_dump(exclude_unset=True)
     requested_status = data.pop("status", None)
 
@@ -1263,6 +1270,7 @@ async def delete_record(
     db: AsyncSession = Depends(get_async_db),
 ):
     record = await _get_or_404(db, StudentFeeRecord, record_id, school_id, "Student fee record")
+    await assert_item_session_is_writable(db, school_id, record)
 
     if record.paid_amount > 0:
         raise HTTPException(status_code=400, detail="Cannot delete a fee record that already has payments")
@@ -1311,6 +1319,7 @@ async def create_payment(
     db: AsyncSession = Depends(get_async_db),
 ):
     record = await _record_with_relations(db, school_id, payload.student_fee_record_id)
+    await assert_item_session_is_writable(db, school_id, record)
 
     if record.status == "WAIVED":
         raise HTTPException(status_code=400, detail="Cannot collect payment for a waived record")
@@ -1529,6 +1538,7 @@ async def create_razorpay_order(
     db: AsyncSession = Depends(get_async_db),
 ):
     record = await _record_with_relations(db, school_id, payload.student_fee_record_id)
+    await assert_item_session_is_writable(db, school_id, record)
 
     if current_user.role in (UserRole.STUDENT.value, UserRole.PARENT.value):
         authorized_ids = await _authorized_student_ids(db, school_id, current_user)
@@ -1611,6 +1621,7 @@ async def verify_razorpay_payment(
         )
 
     record = await _record_with_relations(db, school_id, payload.student_fee_record_id)
+    await assert_item_session_is_writable(db, school_id, record)
 
     if current_user.role in (UserRole.STUDENT.value, UserRole.PARENT.value):
         authorized_ids = await _authorized_student_ids(db, school_id, current_user)

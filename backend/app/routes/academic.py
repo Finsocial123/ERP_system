@@ -1,183 +1,594 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from app.core.database import get_async_db
-from app.dependencies.auth import current_school_id, require_school_admin
-from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject
-from app.models.user import User
-from app.schemas.academic import AcademicSessionCreate, AcademicSessionRead, AcademicSessionUpdate, ClassCreate, ClassRead, ClassUpdate, DepartmentCreate, DepartmentRead, DepartmentUpdate, SectionCreate, SectionRead, SectionUpdate, SubjectCreate, SubjectRead, SubjectUpdate
-from app.schemas.common import MessageResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.async_query import async_query
-router = APIRouter(tags=['Academic Setup'])
+from app.core.database import get_async_db
+from app.dependencies.academic_session import selected_academic_session_id, writable_selected_academic_session_id, assert_item_session_is_writable
+from app.dependencies.auth import current_school_id, get_current_user, require_school_admin
+from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject
+from app.models.people import ClassTeacherAssignment, Teacher, TeacherSubject
+from app.models.user import User
+from app.schemas.academic import (
+    AcademicSessionCreate,
+    AcademicSessionRead,
+    AcademicSessionUpdate,
+    ClassCreate,
+    ClassRead,
+    ClassUpdate,
+    DepartmentCreate,
+    DepartmentRead,
+    DepartmentUpdate,
+    SectionCreate,
+    SectionRead,
+    SectionUpdate,
+    SubjectCreate,
+    SubjectRead,
+    SubjectUpdate,
+)
+from app.schemas.common import MessageResponse
+
+router = APIRouter(tags=["Academic Setup"])
+
 
 async def _get_or_404(db: AsyncSession, model, item_id: int, school_id: int):
-    item = await async_query(db, model).filter(model.id == item_id, model.school_id == school_id).first()
+    item = await async_query(db, model).filter(
+        model.id == item_id,
+        model.school_id == school_id,
+    ).first()
     if not item:
-        raise HTTPException(status_code=404, detail=f'{model.__name__} not found')
+        raise HTTPException(status_code=404, detail=f"{model.__name__} not found")
     return item
+
 
 def _apply_updates(instance, payload):
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(instance, key, value)
 
-async def _validate_department(db: AsyncSession, department_id: int | None, school_id: int):
-    if department_id is not None:
-        await _get_or_404(db, Department, department_id, school_id)
 
-async def _validate_class(db: AsyncSession, class_id: int | None, school_id: int):
-    if class_id is not None:
-        await _get_or_404(db, SchoolClass, class_id, school_id)
+async def _commit_or_duplicate(db: AsyncSession, message: str):
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=message)
 
-@router.get('/academic-sessions', response_model=list[AcademicSessionRead])
-async def list_sessions(school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
-    return await async_query(db, AcademicSession).filter(AcademicSession.school_id == school_id).order_by(AcademicSession.id.desc()).all()
 
-@router.post('/academic-sessions', response_model=AcademicSessionRead, status_code=status.HTTP_201_CREATED)
-async def create_session(payload: AcademicSessionCreate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
+async def _active_session(db: AsyncSession, school_id: int) -> AcademicSession | None:
+    return await async_query(db, AcademicSession).filter(
+        AcademicSession.school_id == school_id,
+        AcademicSession.is_active.is_(True),
+    ).order_by(AcademicSession.id.desc()).first()
+
+
+async def _session_id_for_payload(
+    db: AsyncSession,
+    school_id: int,
+    request: Request,
+    current_user: User,
+    payload_session_id: int | None,
+) -> int | None:
+    return await writable_selected_academic_session_id(
+        db=db,
+        school_id=school_id,
+        request=request,
+        current_user=current_user,
+        explicit_session_id=payload_session_id,
+    )
+
+
+async def _validate_department(db: AsyncSession, department_id: int | None, school_id: int, session_id: int | None = None):
+    if department_id is None:
+        return None
+    query = async_query(db, Department).filter(Department.id == department_id, Department.school_id == school_id)
+    if session_id is not None:
+        query = query.filter(Department.academic_session_id == session_id)
+    item = await query.first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Department not found for selected academic session")
+    return item
+
+
+async def _validate_class(db: AsyncSession, class_id: int | None, school_id: int, session_id: int | None = None):
+    if class_id is None:
+        return None
+    query = async_query(db, SchoolClass).filter(SchoolClass.id == class_id, SchoolClass.school_id == school_id)
+    if session_id is not None:
+        query = query.filter(SchoolClass.academic_session_id == session_id)
+    item = await query.first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Class not found for selected academic session")
+    return item
+
+
+async def _replicate_previous_active_setup(
+    db: AsyncSession,
+    school_id: int,
+    source_session_id: int | None,
+    target_session_id: int,
+) -> None:
+    if not source_session_id or source_session_id == target_session_id:
+        return
+
+    dept_map: dict[int, int] = {}
+    class_map: dict[int, int] = {}
+    section_map: dict[int, int] = {}
+    subject_map: dict[int, int] = {}
+    teacher_map: dict[int, int] = {}
+
+    departments = await async_query(db, Department).filter(
+        Department.school_id == school_id,
+        Department.academic_session_id == source_session_id,
+        Department.is_active.is_(True),
+    ).order_by(Department.id.asc()).all()
+    for old in departments:
+        new = Department(
+            school_id=school_id,
+            academic_session_id=target_session_id,
+            name=old.name,
+            code=old.code,
+            description=old.description,
+            is_active=old.is_active,
+        )
+        db.add(new)
+        await db.flush()
+        dept_map[old.id] = new.id
+
+    classes = await async_query(db, SchoolClass).filter(
+        SchoolClass.school_id == school_id,
+        SchoolClass.academic_session_id == source_session_id,
+        SchoolClass.is_active.is_(True),
+    ).order_by(SchoolClass.id.asc()).all()
+    for old in classes:
+        new = SchoolClass(
+            school_id=school_id,
+            academic_session_id=target_session_id,
+            department_id=dept_map.get(old.department_id) if old.department_id else None,
+            name=old.name,
+            code=old.code,
+            is_active=old.is_active,
+        )
+        db.add(new)
+        await db.flush()
+        class_map[old.id] = new.id
+
+    sections = await async_query(db, Section).filter(
+        Section.school_id == school_id,
+        Section.academic_session_id == source_session_id,
+        Section.is_active.is_(True),
+    ).order_by(Section.id.asc()).all()
+    for old in sections:
+        new_class_id = class_map.get(old.class_id)
+        if not new_class_id:
+            continue
+        new = Section(
+            school_id=school_id,
+            academic_session_id=target_session_id,
+            class_id=new_class_id,
+            name=old.name,
+            is_active=old.is_active,
+        )
+        db.add(new)
+        await db.flush()
+        section_map[old.id] = new.id
+
+    subjects = await async_query(db, Subject).filter(
+        Subject.school_id == school_id,
+        Subject.academic_session_id == source_session_id,
+        Subject.is_active.is_(True),
+    ).order_by(Subject.id.asc()).all()
+    for old in subjects:
+        new = Subject(
+            school_id=school_id,
+            academic_session_id=target_session_id,
+            department_id=dept_map.get(old.department_id) if old.department_id else None,
+            class_id=class_map.get(old.class_id) if old.class_id else None,
+            name=old.name,
+            code=old.code,
+            is_active=old.is_active,
+        )
+        db.add(new)
+        await db.flush()
+        subject_map[old.id] = new.id
+
+    teachers = await async_query(db, Teacher).filter(
+        Teacher.school_id == school_id,
+        Teacher.academic_session_id == source_session_id,
+        Teacher.is_active.is_(True),
+    ).order_by(Teacher.id.asc()).all()
+    for old in teachers:
+        new = Teacher(
+            school_id=school_id,
+            academic_session_id=target_session_id,
+            user_id=old.user_id,
+            department_id=dept_map.get(old.department_id) if old.department_id else None,
+            employee_id=old.employee_id,
+            full_name=old.full_name,
+            email=old.email,
+            phone=old.phone,
+            gender=old.gender,
+            qualification=old.qualification,
+            specialization=old.specialization,
+            joining_date=old.joining_date,
+            photo_url=old.photo_url,
+            address=old.address,
+            status=old.status,
+            is_active=old.is_active,
+        )
+        db.add(new)
+        await db.flush()
+        teacher_map[old.id] = new.id
+
+    teacher_subjects = await async_query(db, TeacherSubject).filter(
+        TeacherSubject.school_id == school_id,
+        TeacherSubject.academic_session_id == source_session_id,
+    ).order_by(TeacherSubject.id.asc()).all()
+    for old in teacher_subjects:
+        teacher_id = teacher_map.get(old.teacher_id)
+        subject_id = subject_map.get(old.subject_id)
+        if not teacher_id or not subject_id:
+            continue
+        db.add(TeacherSubject(
+            school_id=school_id,
+            academic_session_id=target_session_id,
+            teacher_id=teacher_id,
+            subject_id=subject_id,
+            class_id=class_map.get(old.class_id) if old.class_id else None,
+            section_id=section_map.get(old.section_id) if old.section_id else None,
+        ))
+
+    class_teachers = await async_query(db, ClassTeacherAssignment).filter(
+        ClassTeacherAssignment.school_id == school_id,
+        ClassTeacherAssignment.academic_session_id == source_session_id,
+    ).order_by(ClassTeacherAssignment.id.asc()).all()
+    for old in class_teachers:
+        teacher_id = teacher_map.get(old.teacher_id)
+        class_id = class_map.get(old.class_id)
+        if not teacher_id or not class_id:
+            continue
+        db.add(ClassTeacherAssignment(
+            school_id=school_id,
+            academic_session_id=target_session_id,
+            teacher_id=teacher_id,
+            class_id=class_id,
+            section_id=section_map.get(old.section_id) if old.section_id else None,
+        ))
+
+
+@router.get("/academic-sessions", response_model=list[AcademicSessionRead])
+async def list_sessions(
+    school_id: int = Depends(current_school_id),
+    db: AsyncSession = Depends(get_async_db),
+):
+    return await async_query(db, AcademicSession).filter(
+        AcademicSession.school_id == school_id,
+    ).order_by(AcademicSession.id.desc()).all()
+
+
+@router.post("/academic-sessions", response_model=AcademicSessionRead, status_code=status.HTTP_201_CREATED)
+async def create_session(
+    payload: AcademicSessionCreate,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    source = await _active_session(db, current_user.school_id)
     if payload.is_active:
-        await async_query(db, AcademicSession).filter(AcademicSession.school_id == current_user.school_id).update({'is_active': False})
+        await async_query(db, AcademicSession).filter(
+            AcademicSession.school_id == current_user.school_id,
+        ).update({"is_active": False})
+
     item = AcademicSession(school_id=current_user.school_id, **payload.model_dump())
     db.add(item)
-    await db.commit()
+    await _commit_or_duplicate(db, "Academic session with this name already exists")
+    await db.refresh(item)
+
+    # Newly created sessions start with the setup of the previous active session.
+    await _replicate_previous_active_setup(db, current_user.school_id, source.id if source else None, item.id)
+    await _commit_or_duplicate(db, "Session setup could not be replicated because duplicate setup data exists")
     await db.refresh(item)
     return item
 
-@router.put('/academic-sessions/{item_id}', response_model=AcademicSessionRead)
-async def update_session(item_id: int, payload: AcademicSessionUpdate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
+
+@router.put("/academic-sessions/{item_id}", response_model=AcademicSessionRead)
+async def update_session(
+    item_id: int,
+    payload: AcademicSessionUpdate,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
     item = await _get_or_404(db, AcademicSession, item_id, current_user.school_id)
     if payload.is_active is True:
-        await async_query(db, AcademicSession).filter(AcademicSession.school_id == current_user.school_id).update({'is_active': False})
+        await async_query(db, AcademicSession).filter(
+            AcademicSession.school_id == current_user.school_id,
+        ).update({"is_active": False})
     _apply_updates(item, payload)
-    await db.commit()
+    await _commit_or_duplicate(db, "Academic session with this name already exists")
     await db.refresh(item)
     return item
 
-@router.delete('/academic-sessions/{item_id}', response_model=MessageResponse)
-async def delete_session(item_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
+
+@router.delete("/academic-sessions/{item_id}", response_model=MessageResponse)
+async def delete_session(
+    item_id: int,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
     item = await _get_or_404(db, AcademicSession, item_id, current_user.school_id)
     await db.delete(item)
     await db.commit()
-    return {'message': 'Academic session deleted'}
+    return {"message": "Academic session deleted"}
 
-@router.get('/departments', response_model=list[DepartmentRead])
-async def list_departments(school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
-    return await async_query(db, Department).filter(Department.school_id == school_id).order_by(Department.id.desc()).all()
 
-@router.post('/departments', response_model=DepartmentRead, status_code=status.HTTP_201_CREATED)
-async def create_department(payload: DepartmentCreate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
-    item = Department(school_id=current_user.school_id, **payload.model_dump())
+@router.get("/departments", response_model=list[DepartmentRead])
+async def list_departments(
+    request: Request,
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    session_id = await selected_academic_session_id(db, school_id, request=request, current_user=current_user)
+    query = async_query(db, Department).filter(Department.school_id == school_id)
+    if session_id is not None:
+        query = query.filter(Department.academic_session_id == session_id)
+    return await query.order_by(Department.id.desc()).all()
+
+
+@router.post("/departments", response_model=DepartmentRead, status_code=status.HTTP_201_CREATED)
+async def create_department(
+    payload: DepartmentCreate,
+    request: Request,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    session_id = await _session_id_for_payload(db, current_user.school_id, request, current_user, payload.academic_session_id)
+    data = payload.model_dump()
+    data["academic_session_id"] = session_id
+    item = Department(school_id=current_user.school_id, **data)
     db.add(item)
-    await db.commit()
+    await _commit_or_duplicate(db, "Department already exists in this academic session")
     await db.refresh(item)
     return item
 
-@router.put('/departments/{item_id}', response_model=DepartmentRead)
-async def update_department(item_id: int, payload: DepartmentUpdate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
+
+@router.put("/departments/{item_id}", response_model=DepartmentRead)
+async def update_department(
+    item_id: int,
+    payload: DepartmentUpdate,
+    request: Request,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
     item = await _get_or_404(db, Department, item_id, current_user.school_id)
-    _apply_updates(item, payload)
-    await db.commit()
+    await assert_item_session_is_writable(db, current_user.school_id, item)
+    values = payload.model_dump(exclude_unset=True)
+    if "academic_session_id" in values:
+        values["academic_session_id"] = await _session_id_for_payload(db, current_user.school_id, request, current_user, values.get("academic_session_id"))
+    for key, value in values.items():
+        setattr(item, key, value)
+    await _commit_or_duplicate(db, "Department already exists in this academic session")
     await db.refresh(item)
     return item
 
-@router.delete('/departments/{item_id}', response_model=MessageResponse)
-async def delete_department(item_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
+
+@router.delete("/departments/{item_id}", response_model=MessageResponse)
+async def delete_department(
+    item_id: int,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
     item = await _get_or_404(db, Department, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     await db.delete(item)
     await db.commit()
-    return {'message': 'Department deleted'}
+    return {"message": "Department deleted"}
 
-@router.get('/classes', response_model=list[ClassRead])
-async def list_classes(school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
-    return await async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id).order_by(SchoolClass.id.desc()).all()
 
-@router.post('/classes', response_model=ClassRead, status_code=status.HTTP_201_CREATED)
-async def create_class(payload: ClassCreate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
-    await _validate_department(db, payload.department_id, current_user.school_id)
-    item = SchoolClass(school_id=current_user.school_id, **payload.model_dump())
+@router.get("/classes", response_model=list[ClassRead])
+async def list_classes(
+    request: Request,
+    school_id: int = Depends(current_school_id),
+    db: AsyncSession = Depends(get_async_db),
+):
+    session_id = await selected_academic_session_id(db, school_id, request=request)
+    query = async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id)
+    if session_id is not None:
+        query = query.filter(SchoolClass.academic_session_id == session_id)
+    return await query.order_by(SchoolClass.id.desc()).all()
+
+
+@router.post("/classes", response_model=ClassRead, status_code=status.HTTP_201_CREATED)
+async def create_class(
+    payload: ClassCreate,
+    request: Request,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    session_id = await _session_id_for_payload(db, current_user.school_id, request, current_user, payload.academic_session_id)
+    await _validate_department(db, payload.department_id, current_user.school_id, session_id)
+    data = payload.model_dump()
+    data["academic_session_id"] = session_id
+    item = SchoolClass(school_id=current_user.school_id, **data)
     db.add(item)
-    await db.commit()
+    await _commit_or_duplicate(db, "Class already exists in this academic session")
     await db.refresh(item)
     return item
 
-@router.put('/classes/{item_id}', response_model=ClassRead)
-async def update_class(item_id: int, payload: ClassUpdate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
+
+@router.put("/classes/{item_id}", response_model=ClassRead)
+async def update_class(
+    item_id: int,
+    payload: ClassUpdate,
+    request: Request,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
     item = await _get_or_404(db, SchoolClass, item_id, current_user.school_id)
-    if 'department_id' in payload.model_dump(exclude_unset=True):
-        await _validate_department(db, payload.department_id, current_user.school_id)
-    _apply_updates(item, payload)
-    await db.commit()
+    await assert_item_session_is_writable(db, current_user.school_id, item)
+    values = payload.model_dump(exclude_unset=True)
+    session_id = values.get("academic_session_id", item.academic_session_id)
+    if "academic_session_id" in values:
+        session_id = await _session_id_for_payload(db, current_user.school_id, request, current_user, values.get("academic_session_id"))
+        values["academic_session_id"] = session_id
+    if "department_id" in values:
+        await _validate_department(db, values.get("department_id"), current_user.school_id, session_id)
+    for key, value in values.items():
+        setattr(item, key, value)
+    await _commit_or_duplicate(db, "Class already exists in this academic session")
     await db.refresh(item)
     return item
 
-@router.delete('/classes/{item_id}', response_model=MessageResponse)
-async def delete_class(item_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
+
+@router.delete("/classes/{item_id}", response_model=MessageResponse)
+async def delete_class(
+    item_id: int,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
     item = await _get_or_404(db, SchoolClass, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     await db.delete(item)
     await db.commit()
-    return {'message': 'Class deleted'}
+    return {"message": "Class deleted"}
 
-@router.get('/sections', response_model=list[SectionRead])
-async def list_sections(class_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
+
+@router.get("/sections", response_model=list[SectionRead])
+async def list_sections(
+    request: Request,
+    class_id: int | None = Query(default=None),
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    session_id = await selected_academic_session_id(db, school_id, request=request, current_user=current_user)
     query = async_query(db, Section).filter(Section.school_id == school_id)
+    if session_id is not None:
+        query = query.filter(Section.academic_session_id == session_id)
     if class_id is not None:
         query = query.filter(Section.class_id == class_id)
     return await query.order_by(Section.id.desc()).all()
 
-@router.post('/sections', response_model=SectionRead, status_code=status.HTTP_201_CREATED)
-async def create_section(payload: SectionCreate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
-    await _validate_class(db, payload.class_id, current_user.school_id)
-    item = Section(school_id=current_user.school_id, **payload.model_dump())
+
+@router.post("/sections", response_model=SectionRead, status_code=status.HTTP_201_CREATED)
+async def create_section(
+    payload: SectionCreate,
+    request: Request,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    session_id = await _session_id_for_payload(db, current_user.school_id, request, current_user, payload.academic_session_id)
+    await _validate_class(db, payload.class_id, current_user.school_id, session_id)
+    data = payload.model_dump()
+    data["academic_session_id"] = session_id
+    item = Section(school_id=current_user.school_id, **data)
     db.add(item)
-    await db.commit()
+    await _commit_or_duplicate(db, "Section already exists in this academic session")
     await db.refresh(item)
     return item
 
-@router.put('/sections/{item_id}', response_model=SectionRead)
-async def update_section(item_id: int, payload: SectionUpdate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
+
+@router.put("/sections/{item_id}", response_model=SectionRead)
+async def update_section(
+    item_id: int,
+    payload: SectionUpdate,
+    request: Request,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
     item = await _get_or_404(db, Section, item_id, current_user.school_id)
-    if 'class_id' in payload.model_dump(exclude_unset=True):
-        await _validate_class(db, payload.class_id, current_user.school_id)
-    _apply_updates(item, payload)
-    await db.commit()
-    await db.refresh(item)
-    return item
-
-@router.delete('/sections/{item_id}', response_model=MessageResponse)
-async def delete_section(item_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
-    item = await _get_or_404(db, Section, item_id, current_user.school_id)
-    await db.delete(item)
-    await db.commit()
-    return {'message': 'Section deleted'}
-
-@router.get('/subjects', response_model=list[SubjectRead])
-async def list_subjects(school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
-    return await async_query(db, Subject).filter(Subject.school_id == school_id).order_by(Subject.id.desc()).all()
-
-@router.post('/subjects', response_model=SubjectRead, status_code=status.HTTP_201_CREATED)
-async def create_subject(payload: SubjectCreate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
-    await _validate_department(db, payload.department_id, current_user.school_id)
-    await _validate_class(db, payload.class_id, current_user.school_id)
-    item = Subject(school_id=current_user.school_id, **payload.model_dump())
-    db.add(item)
-    await db.commit()
-    await db.refresh(item)
-    return item
-
-@router.put('/subjects/{item_id}', response_model=SubjectRead)
-async def update_subject(item_id: int, payload: SubjectUpdate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
-    item = await _get_or_404(db, Subject, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     values = payload.model_dump(exclude_unset=True)
-    if 'department_id' in values:
-        await _validate_department(db, payload.department_id, current_user.school_id)
-    if 'class_id' in values:
-        await _validate_class(db, payload.class_id, current_user.school_id)
-    _apply_updates(item, payload)
-    await db.commit()
+    session_id = values.get("academic_session_id", item.academic_session_id)
+    if "academic_session_id" in values:
+        session_id = await _session_id_for_payload(db, current_user.school_id, request, current_user, values.get("academic_session_id"))
+        values["academic_session_id"] = session_id
+    if "class_id" in values:
+        await _validate_class(db, values.get("class_id"), current_user.school_id, session_id)
+    for key, value in values.items():
+        setattr(item, key, value)
+    await _commit_or_duplicate(db, "Section already exists in this academic session")
     await db.refresh(item)
     return item
 
-@router.delete('/subjects/{item_id}', response_model=MessageResponse)
-async def delete_subject(item_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
-    item = await _get_or_404(db, Subject, item_id, current_user.school_id)
+
+@router.delete("/sections/{item_id}", response_model=MessageResponse)
+async def delete_section(
+    item_id: int,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    item = await _get_or_404(db, Section, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     await db.delete(item)
     await db.commit()
-    return {'message': 'Subject deleted'}
+    return {"message": "Section deleted"}
+
+
+@router.get("/subjects", response_model=list[SubjectRead])
+async def list_subjects(
+    request: Request,
+    school_id: int = Depends(current_school_id),
+    db: AsyncSession = Depends(get_async_db),
+):
+    session_id = await selected_academic_session_id(db, school_id, request=request)
+    query = async_query(db, Subject).filter(Subject.school_id == school_id)
+    if session_id is not None:
+        query = query.filter(Subject.academic_session_id == session_id)
+    return await query.order_by(Subject.id.desc()).all()
+
+
+@router.post("/subjects", response_model=SubjectRead, status_code=status.HTTP_201_CREATED)
+async def create_subject(
+    payload: SubjectCreate,
+    request: Request,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    session_id = await _session_id_for_payload(db, current_user.school_id, request, current_user, payload.academic_session_id)
+    await _validate_department(db, payload.department_id, current_user.school_id, session_id)
+    await _validate_class(db, payload.class_id, current_user.school_id, session_id)
+    data = payload.model_dump()
+    data["academic_session_id"] = session_id
+    item = Subject(school_id=current_user.school_id, **data)
+    db.add(item)
+    await _commit_or_duplicate(db, "Subject already exists in this academic session")
+    await db.refresh(item)
+    return item
+
+
+@router.put("/subjects/{item_id}", response_model=SubjectRead)
+async def update_subject(
+    item_id: int,
+    payload: SubjectUpdate,
+    request: Request,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    item = await _get_or_404(db, Subject, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
+    values = payload.model_dump(exclude_unset=True)
+    session_id = values.get("academic_session_id", item.academic_session_id)
+    if "academic_session_id" in values:
+        session_id = await _session_id_for_payload(db, current_user.school_id, request, current_user, values.get("academic_session_id"))
+        values["academic_session_id"] = session_id
+    if "department_id" in values:
+        await _validate_department(db, values.get("department_id"), current_user.school_id, session_id)
+    if "class_id" in values:
+        await _validate_class(db, values.get("class_id"), current_user.school_id, session_id)
+    for key, value in values.items():
+        setattr(item, key, value)
+    await _commit_or_duplicate(db, "Subject already exists in this academic session")
+    await db.refresh(item)
+    return item
+
+
+@router.delete("/subjects/{item_id}", response_model=MessageResponse)
+async def delete_subject(
+    item_id: int,
+    current_user: User = Depends(require_school_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    item = await _get_or_404(db, Subject, item_id, current_user.school_id)
+    await assert_item_session_is_writable(db, current_user.school_id, item)
+    await db.delete(item)
+    await db.commit()
+    return {"message": "Subject deleted"}

@@ -13,12 +13,15 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
     FRONTEND_BASE_URL: str = "http://localhost:3000"
 
-    # AI 
+    # Redis — optional; if missing, caching is silently disabled
+    REDIS_URL: str = "redis://localhost:6379/0"
+
+    # AI
     OPENROUTER_API_KEY: str
     OPENAI_API_KEY: str
     MODEL: str
     TRANSCRIPTION_MODEL: str
-    EMBEDDING_MODEL: str 
+    EMBEDDING_MODEL: str
     TAVILY_API_KEY: str = ""
 
     # Meeting
@@ -31,6 +34,10 @@ class Settings(BaseSettings):
     CLOUDINARY_API_SECRET: str = ""
 
     GOOGLE_CLIENT_ID: str = ""
+
+    # Runtime / performance
+    RUN_STARTUP_MIGRATIONS: bool = False
+    API_SLOW_LOG_MS: int = 1000
 
     # Email OTP / password reset
     OTP_EXPIRE_MINUTES: int = 10

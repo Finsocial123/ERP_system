@@ -1,11 +1,11 @@
 from __future__ import annotations
 from typing import Optional
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 from app.core.database import get_async_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
-from app.models.academic import SchoolClass, Section, Subject
+from app.models.academic import AcademicSession, SchoolClass, Section, Subject
 from app.models.course import Course
 from app.models.enrollment import Enrollment
 from app.models.lesson import Lesson
@@ -15,7 +15,8 @@ from app.models.user import User, UserRole
 from app.models.video_watch_progress import VideoWatchProgress
 from app.schemas.common import MessageResponse
 from app.schemas.course import CourseMetaItem, CourseMetaResponse, CourseOut
-from app.services.lms_access import ALL_LMS_ROLES, ADMIN_ROLES, MANAGER_ROLES, can_manage_course, children_for_parent, current_session, ensure_can_manage_course, ensure_can_view_course, ensure_enrollment_for_user_student, full_student_name, get_course_or_404, course_matches_student, student_for_user, teacher_for_user, teacher_has_scope, validate_course_scope, validate_same_school
+from app.dependencies.academic_session import selected_academic_session
+from app.services.lms_access import ALL_LMS_ROLES, ADMIN_ROLES, MANAGER_ROLES, can_manage_course, children_for_parent, ensure_can_manage_course, ensure_can_view_course, ensure_enrollment_for_user_student, full_student_name, get_course_or_404, course_matches_student, student_for_user, teacher_for_user, teacher_has_scope, validate_course_scope, validate_same_school
 from app.utils.cloudinary import upload_file
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
@@ -28,16 +29,72 @@ def _safe_status(value: str | None) -> str:
         raise HTTPException(status_code=400, detail='Course status must be DRAFT, PUBLISHED, or ARCHIVED')
     return status_value
 
-async def _teacher_name(db: AsyncSession, school_id: int, teacher_user: User | None) -> str | None:
-    if not teacher_user:
+async def _teacher_name(db: AsyncSession, school_id: int, teacher_user_id: int | None, teacher_user: User | None=None) -> str | None:
+    """Resolve the displayed course teacher name without lazy-loading Course.teacher."""
+    if teacher_user_id is None and teacher_user is None:
         return None
-    teacher = await async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.user_id == teacher_user.id).first()
-    return teacher.full_name if teacher else teacher_user.full_name
+    if teacher_user_id is not None:
+        teacher = await async_query(db, Teacher).filter(
+            Teacher.school_id == school_id,
+            Teacher.user_id == teacher_user_id,
+            Teacher.is_active.is_(True),
+        ).order_by(Teacher.id.desc()).first()
+        if teacher:
+            return teacher.full_name
+    if teacher_user:
+        return teacher_user.full_name
+    if teacher_user_id is not None:
+        user = await async_query(db, User).filter(User.id == teacher_user_id).first()
+        return user.full_name if user else None
+    return None
+
+async def _related_item(db: AsyncSession, course: Course, attr_name: str, model, item_id: int | None):
+    """Return a related object without triggering SQLAlchemy async lazy loading."""
+    loaded = course.__dict__.get(attr_name)
+    if loaded is not None or item_id is None:
+        return loaded
+    query = async_query(db, model).filter(model.id == item_id)
+    if getattr(model, "school_id", None) is not None and course.school_id is not None:
+        query = query.filter(model.school_id == course.school_id)
+    return await query.first()
 
 async def _course_payload(db: AsyncSession, course: Course, progress: float | None=None, student: Student | None=None) -> CourseOut:
     lessons_count = await async_query(db, Lesson).filter(Lesson.course_id == course.id).count()
     enrolled_count = await async_query(db, Enrollment).filter(Enrollment.course_id == course.id).count()
-    return CourseOut(id=course.id, title=course.title, description=course.description, thumbnail_url=course.thumbnail_url, school_id=course.school_id, class_id=course.class_id, section_id=course.section_id, subject_id=course.subject_id, academic_session_id=course.academic_session_id, teacher_id=course.teacher_id, teacher_name=await _teacher_name(db, course.school_id or 0, course.teacher), class_name=course.school_class.name if course.school_class else None, section_name=course.section.name if course.section else None, subject_name=course.subject.name if course.subject else None, academic_session_name=course.academic_session.name if course.academic_session else None, status=course.status or 'PUBLISHED', is_active=bool(course.is_active), lessons_count=lessons_count, enrolled_students_count=enrolled_count, progress=progress, student_id=student.id if student else None, student_name=full_student_name(student) if student else None, admission_no=student.admission_no if student else None, created_at=course.created_at, updated_at=course.updated_at)
+
+    school_class = await _related_item(db, course, "school_class", SchoolClass, course.class_id)
+    section = await _related_item(db, course, "section", Section, course.section_id)
+    subject = await _related_item(db, course, "subject", Subject, course.subject_id)
+    academic_session = await _related_item(db, course, "academic_session", AcademicSession, course.academic_session_id)
+    teacher_user = course.__dict__.get("teacher")
+
+    return CourseOut(
+        id=course.id,
+        title=course.title,
+        description=course.description,
+        thumbnail_url=course.thumbnail_url,
+        school_id=course.school_id,
+        class_id=course.class_id,
+        section_id=course.section_id,
+        subject_id=course.subject_id,
+        academic_session_id=course.academic_session_id,
+        teacher_id=course.teacher_id,
+        teacher_name=await _teacher_name(db, course.school_id or 0, course.teacher_id, teacher_user),
+        class_name=school_class.name if school_class else None,
+        section_name=section.name if section else None,
+        subject_name=subject.name if subject else None,
+        academic_session_name=academic_session.name if academic_session else None,
+        status=course.status or 'PUBLISHED',
+        is_active=bool(course.is_active),
+        lessons_count=lessons_count,
+        enrolled_students_count=enrolled_count,
+        progress=progress,
+        student_id=student.id if student else None,
+        student_name=full_student_name(student) if student else None,
+        admission_no=student.admission_no if student else None,
+        created_at=course.created_at,
+        updated_at=course.updated_at,
+    )
 
 def _base_course_query(db: AsyncSession, school_id: int):
     return async_query(db, Course).options(joinedload(Course.teacher), joinedload(Course.school_class), joinedload(Course.section), joinedload(Course.subject), joinedload(Course.academic_session)).filter(Course.school_id == school_id, Course.is_active.is_(True))
@@ -57,7 +114,7 @@ async def _student_course_rows(db: AsyncSession, school_id: int, user: User) -> 
     student = await student_for_user(db, school_id, user)
     if not student or not student.class_id:
         return []
-    courses = await _base_course_query(db, school_id).filter(Course.class_id == student.class_id, Course.status == 'PUBLISHED', or_(Course.section_id.is_(None), Course.section_id == student.section_id)).order_by(Course.created_at.desc()).all()
+    courses = [course for course in await _base_course_query(db, school_id).filter(Course.status == 'PUBLISHED').order_by(Course.created_at.desc()).all() if course_matches_student(course, student)]
     rows: list[CourseOut] = []
     for course in courses:
         enrollment = await ensure_enrollment_for_user_student(db, school_id, user, course)
@@ -69,22 +126,85 @@ async def _parent_course_rows(db: AsyncSession, school_id: int, user: User) -> l
     for child in await children_for_parent(db, school_id, user):
         if not child.user_id or not child.class_id:
             continue
-        courses = await _base_course_query(db, school_id).filter(Course.class_id == child.class_id, Course.status == 'PUBLISHED', or_(Course.section_id.is_(None), Course.section_id == child.section_id)).order_by(Course.created_at.desc()).all()
+        courses = [course for course in await _base_course_query(db, school_id).filter(Course.status == 'PUBLISHED').order_by(Course.created_at.desc()).all() if course_matches_student(course, child)]
         for course in courses:
             enrollment = await async_query(db, Enrollment).filter(Enrollment.student_id == child.user_id, Enrollment.course_id == course.id).first()
             progress = float(enrollment.progress or 0) if enrollment else 0
             rows.append(await _course_payload(db, course, progress=progress, student=child))
     return rows
 
-@router.get('/meta', response_model=CourseMetaResponse)
-async def courses_meta(school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
-    class_query = async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True)).order_by(SchoolClass.name.asc())
-    section_query = async_query(db, Section).filter(Section.school_id == school_id, Section.is_active.is_(True)).order_by(Section.name.asc())
-    subject_query = async_query(db, Subject).filter(Subject.school_id == school_id, Subject.is_active.is_(True)).order_by(Subject.name.asc())
-    if current_user.role == UserRole.TEACHER.value:
-        teacher = await teacher_for_user(db, school_id, current_user)
+
+async def _teacher_for_course_meta(
+    db: AsyncSession,
+    school_id: int,
+    user: User,
+    session_id: int | None,
+) -> Teacher | None:
+    if session_id is not None:
+        teacher = await async_query(db, Teacher).filter(
+            Teacher.school_id == school_id,
+            Teacher.user_id == user.id,
+            Teacher.academic_session_id == session_id,
+            Teacher.is_active.is_(True),
+        ).first()
         if teacher:
-            teacher_subjects = await async_query(db, TeacherSubject).filter_by(school_id=school_id, teacher_id=teacher.id).all()
+            return teacher
+    return await teacher_for_user(db, school_id, user)
+
+
+def _teacher_meta_items(teachers: list[Teacher]) -> list[CourseMetaItem]:
+    """Return LMS teacher choices keyed by login user id without duplicates."""
+    seen_user_ids: set[int] = set()
+    items: list[CourseMetaItem] = []
+    for teacher in teachers:
+        if teacher.user_id is None:
+            continue
+        user_id = int(teacher.user_id)
+        if user_id in seen_user_ids:
+            continue
+        seen_user_ids.add(user_id)
+        items.append(CourseMetaItem(id=user_id, name=teacher.full_name, extra=teacher.employee_id))
+    return items
+
+
+@router.get('/meta', response_model=CourseMetaResponse)
+async def courses_meta(
+    request: Request,
+    school_id: int = Depends(current_school_id),
+    current_user: User = Depends(require_roles(*MANAGER_ROLES)),
+    db: AsyncSession = Depends(get_async_db),
+):
+    session = await selected_academic_session(db, school_id, request=request, current_user=current_user)
+    session_id = session.id if session else None
+
+    class_query = async_query(db, SchoolClass).filter(
+        SchoolClass.school_id == school_id,
+        SchoolClass.is_active.is_(True),
+    )
+    section_query = async_query(db, Section).filter(
+        Section.school_id == school_id,
+        Section.is_active.is_(True),
+    )
+    subject_query = async_query(db, Subject).filter(
+        Subject.school_id == school_id,
+        Subject.is_active.is_(True),
+    )
+
+    if session_id is not None:
+        class_query = class_query.filter(SchoolClass.academic_session_id == session_id)
+        section_query = section_query.filter(Section.academic_session_id == session_id)
+        subject_query = subject_query.filter(Subject.academic_session_id == session_id)
+
+    if current_user.role == UserRole.TEACHER.value:
+        teacher = await _teacher_for_course_meta(db, school_id, current_user, session_id)
+        if teacher:
+            teacher_subjects_query = async_query(db, TeacherSubject).filter_by(
+                school_id=school_id,
+                teacher_id=teacher.id,
+            )
+            if session_id is not None:
+                teacher_subjects_query = teacher_subjects_query.filter(TeacherSubject.academic_session_id == session_id)
+            teacher_subjects = await teacher_subjects_query.all()
             class_ids = {item.class_id for item in teacher_subjects if item.class_id is not None}
             section_ids = {item.section_id for item in teacher_subjects if item.section_id is not None}
             subject_ids = {item.subject_id for item in teacher_subjects if item.subject_id is not None}
@@ -95,9 +215,23 @@ async def courses_meta(school_id: int=Depends(current_school_id), current_user: 
                 section_query = section_query.filter(Section.id.in_(section_ids))
             if subject_ids:
                 subject_query = subject_query.filter(Subject.id.in_(subject_ids))
-    session = await current_session(db, school_id)
-    teachers = await async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True), Teacher.user_id.isnot(None)).order_by(Teacher.full_name.asc()).all()
-    return CourseMetaResponse(classes=[CourseMetaItem(id=item.id, name=item.name, extra=item.code) for item in await class_query.all()], sections=[CourseMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in await section_query.all()], subjects=[CourseMetaItem(id=item.id, name=item.name, extra=item.code) for item in await subject_query.all()], teachers=[CourseMetaItem(id=int(item.user_id), name=item.full_name, extra=item.employee_id) for item in teachers if item.user_id], current_academic_session_id=session.id if session else None)
+
+    teacher_query = async_query(db, Teacher).filter(
+        Teacher.school_id == school_id,
+        Teacher.is_active.is_(True),
+        Teacher.user_id.isnot(None),
+    )
+    if session_id is not None:
+        teacher_query = teacher_query.filter(Teacher.academic_session_id == session_id)
+    teachers = await teacher_query.order_by(Teacher.full_name.asc(), Teacher.id.asc()).all()
+
+    return CourseMetaResponse(
+        classes=[CourseMetaItem(id=item.id, name=item.name, extra=item.code) for item in await class_query.order_by(SchoolClass.name.asc()).all()],
+        sections=[CourseMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in await section_query.order_by(Section.name.asc()).all()],
+        subjects=[CourseMetaItem(id=item.id, name=item.name, extra=item.code) for item in await subject_query.order_by(Subject.name.asc()).all()],
+        teachers=_teacher_meta_items(teachers),
+        current_academic_session_id=session_id,
+    )
 
 @router.get('/student/my', response_model=list[CourseOut])
 async def list_my_student_courses(school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(UserRole.STUDENT)), db: AsyncSession=Depends(get_async_db)):
@@ -133,7 +267,6 @@ async def get_my_created_courses(school_id: int=Depends(current_school_id), curr
 @router.post('/', response_model=CourseOut, status_code=status.HTTP_201_CREATED)
 async def create_course(title: str=Form(..., min_length=2, max_length=255), description: Optional[str]=Form(None), class_id: int=Form(...), section_id: Optional[int]=Form(None), subject_id: Optional[int]=Form(None), teacher_id: Optional[int]=Form(None), status_value: str=Form('PUBLISHED', alias='status'), thumbnail: Optional[UploadFile]=File(None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
     await validate_course_scope(db, school_id, class_id, section_id, subject_id)
-    session = await current_session(db, school_id)
     assigned_teacher_user_id = current_user.id
     if current_user.role == UserRole.TEACHER.value:
         teacher = await teacher_for_user(db, school_id, current_user)
@@ -150,7 +283,7 @@ async def create_course(title: str=Form(..., min_length=2, max_length=255), desc
     if thumbnail and thumbnail.filename:
         result = upload_file(thumbnail.file, folder='lms/thumbnails', resource_type='image')
         thumbnail_url = result['url']
-    course = Course(school_id=school_id, class_id=class_id, section_id=section_id, subject_id=subject_id, academic_session_id=session.id if session else None, title=title.strip(), description=description.strip() if description else None, thumbnail_url=thumbnail_url, teacher_id=assigned_teacher_user_id, status=_safe_status(status_value), is_active=True)
+    course = Course(school_id=school_id, class_id=class_id, section_id=section_id, subject_id=subject_id, academic_session_id=None, title=title.strip(), description=description.strip() if description else None, thumbnail_url=thumbnail_url, teacher_id=assigned_teacher_user_id, status=_safe_status(status_value), is_active=True)
     db.add(course)
     await db.commit()
     await db.refresh(course)

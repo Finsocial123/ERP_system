@@ -1,11 +1,12 @@
 from datetime import date
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, or_, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 from app.core.database import get_async_db
 from app.dependencies.auth import current_school_id, get_current_user, require_school_admin
+from app.dependencies.academic_session import selected_academic_session, require_writable_academic_session, writable_selected_academic_session, assert_item_session_is_writable
 from app.models.academic import AcademicSession, SchoolClass, Section, Subject
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.timetable import TimetableDay, TimetableEntry, TimetablePeriod
@@ -15,7 +16,7 @@ from app.schemas.common import MessageResponse
 from app.schemas.timetable import TimetableDayCreate, TimetableDayRead, TimetableDayUpdate, TimetableEntryCreate, TimetableEntryRead, TimetableEntryUpdate, TimetableGridResponse, TimetableMetaItem, TimetableMetaResponse, TimetablePeriodCreate, TimetablePeriodRead, TimetablePeriodUpdate
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
-router = APIRouter(prefix='/timetable', tags=['Phase 7 - Timetable Management'])
+router = APIRouter(prefix='/timetable', tags=['Phase 7 - Timetable Management'], dependencies=[Depends(require_writable_academic_session)])
 ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
 DEFAULT_DAYS = [('MONDAY', 'Monday', 1), ('TUESDAY', 'Tuesday', 2), ('WEDNESDAY', 'Wednesday', 3), ('THURSDAY', 'Thursday', 4), ('FRIDAY', 'Friday', 5), ('SATURDAY', 'Saturday', 6)]
 
@@ -45,8 +46,11 @@ async def _ensure_default_days(db: AsyncSession, school_id: int) -> None:
         db.add(TimetableDay(school_id=school_id, day_of_week=day_of_week, display_name=display_name, sort_order=sort_order))
     await db.commit()
 
-async def _teacher_for_user(db: AsyncSession, school_id: int, user: User) -> Teacher | None:
-    teacher = await async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.user_id == user.id).first()
+async def _teacher_for_user(db: AsyncSession, school_id: int, user: User, academic_session_id: int | None=None) -> Teacher | None:
+    query = async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.user_id == user.id)
+    if academic_session_id is not None:
+        query = query.filter(Teacher.academic_session_id == academic_session_id)
+    teacher = await query.first()
     if teacher:
         return teacher
     conditions = []
@@ -58,10 +62,16 @@ async def _teacher_for_user(db: AsyncSession, school_id: int, user: User) -> Tea
         conditions.append(Teacher.employee_id == user.login_id)
     if not conditions:
         return None
-    return await async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True), or_(*conditions)).first()
+    query = async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True), or_(*conditions))
+    if academic_session_id is not None:
+        query = query.filter(Teacher.academic_session_id == academic_session_id)
+    return await query.first()
 
-async def _student_for_user(db: AsyncSession, school_id: int, user: User) -> Student | None:
-    student = await async_query(db, Student).filter(Student.school_id == school_id, Student.user_id == user.id).first()
+async def _student_for_user(db: AsyncSession, school_id: int, user: User, academic_session_id: int | None=None) -> Student | None:
+    query = async_query(db, Student).filter(Student.school_id == school_id, Student.user_id == user.id)
+    if academic_session_id is not None:
+        query = query.filter(Student.academic_session_id == academic_session_id)
+    student = await query.first()
     if student:
         return student
     conditions = []
@@ -73,10 +83,16 @@ async def _student_for_user(db: AsyncSession, school_id: int, user: User) -> Stu
         conditions.append(Student.admission_no == user.login_id)
     if not conditions:
         return None
-    return await async_query(db, Student).filter(Student.school_id == school_id, Student.is_active.is_(True), or_(*conditions)).first()
+    query = async_query(db, Student).filter(Student.school_id == school_id, Student.is_active.is_(True), or_(*conditions))
+    if academic_session_id is not None:
+        query = query.filter(Student.academic_session_id == academic_session_id)
+    return await query.first()
 
-async def _children_for_parent(db: AsyncSession, school_id: int, user: User) -> list[Student]:
-    return await children_for_parent(db, school_id, user)
+async def _children_for_parent(db: AsyncSession, school_id: int, user: User, academic_session_id: int | None=None) -> list[Student]:
+    children = await children_for_parent(db, school_id, user)
+    if academic_session_id is None:
+        return children
+    return [child for child in children if child.academic_session_id == academic_session_id]
 
 async def _validate_entry_scope(db: AsyncSession, school_id: int, class_id: int, section_id: int | None, day_id: int, period_id: int, subject_id: int | None, teacher_id: int | None, academic_session_id: int | None) -> None:
     school_class = await _get_or_404(db, SchoolClass, class_id, school_id, 'Class')
@@ -181,17 +197,27 @@ def _ordered_entries(query):
     return query.join(TimetableDay, TimetableEntry.day_id == TimetableDay.id).join(TimetablePeriod, TimetableEntry.period_id == TimetablePeriod.id).order_by(TimetableDay.sort_order.asc(), TimetablePeriod.period_number.asc(), TimetableEntry.id.asc())
 
 @router.get('/meta', response_model=TimetableMetaResponse)
-async def timetable_meta(school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
+async def timetable_meta(request: Request, school_id: int=Depends(current_school_id), current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
     await _ensure_default_days(db, school_id)
-    current_session = await _current_session(db, school_id)
-    classes = await async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True)).order_by(SchoolClass.name.asc()).all()
-    sections = await async_query(db, Section).filter(Section.school_id == school_id, Section.is_active.is_(True)).order_by(Section.name.asc()).all()
-    subjects = await async_query(db, Subject).filter(Subject.school_id == school_id, Subject.is_active.is_(True)).order_by(Subject.name.asc()).all()
-    teachers = await async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True)).order_by(Teacher.full_name.asc()).all()
+    current_session = await selected_academic_session(db, school_id, request, current_user)
+    session_id = current_session.id if current_session else None
+    classes_q = async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True))
+    sections_q = async_query(db, Section).filter(Section.school_id == school_id, Section.is_active.is_(True))
+    subjects_q = async_query(db, Subject).filter(Subject.school_id == school_id, Subject.is_active.is_(True))
+    teachers_q = async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True))
+    if session_id is not None:
+        classes_q = classes_q.filter(SchoolClass.academic_session_id == session_id)
+        sections_q = sections_q.filter(Section.academic_session_id == session_id)
+        subjects_q = subjects_q.filter(Subject.academic_session_id == session_id)
+        teachers_q = teachers_q.filter(Teacher.academic_session_id == session_id)
+    classes = await classes_q.order_by(SchoolClass.name.asc()).all()
+    sections = await sections_q.order_by(Section.name.asc()).all()
+    subjects = await subjects_q.order_by(Subject.name.asc()).all()
+    teachers = await teachers_q.order_by(Teacher.full_name.asc()).all()
     periods = await async_query(db, TimetablePeriod).filter(TimetablePeriod.school_id == school_id).order_by(TimetablePeriod.period_number.asc()).all()
     days = await async_query(db, TimetableDay).filter(TimetableDay.school_id == school_id).order_by(TimetableDay.sort_order.asc()).all()
     sessions = await async_query(db, AcademicSession).filter(AcademicSession.school_id == school_id).order_by(AcademicSession.id.desc()).all()
-    return TimetableMetaResponse(classes=[TimetableMetaItem(id=item.id, name=item.name, extra=item.code) for item in classes], sections=[TimetableMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in sections], subjects=[TimetableMetaItem(id=item.id, name=item.name, extra=str(item.class_id) if item.class_id else None) for item in subjects], teachers=[TimetableMetaItem(id=item.id, name=item.full_name, extra=item.employee_id) for item in teachers], periods=periods, days=days, academic_sessions=[TimetableMetaItem(id=item.id, name=item.name, extra='active' if item.is_active else None) for item in sessions], current_academic_session_id=current_session.id if current_session else None)
+    return TimetableMetaResponse(classes=[TimetableMetaItem(id=item.id, name=item.name, extra=item.code) for item in classes], sections=[TimetableMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in sections], subjects=[TimetableMetaItem(id=item.id, name=item.name, extra=str(item.class_id) if item.class_id else None) for item in subjects], teachers=[TimetableMetaItem(id=item.id, name=item.full_name, extra=item.employee_id) for item in teachers], periods=periods, days=days, academic_sessions=[TimetableMetaItem(id=item.id, name=item.name, extra='active' if item.is_active else None) for item in sessions], current_academic_session_id=session_id)
 
 @router.get('/periods', response_model=list[TimetablePeriodRead])
 async def list_periods(school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
@@ -275,7 +301,8 @@ async def delete_day(day_id: int, current_user: User=Depends(require_school_admi
     return {'message': 'Day deleted'}
 
 @router.get('/entries', response_model=list[TimetableEntryRead])
-async def list_entries(class_id: int | None=Query(default=None), section_id: int | None=Query(default=None), teacher_id: int | None=Query(default=None), academic_session_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
+async def list_entries(request: Request, class_id: int | None=Query(default=None), section_id: int | None=Query(default=None), teacher_id: int | None=Query(default=None), academic_session_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
+    session = await selected_academic_session(db, school_id, request, current_user, academic_session_id)
     query = _entry_query(db, school_id)
     if class_id is not None:
         query = query.filter(TimetableEntry.class_id == class_id)
@@ -283,8 +310,8 @@ async def list_entries(class_id: int | None=Query(default=None), section_id: int
         query = query.filter(TimetableEntry.section_id == section_id)
     if teacher_id is not None:
         query = query.filter(TimetableEntry.teacher_id == teacher_id)
-    if academic_session_id is not None:
-        query = query.filter(TimetableEntry.academic_session_id == academic_session_id)
+    if session is not None:
+        query = query.filter(TimetableEntry.academic_session_id == session.id)
     entries = await _ordered_entries(query).options(
     joinedload(TimetableEntry.school_class),
     joinedload(TimetableEntry.section),
@@ -297,12 +324,11 @@ async def list_entries(class_id: int | None=Query(default=None), section_id: int
     return [_entry_payload(entry) for entry in entries]
 
 @router.post('/entries', response_model=TimetableEntryRead, status_code=status.HTTP_201_CREATED)
-async def create_entry(payload: TimetableEntryCreate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
+async def create_entry(payload: TimetableEntryCreate, request: Request, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     data = payload.model_dump()
-    if data.get('academic_session_id') is None:
-        session = await _current_session(db, current_user.school_id)
-        if session:
-            data['academic_session_id'] = session.id
+    session = await writable_selected_academic_session(db, current_user.school_id, request, current_user, data.get('academic_session_id'))
+    if session:
+        data['academic_session_id'] = session.id
     data['room'] = data.get('room') or None
     await _validate_entry_scope(db, current_user.school_id, **{k: data.get(k) for k in ['class_id', 'section_id', 'day_id', 'period_id', 'subject_id', 'teacher_id', 'academic_session_id']})
     await _check_conflicts(db, current_user.school_id, data)
@@ -319,6 +345,7 @@ async def create_entry(payload: TimetableEntryCreate, current_user: User=Depends
 @router.put('/entries/{entry_id}', response_model=TimetableEntryRead)
 async def update_entry(entry_id: int, payload: TimetableEntryUpdate, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     item = await _get_or_404(db, TimetableEntry, entry_id, current_user.school_id, 'Timetable entry')
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     existing = {'class_id': item.class_id, 'section_id': item.section_id, 'day_id': item.day_id, 'period_id': item.period_id, 'subject_id': item.subject_id, 'teacher_id': item.teacher_id, 'room': item.room, 'note': item.note, 'academic_session_id': item.academic_session_id, 'is_active': item.is_active}
     existing.update(payload.model_dump(exclude_unset=True))
     existing['room'] = existing.get('room') or None
@@ -338,20 +365,22 @@ async def update_entry(entry_id: int, payload: TimetableEntryUpdate, current_use
 @router.delete('/entries/{entry_id}', response_model=MessageResponse)
 async def delete_entry(entry_id: int, current_user: User=Depends(require_school_admin), db: AsyncSession=Depends(get_async_db)):
     item = await _get_or_404(db, TimetableEntry, entry_id, current_user.school_id, 'Timetable entry')
+    await assert_item_session_is_writable(db, current_user.school_id, item)
     await db.delete(item)
     await db.commit()
     return {'message': 'Timetable entry deleted'}
 
 @router.get('/view/class', response_model=TimetableGridResponse)
-async def view_by_class(class_id: int=Query(...), section_id: int | None=Query(default=None), academic_session_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
+async def view_by_class(request: Request, class_id: int=Query(...), section_id: int | None=Query(default=None), academic_session_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
     await _ensure_default_days(db, school_id)
+    session = await selected_academic_session(db, school_id, request, current_user, academic_session_id)
     school_class = await _get_or_404(db, SchoolClass, class_id, school_id, 'Class')
     section = await _get_or_404(db, Section, section_id, school_id, 'Section')
     query = _entry_query(db, school_id).filter(TimetableEntry.class_id == class_id, TimetableEntry.is_active.is_(True))
     if section_id is not None:
         query = query.filter(TimetableEntry.section_id == section_id)
-    if academic_session_id is not None:
-        query = query.filter(TimetableEntry.academic_session_id == academic_session_id)
+    if session is not None:
+        query = query.filter(TimetableEntry.academic_session_id == session.id)
     title = f"{school_class.name}{(' - ' + section.name if section else '')} Timetable"
     periods = await async_query(db, TimetablePeriod).filter(TimetablePeriod.school_id == school_id, TimetablePeriod.is_active.is_(True)).order_by(TimetablePeriod.period_number.asc()).all()
     days = await async_query(db, TimetableDay).filter(TimetableDay.school_id == school_id, TimetableDay.is_active.is_(True)).order_by(TimetableDay.sort_order.asc()).all()
@@ -367,12 +396,13 @@ async def view_by_class(class_id: int=Query(...), section_id: int | None=Query(d
     return TimetableGridResponse(mode='class', title=title, entries=[_entry_payload(e) for e in entries], periods=periods, days=days)
 
 @router.get('/view/teacher', response_model=TimetableGridResponse)
-async def view_by_teacher(teacher_id: int=Query(...), academic_session_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
+async def view_by_teacher(request: Request, teacher_id: int=Query(...), academic_session_id: int | None=Query(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
     await _ensure_default_days(db, school_id)
+    session = await selected_academic_session(db, school_id, request, current_user, academic_session_id)
     teacher = await _get_or_404(db, Teacher, teacher_id, school_id, 'Teacher')
     query = _entry_query(db, school_id).filter(TimetableEntry.teacher_id == teacher_id, TimetableEntry.is_active.is_(True))
-    if academic_session_id is not None:
-        query = query.filter(TimetableEntry.academic_session_id == academic_session_id)
+    if session is not None:
+        query = query.filter(TimetableEntry.academic_session_id == session.id)
     periods = await async_query(db, TimetablePeriod).filter(TimetablePeriod.school_id == school_id, TimetablePeriod.is_active.is_(True)).order_by(TimetablePeriod.period_number.asc()).all()
     days = await async_query(db, TimetableDay).filter(TimetableDay.school_id == school_id, TimetableDay.is_active.is_(True)).order_by(TimetableDay.sort_order.asc()).all()
     entries = await _ordered_entries(query).options(
@@ -387,39 +417,42 @@ async def view_by_teacher(teacher_id: int=Query(...), academic_session_id: int |
     return TimetableGridResponse(mode='teacher', title=f'{teacher.full_name} Timetable', entries=[_entry_payload(e) for e in entries], periods=periods, days=days)
 
 @router.get('/my-teacher', response_model=TimetableGridResponse)
-async def my_teacher_timetable(current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
+async def my_teacher_timetable(request: Request, current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
     if current_user.role != UserRole.TEACHER.value:
         raise HTTPException(status_code=403, detail='Teacher access required')
     if not current_user.school_id:
         raise HTTPException(status_code=400, detail='User is not linked to a school')
-    teacher = await _teacher_for_user(db, current_user.school_id, current_user)
+    session = await selected_academic_session(db, current_user.school_id, request, current_user)
+    teacher = await _teacher_for_user(db, current_user.school_id, current_user, session.id if session else None)
     if not teacher:
         return TimetableGridResponse(mode='teacher', title='My Timetable', entries=[], periods=[], days=[])
-    return await view_by_teacher(teacher_id=teacher.id, academic_session_id=None, school_id=current_user.school_id, db=db)
+    return await view_by_teacher(request=request, teacher_id=teacher.id, academic_session_id=session.id if session else None, school_id=current_user.school_id, current_user=current_user, db=db)
 
 @router.get('/my-student', response_model=TimetableGridResponse)
-async def my_student_timetable(current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
+async def my_student_timetable(request: Request, current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
     if current_user.role != UserRole.STUDENT.value:
         raise HTTPException(status_code=403, detail='Student access required')
     if not current_user.school_id:
         raise HTTPException(status_code=400, detail='User is not linked to a school')
-    student = await _student_for_user(db, current_user.school_id, current_user)
+    session = await selected_academic_session(db, current_user.school_id, request, current_user)
+    student = await _student_for_user(db, current_user.school_id, current_user, session.id if session else None)
     if not student or not student.class_id:
         return TimetableGridResponse(mode='student', title='My Class Timetable', entries=[], periods=[], days=[])
-    return await view_by_class(class_id=student.class_id, section_id=student.section_id, academic_session_id=None, school_id=current_user.school_id, db=db)
+    return await view_by_class(request=request, class_id=student.class_id, section_id=student.section_id, academic_session_id=student.academic_session_id, school_id=current_user.school_id, current_user=current_user, db=db)
 
 @router.get('/my-children', response_model=list[TimetableGridResponse])
-async def my_children_timetable(current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
+async def my_children_timetable(request: Request, current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
     if current_user.role != UserRole.PARENT.value:
         raise HTTPException(status_code=403, detail='Parent access required')
     if not current_user.school_id:
         raise HTTPException(status_code=400, detail='User is not linked to a school')
-    children = await _children_for_parent(db, current_user.school_id, current_user)
+    session = await selected_academic_session(db, current_user.school_id, request, current_user)
+    children = await _children_for_parent(db, current_user.school_id, current_user, session.id if session else None)
     result: list[TimetableGridResponse] = []
     for child in children:
         if not child.class_id:
             continue
-        grid = await view_by_class(class_id=child.class_id, section_id=child.section_id, academic_session_id=None, school_id=current_user.school_id, db=db)
+        grid = await view_by_class(request=request, class_id=child.class_id, section_id=child.section_id, academic_session_id=child.academic_session_id, school_id=current_user.school_id, current_user=current_user, db=db)
         grid.title = f"{child.first_name} {child.last_name or ''}".strip() + ' - ' + grid.title
         result.append(grid)
     return result

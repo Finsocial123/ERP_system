@@ -251,7 +251,7 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     refreshUnreadNotifications();
-  }, [auth?.user.id, auth?.user.school_id, pathname, refreshUnreadNotifications]);
+  }, [auth?.user.id, auth?.user.school_id, refreshUnreadNotifications]);
 
   useEffect(() => {
     window.addEventListener("erp_notifications_updated", refreshUnreadNotifications);

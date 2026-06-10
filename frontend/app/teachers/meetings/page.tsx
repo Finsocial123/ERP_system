@@ -272,7 +272,6 @@ function TeacherMeetingForm({
             method: "POST",
             body: JSON.stringify({
               class_id: selectedClass.class_id,
-              section_id: selectedClass.section_id,
               title: title.trim(),
             }),
           },
@@ -283,7 +282,6 @@ function TeacherMeetingForm({
           method: "POST",
           body: JSON.stringify({
             class_id: selectedClass.class_id,
-            section_id: selectedClass.section_id,
             title: title.trim(),
             scheduled_at: new Date(scheduledAt).toISOString(),
           }),

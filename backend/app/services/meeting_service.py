@@ -202,12 +202,11 @@ async def get_active_meeting_for_class(
     query = select(Meeting).where(
         Meeting.school_id == school_id,
         Meeting.class_id == class_id,
-        Meeting.section_id == section_id,
         Meeting.status == MeetingStatus.LIVE,
     )
 
     result = await db.execute(query)
-    return result().first()
+    return result.scalars().first()
 
 
 async def list_meetings(
@@ -252,15 +251,8 @@ async def list_meetings(
 
         print(f"DEBUG student: class_id={student.class_id} section_id={student.section_id}")
 
-        section_filter = (
-            Meeting.section_id == student.section_id
-            if student.section_id is not None
-            else Meeting.section_id.is_(None)
-        )
-
         query = query.where(
             Meeting.class_id == student.class_id,
-            section_filter,
             Meeting.meeting_type == MeetingType.TEACHER_CLASS,
         )
 

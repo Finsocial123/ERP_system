@@ -1,5 +1,5 @@
 # app/models/bbb_meeting.py
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -26,9 +26,9 @@ class Meeting(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), index=True)
-    bbb_meeting_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    attendee_password: Mapped[str] = mapped_column(String(100), nullable=False)
-    moderator_password: Mapped[str] = mapped_column(String(100), nullable=False)
+    bbb_meeting_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    attendee_password: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    moderator_password: Mapped[str | None] = mapped_column(String(100), nullable=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
 
     meeting_type: Mapped[MeetingType] = mapped_column(
@@ -46,10 +46,11 @@ class Meeting(Base):
     teacher_id: Mapped[int | None] = mapped_column(ForeignKey("teachers.id", ondelete="SET NULL"), nullable=True, index=True)
     record: Mapped[bool] = mapped_column(Boolean, default=True)
     recording_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+)
 
     school_class = relationship("SchoolClass")
     section = relationship("Section")

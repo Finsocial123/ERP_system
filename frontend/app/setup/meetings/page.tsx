@@ -207,27 +207,48 @@ function StatsRow({
 function StaffMeetingForm({
   onClose,
   onCreated,
+  onScheduled,
 }: {
   onClose: () => void;
   onCreated: (joinUrl: string) => void;
+  onScheduled: () => void;
 }) {
   const [title, setTitle] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [mode, setMode] = useState<"now" | "schedule">("now");
+  const [scheduledAt, setScheduledAt] = useState("");
 
   async function handleCreate() {
     if (!title.trim()) return;
+
+    if (mode === "schedule" && !scheduledAt) {
+      setError("Please select a date and time");
+      return;
+    }
+
     setError("");
     setLoading(true);
     try {
-      const data = await apiFetch<CreateMeetingResponse>(
-        "/meetings/admin/teachers",
-        {
+      if (mode === "now") {
+        const data = await apiFetch<CreateMeetingResponse>(
+          "/meetings/admin/teachers",
+          {
+            method: "POST",
+            body: JSON.stringify({ title: title.trim() }),
+          },
+        );
+        onCreated(data.join_url);
+      } else {
+        await apiFetch("/meetings/admin/teachers/schedule", {
           method: "POST",
-          body: JSON.stringify({ title: title.trim() }),
-        },
-      );
-      onCreated(data.join_url);
+          body: JSON.stringify({
+            title: title.trim(),
+            scheduled_at: new Date(scheduledAt).toISOString(),
+          }),
+        });
+        onScheduled();
+      }
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -259,6 +280,43 @@ function StaffMeetingForm({
         </p>
       )}
 
+      <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
+        <button
+          onClick={() => setMode("now")}
+          className={`flex-1 py-2 text-sm rounded-lg font-medium transition-all ${
+            mode === "now"
+              ? "bg-white shadow-sm text-slate-900"
+              : "text-slate-500"
+          }`}
+        >
+          Start Now
+        </button>
+        <button
+          onClick={() => setMode("schedule")}
+          className={`flex-1 py-2 text-sm rounded-lg font-medium transition-all ${
+            mode === "schedule"
+              ? "bg-white shadow-sm text-slate-900"
+              : "text-slate-500"
+          }`}
+        >
+          Schedule
+        </button>
+      </div>
+
+      {mode === "schedule" && (
+        <div>
+          <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">
+            Date & Time
+          </label>
+          <input
+            type="datetime-local"
+            value={scheduledAt}
+            onChange={(e) => setScheduledAt(e.target.value)}
+            min={new Date().toISOString().slice(0, 16)}
+            className={inputCls}
+          />
+        </div>
+      )}
       <div className="flex gap-3 pt-2 border-t border-slate-100">
         <button
           onClick={onClose}
@@ -268,10 +326,18 @@ function StaffMeetingForm({
         </button>
         <button
           onClick={handleCreate}
-          disabled={loading || !title.trim()}
+          disabled={
+            loading || !title.trim() || (mode === "schedule" && !scheduledAt)
+          }
           className="flex-1 py-2.5 text-sm bg-slate-900 text-white rounded-xl hover:bg-slate-700 disabled:opacity-50 transition-colors font-medium"
         >
-          {loading ? "Starting..." : "Start Staff Meeting"}
+          {loading
+            ? mode === "now"
+              ? "Starting..."
+              : "Scheduling..."
+            : mode === "now"
+              ? "Start Staff Meeting"
+              : "Schedule Staff Meeting"}
         </button>
       </div>
     </div>
@@ -344,20 +410,30 @@ function MeetingRow({
   onView,
   joining,
   ending,
+  onStart,
+  onCancel,
+  currentUserRole,
 }: {
   meeting: MeetingOut;
   currentUserId: number;
   onJoin: (id: number) => void;
   onEnd: (id: number) => void;
+  onStart: (id: number) => void;
+  onCancel: (id: number) => void;
   onView: (m: MeetingOut) => void;
   joining: number | null;
   ending: number | null;
+  currentUserRole: string;
 }) {
   const sm = STATUS_META[meeting.status];
   const tm = TYPE_META[meeting.meeting_type];
   const isLive = meeting.status === "live";
   const isOwner = meeting.created_by_user_id === currentUserId;
+  const canEnd =
+    isOwner ||
+    ["SCHOOL_ADMIN", "SCHOOL_OWNER", "SUPER_ADMIN"].includes(currentUserRole);
 
+  const isScheduled = meeting.status === "scheduled";
   return (
     <div
       className={`group flex items-center gap-4 px-5 py-4 bg-white rounded-2xl border transition-all hover:shadow-sm ${
@@ -420,13 +496,29 @@ function MeetingRow({
             {joining === meeting.id ? "Opening..." : "Join"}
           </button>
         )}
-        {isLive && isOwner && (
+        {isLive && canEnd && (
           <button
             onClick={() => onEnd(meeting.id)}
             disabled={ending === meeting.id}
             className="px-3 py-1.5 text-xs font-medium border border-red-200 text-red-600 rounded-lg hover:bg-red-50 disabled:opacity-60 transition-colors"
           >
             {ending === meeting.id ? "..." : "End"}
+          </button>
+        )}
+        {isScheduled && (
+          <button
+            onClick={() => onStart(meeting.id)}
+            className="px-3 py-1.5 text-xs font-medium bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+          >
+            Start Now
+          </button>
+        )}
+        {isScheduled && (
+          <button
+            onClick={() => onCancel(meeting.id)}
+            className="px-3 py-1.5 text-xs font-medium border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition-colors"
+          >
+            Cancel
           </button>
         )}
         <button
@@ -602,7 +694,7 @@ function FiltersBar({
   );
 }
 
-type Tab = "live" | "all" | "past";
+type Tab = "live" | "scheduled" | "all" | "past";
 
 export default function AdminMeetingsPage() {
   const auth = getSavedAuth();
@@ -667,6 +759,7 @@ export default function AdminMeetingsPage() {
       });
       if (activeTab === "live") params.set("status", "live");
       if (activeTab === "past") params.set("status", "ended");
+      if (activeTab === "scheduled") params.set("status", "scheduled");
       if (typeFilter) params.set("meeting_type", typeFilter);
       if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
 
@@ -691,7 +784,7 @@ export default function AdminMeetingsPage() {
 
   useEffect(() => {
     if (activeTab !== "live") return;
-    const interval = setInterval(fetchMeetings, 30000);
+    const interval = setInterval(fetchMeetings, 60000);
     return () => clearInterval(interval);
   }, [activeTab, fetchMeetings]);
 
@@ -728,12 +821,35 @@ export default function AdminMeetingsPage() {
     fetchStats();
   }
 
+  async function handleStart(meetingId: number) {
+    try {
+      const data = await apiFetch<CreateMeetingResponse>(
+        `/meetings/${meetingId}/start`,
+        { method: "POST" },
+      );
+      fetchMeetings();
+      setLaunchUrl(data.join_url);
+    } catch (e: any) {
+      alert(e.message);
+    }
+  }
+
+  async function handleCancel(meetingId: number) {
+    try {
+      await apiFetch(`/meetings/${meetingId}/cancel`, { method: "DELETE" });
+      fetchMeetings();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  }
+
   const totalPages = meetings ? Math.ceil(meetings.total / limit) : 0;
   const currentPage = Math.floor(skip / limit) + 1;
   const liveCount = stats?.live_now ?? 0;
 
   const TABS: [Tab, string][] = [
     ["live", "Live Now"],
+    ["scheduled", "Scheduled"],
     ["all", "All Meetings"],
     ["past", "Past Meetings"],
   ];
@@ -864,6 +980,9 @@ export default function AdminMeetingsPage() {
                       onView={setViewingMeeting}
                       joining={joining}
                       ending={ending}
+                      currentUserRole={auth?.user?.role ?? ""}
+                      onStart={handleStart}
+                      onCancel={handleCancel}
                     />
                   ))}
                 </>
@@ -911,6 +1030,10 @@ export default function AdminMeetingsPage() {
           <StaffMeetingForm
             onClose={() => setCreatingStaff(false)}
             onCreated={handleCreated}
+            onScheduled={() => {
+              setCreatingStaff(false);
+              setActiveTab("scheduled");
+            }}
           />
         </Modal>
       )}

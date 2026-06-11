@@ -159,6 +159,9 @@ class StudentFeeRecordRead(BaseModel):
     section_name: str | None = None
     fee_structure_id: int | None = None
     fee_structure_name: str | None = None
+    category_id: int | None = None
+    category_name: str | None = None
+    fee_type: str = "STRUCTURED"
     fee_assignment_id: int | None = None
     academic_session_id: int | None = None
     academic_session_name: str | None = None

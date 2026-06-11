@@ -598,6 +598,9 @@
     section_name?: string | null;
     fee_structure_id?: number | null;
     fee_structure_name?: string | null;
+    category_id?: number | null;
+    category_name?: string | null;
+    fee_type?: string | null;
     fee_assignment_id?: number | null;
     academic_session_id?: number | null;
     academic_session_name?: string | null;

@@ -5,7 +5,7 @@ import { Plus, ReceiptText, RefreshCw, Trash2 } from "lucide-react";
 
 import { AppSection } from "@/components/CrudManager";
 import { Button, Card, Input, Label, Textarea } from "@/components/ui";
-import { apiFetch } from "@/lib/api";
+import { ACADEMIC_SESSION_CHANGED_EVENT, apiFetch } from "@/lib/api";
 import type {
   DailyCollectionReport,
   FeeAssignment,
@@ -79,6 +79,15 @@ type ExpenseForm = {
   note: string;
 };
 
+type RecordFilters = {
+  class_id: string;
+  section_id: string;
+  category_id: string;
+  fee_type: string;
+  status: string;
+  search: string;
+};
+
 const tabs: { key: TabKey; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
   { key: "categories", label: "Categories" },
@@ -91,6 +100,8 @@ const tabs: { key: TabKey; label: string }[] = [
 
 const inputClass = "w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm outline-none transition focus:border-slate-400";
 const paymentModes = ["CASH", "UPI", "CARD", "BANK_TRANSFER", "CHEQUE", "ONLINE", "OTHER"];
+const recordStatusOptions = ["PENDING", "PARTIAL", "PAID", "OVERDUE", "WAIVED"];
+const emptyRecordFilters: RecordFilters = { class_id: "", section_id: "", category_id: "", fee_type: "", status: "", search: "" };
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -159,6 +170,7 @@ export default function FeeManager() {
   const [payments, setPayments] = useState<FeePayment[]>([]);
   const [expenses, setExpenses] = useState<FeeExpense[]>([]);
   const [lastReceipt, setLastReceipt] = useState<FeeReceipt | null>(null);
+  const [recordFilters, setRecordFilters] = useState<RecordFilters>(emptyRecordFilters);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -186,6 +198,24 @@ export default function FeeManager() {
   const currentSessionQuery = (metaData: FeeMeta | null = meta) => {
     const sessionId = metaData?.current_academic_session_id;
     return sessionId ? `academic_session_id=${sessionId}` : "";
+  };
+
+  const recordFilterQuery = (filters: RecordFilters = recordFilters) => {
+    const params = new URLSearchParams();
+    if (filters.class_id) params.set("class_id", filters.class_id);
+    if (filters.section_id) params.set("section_id", filters.section_id);
+    if (filters.category_id) params.set("category_id", filters.category_id);
+    if (filters.fee_type) params.set("fee_type", filters.fee_type);
+    if (filters.status) params.set("status", filters.status);
+    if (filters.search.trim()) params.set("search", filters.search.trim());
+    return params.toString();
+  };
+
+  const recordsPath = (filters: RecordFilters = recordFilters) => {
+    const query = currentSessionQuery();
+    const extra = ["limit=250", recordFilterQuery(filters)].filter(Boolean).join("&");
+    const params = [query, extra].filter(Boolean).join("&");
+    return params ? `/fees/records?${params}` : "/fees/records";
   };
 
   const loadDashboardData = async (metaData: FeeMeta | null = meta) => {
@@ -223,7 +253,7 @@ export default function FeeManager() {
         setAssignments(await apiFetch<FeeAssignment[]>(withQuery("/fees/assignments")));
         markLoaded(tab);
       } else if (tab === "records") {
-        setRecords(await apiFetch<StudentFeeRecord[]>(withQuery("/fees/records", "limit=150")));
+        setRecords(await apiFetch<StudentFeeRecord[]>(recordsPath()));
         markLoaded(tab);
       } else if (tab === "payments") {
         const [recordsData, paymentsData] = await Promise.all([
@@ -267,6 +297,24 @@ export default function FeeManager() {
   }, []);
 
   useEffect(() => {
+    const onSessionChanged = () => {
+      setLoadedTabs({});
+      setRecordFilters(emptyRecordFilters);
+      setRecords([]);
+      setPayments([]);
+      setAssignments([]);
+      setStructures([]);
+      void (async () => {
+        await loadInitial();
+        await loadTabData(activeTab, true);
+      })();
+    };
+    window.addEventListener(ACADEMIC_SESSION_CHANGED_EVENT, onSessionChanged);
+    return () => window.removeEventListener(ACADEMIC_SESSION_CHANGED_EVENT, onSessionChanged);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  useEffect(() => {
     if (!meta) return;
     loadTabData(activeTab);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -285,6 +333,24 @@ export default function FeeManager() {
 
   const refreshCurrentTab = async () => {
     await loadTabData(activeTab, true);
+  };
+
+  const applyRecordFilters = async () => {
+    await loadTabData("records", true);
+  };
+
+  const clearRecordFilters = async () => {
+    setRecordFilters(emptyRecordFilters);
+    setLoading(true);
+    setError("");
+    try {
+      setRecords(await apiFetch<StudentFeeRecord[]>(recordsPath(emptyRecordFilters)));
+      markLoaded("records");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load fee records");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const afterSave = async (success: string) => {
@@ -478,6 +544,8 @@ export default function FeeManager() {
 
   const pendingRecords = records.filter((record) => ["PENDING", "PARTIAL", "OVERDUE"].includes(record.status));
   const filteredSections = meta?.sections.filter((section) => !assignmentForm.class_id || section.extra === assignmentForm.class_id) || [];
+  const recordFilteredSections = meta?.sections.filter((section) => !recordFilters.class_id || section.extra === recordFilters.class_id) || [];
+  const activeRecordFilterCount = Object.values(recordFilters).filter((value) => value.trim() !== "").length;
 
   return (
     <AppSection
@@ -779,6 +847,65 @@ export default function FeeManager() {
                   <div className="md:col-span-3"><Button type="submit" disabled={saving}>Create Record</Button></div>
                 </form>
               </Card>
+
+              <Card>
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 className="font-semibold text-slate-900">Filter Student Fee Records</h2>
+                    <p className="text-sm text-slate-500">Separate records by class, category, annual/midterm fee category, manual miscellaneous fee, status or student name/admission no.</p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                    {records.length} shown{activeRecordFilterCount ? ` · ${activeRecordFilterCount} filters` : ""}
+                  </span>
+                </div>
+                <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
+                  <div>
+                    <Label>Class</Label>
+                    <Select value={recordFilters.class_id} onChange={(value) => setRecordFilters((prev) => ({ ...prev, class_id: value, section_id: "" }))}>
+                      <option value="">All classes</option>
+                      {meta?.classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Section</Label>
+                    <Select value={recordFilters.section_id} onChange={(value) => setRecordFilters((prev) => ({ ...prev, section_id: value }))}>
+                      <option value="">All sections</option>
+                      {recordFilteredSections.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Fee Category</Label>
+                    <Select value={recordFilters.category_id} onChange={(value) => setRecordFilters((prev) => ({ ...prev, category_id: value, fee_type: value ? "STRUCTURED" : prev.fee_type }))}>
+                      <option value="">All categories</option>
+                      {meta?.categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Record Type</Label>
+                    <Select value={recordFilters.fee_type} onChange={(value) => setRecordFilters((prev) => ({ ...prev, fee_type: value, category_id: value === "MISCELLANEOUS" ? "" : prev.category_id }))}>
+                      <option value="">All records</option>
+                      <option value="STRUCTURED">Structured/category fees</option>
+                      <option value="MISCELLANEOUS">Miscellaneous/manual fees</option>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Status</Label>
+                    <Select value={recordFilters.status} onChange={(value) => setRecordFilters((prev) => ({ ...prev, status: value }))}>
+                      <option value="">All statuses</option>
+                      {recordStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Search</Label>
+                    <Input value={recordFilters.search} onChange={(event) => setRecordFilters((prev) => ({ ...prev, search: event.target.value }))} placeholder="Student / fee / admission" />
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button type="button" onClick={applyRecordFilters}>Apply Filters</Button>
+                  <button type="button" onClick={clearRecordFilters} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100">Clear</button>
+                </div>
+              </Card>
+
               <RecordsTable records={records} onPay={(record) => { setActiveTab("payments"); setPaymentForm((prev) => ({ ...prev, student_fee_record_id: String(record.id), amount: String(record.balance_amount) })); window.scrollTo({ top: 0, behavior: "smooth" }); }} />
             </div>
           )}
@@ -920,12 +1047,13 @@ function IconButton({ onClick }: { onClick: () => void }) {
 function RecordsTable({ records, onPay }: { records: StudentFeeRecord[]; onPay: (record: StudentFeeRecord) => void }) {
   return (
     <TableWrap empty={records.length === 0} emptyText="No student fee records yet.">
-      <thead className="bg-slate-100 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Student</th><th className="px-4 py-3">Fee</th><th className="px-4 py-3">Due</th><th className="px-4 py-3">Billable</th><th className="px-4 py-3">Paid</th><th className="px-4 py-3">Balance</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Action</th></tr></thead>
+      <thead className="bg-slate-100 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Student</th><th className="px-4 py-3">Fee</th><th className="px-4 py-3">Category</th><th className="px-4 py-3">Due</th><th className="px-4 py-3">Billable</th><th className="px-4 py-3">Paid</th><th className="px-4 py-3">Balance</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Action</th></tr></thead>
       <tbody className="divide-y divide-slate-100">
         {records.map((record) => (
           <tr key={record.id} className="hover:bg-slate-50">
             <td className="px-4 py-3"><p className="font-medium text-slate-900">{record.student_name || "-"}</p><p className="text-xs text-slate-500">{record.admission_no || "-"} · {record.class_name || "-"}{record.section_name ? `-${record.section_name}` : ""}</p></td>
             <td className="px-4 py-3 text-slate-700">{record.title}</td>
+            <td className="px-4 py-3 text-slate-700">{record.category_name || (record.fee_type === "MISCELLANEOUS" ? "Miscellaneous" : "-")}</td>
             <td className="px-4 py-3 text-slate-700">{record.due_date || "-"}</td>
             <td className="px-4 py-3 text-slate-700">{money(record.amount + record.fine_amount - record.discount_amount)}</td>
             <td className="px-4 py-3 text-emerald-700">{money(record.paid_amount)}</td>

@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 import razorpay
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from razorpay.errors import SignatureVerificationError
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
@@ -13,7 +13,13 @@ from app.core.async_query import async_query
 from app.core.config import settings
 from app.core.database import get_async_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
-from app.dependencies.academic_session import require_writable_academic_session, assert_item_session_is_writable, assert_academic_session_is_writable
+from app.dependencies.academic_session import (
+    apply_academic_session_filter,
+    require_writable_academic_session,
+    assert_item_session_is_writable,
+    assert_academic_session_is_writable,
+    selected_academic_session_id,
+)
 from app.models.academic import AcademicSession, SchoolClass, Section
 from app.models.fee import (
     FeeAssignment,
@@ -113,7 +119,7 @@ def _record_load_options():
     return (
         joinedload(StudentFeeRecord.student).joinedload(Student.school_class),
         joinedload(StudentFeeRecord.student).joinedload(Student.section),
-        joinedload(StudentFeeRecord.fee_structure),
+        joinedload(StudentFeeRecord.fee_structure).joinedload(FeeStructure.category),
         joinedload(StudentFeeRecord.academic_session),
     )
 
@@ -127,7 +133,9 @@ def _payment_load_options():
         joinedload(FeePayment.student_fee_record)
         .joinedload(StudentFeeRecord.student)
         .joinedload(Student.section),
-        joinedload(FeePayment.student_fee_record).joinedload(StudentFeeRecord.fee_structure),
+        joinedload(FeePayment.student_fee_record)
+        .joinedload(StudentFeeRecord.fee_structure)
+        .joinedload(FeeStructure.category),
         joinedload(FeePayment.student_fee_record).joinedload(StudentFeeRecord.academic_session),
         joinedload(FeePayment.collected_by),
     )
@@ -412,6 +420,7 @@ async def _assignment_read(
 def _record_read(record: StudentFeeRecord) -> StudentFeeRecordRead:
     student = _loaded(record, "student")
     fee_structure = _loaded(record, "fee_structure")
+    fee_category = _loaded(fee_structure, "category")
     academic_session = _loaded(record, "academic_session")
     school_class = _loaded(student, "school_class")
     section = _loaded(student, "section")
@@ -426,6 +435,9 @@ def _record_read(record: StudentFeeRecord) -> StudentFeeRecordRead:
         section_name=section.name if section else None,
         fee_structure_id=record.fee_structure_id,
         fee_structure_name=fee_structure.name if fee_structure else None,
+        category_id=fee_structure.category_id if fee_structure else None,
+        category_name=fee_category.name if fee_category else None,
+        fee_type="STRUCTURED" if fee_structure else "MISCELLANEOUS",
         fee_assignment_id=record.fee_assignment_id,
         academic_session_id=record.academic_session_id,
         academic_session_name=academic_session.name if academic_session else None,
@@ -494,6 +506,38 @@ def _records_query(db: AsyncSession, school_id: int):
 
 def _payment_query(db: AsyncSession, school_id: int):
     return async_query(db, FeePayment).filter(FeePayment.school_id == school_id)
+
+
+def _apply_record_category_filter(query, category_id: int | None, fee_type: str | None = None):
+    if category_id is not None or fee_type:
+        query = query.outerjoin(FeeStructure, StudentFeeRecord.fee_structure_id == FeeStructure.id)
+
+    if category_id is not None:
+        query = query.filter(FeeStructure.category_id == category_id)
+
+    if fee_type:
+        normalized = fee_type.strip().upper()
+        if normalized in {"MISC", "MISCELLANEOUS", "MANUAL"}:
+            query = query.filter(StudentFeeRecord.fee_structure_id.is_(None))
+        elif normalized in {"STRUCTURE", "STRUCTURED", "CATEGORY"}:
+            query = query.filter(StudentFeeRecord.fee_structure_id.is_not(None))
+
+    return query
+
+
+def _apply_payment_session_filter(query, session_id: int | None):
+    if session_id is None:
+        return query
+    return query.join(
+        StudentFeeRecord,
+        FeePayment.student_fee_record_id == StudentFeeRecord.id,
+    ).filter(StudentFeeRecord.academic_session_id == session_id)
+
+
+def _apply_student_session_filter(query, session_id: int | None):
+    if session_id is None:
+        return query
+    return query.filter(Student.academic_session_id == session_id)
 
 
 async def _structure_with_relations(
@@ -590,9 +634,10 @@ async def _dashboard_summary(
     db: AsyncSession,
     school_id: int,
     student_ids: list[int] | None = None,
+    academic_session_id: int | None = None,
 ) -> FeeDashboardRead:
-    records_query = _records_query(db, school_id)
-    payments_query = _payment_query(db, school_id)
+    records_query = apply_academic_session_filter(_records_query(db, school_id), StudentFeeRecord, academic_session_id)
+    payments_query = _apply_payment_session_filter(_payment_query(db, school_id), academic_session_id)
     expenses_query = async_query(db, FeeExpense).filter(
         FeeExpense.school_id == school_id,
         FeeExpense.is_active.is_(True),
@@ -775,11 +820,17 @@ async def _authorized_student_ids(
 
 @router.get("/meta", response_model=FeeMetaResponse)
 async def fee_meta(
+    request: Request,
     school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    current_session = await _current_session(db, school_id)
+    current_session_id = await selected_academic_session_id(
+        db=db,
+        school_id=school_id,
+        request=request,
+        current_user=current_user,
+    )
 
     categories = await async_query(db, FeeCategory).filter(
         FeeCategory.school_id == school_id,
@@ -788,34 +839,45 @@ async def fee_meta(
         FeeCategory.name.asc()
     ).all()
 
-    structures = await async_query(db, FeeStructure).options(
-        *_structure_load_options()
-    ).filter(
-        FeeStructure.school_id == school_id
-    ).order_by(
-        FeeStructure.id.desc()
-    ).all()
+    structures_query = apply_academic_session_filter(
+        async_query(db, FeeStructure).options(*_structure_load_options()).filter(
+            FeeStructure.school_id == school_id,
+            FeeStructure.is_active.is_(True),
+        ),
+        FeeStructure,
+        current_session_id,
+    )
+    structures = await structures_query.order_by(FeeStructure.name.asc()).all()
 
-    classes = await async_query(db, SchoolClass).filter(
-        SchoolClass.school_id == school_id,
-        SchoolClass.is_active.is_(True),
-    ).order_by(
-        SchoolClass.name.asc()
-    ).all()
+    classes_query = apply_academic_session_filter(
+        async_query(db, SchoolClass).filter(
+            SchoolClass.school_id == school_id,
+            SchoolClass.is_active.is_(True),
+        ),
+        SchoolClass,
+        current_session_id,
+    )
+    classes = await classes_query.order_by(SchoolClass.name.asc()).all()
 
-    sections = await async_query(db, Section).filter(
-        Section.school_id == school_id,
-        Section.is_active.is_(True),
-    ).order_by(
-        Section.name.asc()
-    ).all()
+    sections_query = apply_academic_session_filter(
+        async_query(db, Section).filter(
+            Section.school_id == school_id,
+            Section.is_active.is_(True),
+        ),
+        Section,
+        current_session_id,
+    )
+    sections = await sections_query.order_by(Section.name.asc()).all()
 
-    students = await async_query(db, Student).filter(
-        Student.school_id == school_id,
-        Student.is_active.is_(True),
-    ).order_by(
-        Student.first_name.asc()
-    ).all()
+    students_query = apply_academic_session_filter(
+        async_query(db, Student).filter(
+            Student.school_id == school_id,
+            Student.is_active.is_(True),
+        ),
+        Student,
+        current_session_id,
+    )
+    students = await students_query.order_by(Student.first_name.asc()).all()
 
     sessions = await async_query(db, AcademicSession).filter(
         AcademicSession.school_id == school_id
@@ -843,56 +905,77 @@ async def fee_meta(
             FeeMetaItem(id=item.id, name=item.name, extra="Active" if item.is_active else None)
             for item in sessions
         ],
-        current_academic_session_id=current_session.id if current_session else None,
+        current_academic_session_id=current_session_id,
     )
 
 
 @router.get("/dashboard", response_model=FeeDashboardRead)
 async def fee_dashboard(
+    request: Request,
     school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    return await _dashboard_summary(db, school_id)
+    session_id = await selected_academic_session_id(
+        db=db,
+        school_id=school_id,
+        request=request,
+        current_user=current_user,
+    )
+    return await _dashboard_summary(db, school_id, academic_session_id=session_id)
 
 
 @router.get("/portal", response_model=FeePortalResponse)
 async def fee_portal(
+    request: Request,
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(UserRole.STUDENT.value, UserRole.PARENT.value)),
     db: AsyncSession = Depends(get_async_db),
 ):
+    session_id = await selected_academic_session_id(
+        db=db,
+        school_id=school_id,
+        request=request,
+        current_user=current_user,
+    )
     student_ids = await _authorized_student_ids(db, school_id, current_user)
 
     if not student_ids:
         return FeePortalResponse(
             role=current_user.role,
-            summary=await _dashboard_summary(db, school_id, []),
+            summary=await _dashboard_summary(db, school_id, [], academic_session_id=session_id),
             records=[],
             payments=[],
         )
 
-    records = await _records_query(db, school_id).options(
-        *_record_load_options()
-    ).filter(
+    records_query = apply_academic_session_filter(
+        _records_query(db, school_id),
+        StudentFeeRecord,
+        session_id,
+    ).options(*_record_load_options()).filter(
         StudentFeeRecord.student_id.in_(student_ids)
-    ).order_by(
+    )
+
+    records = await records_query.order_by(
         StudentFeeRecord.due_date.asc(),
         StudentFeeRecord.id.desc(),
     ).all()
 
-    payments = await _payment_query(db, school_id).options(
-        *_payment_load_options()
-    ).filter(
+    payments_query = _apply_payment_session_filter(
+        _payment_query(db, school_id),
+        session_id,
+    ).options(*_payment_load_options()).filter(
         FeePayment.student_id.in_(student_ids)
-    ).order_by(
+    )
+
+    payments = await payments_query.order_by(
         FeePayment.payment_date.desc(),
         FeePayment.id.desc(),
     ).limit(50).all()
 
     return FeePortalResponse(
         role=current_user.role,
-        summary=await _dashboard_summary(db, school_id, student_ids),
+        summary=await _dashboard_summary(db, school_id, student_ids, academic_session_id=session_id),
         records=[_record_read(record) for record in records],
         payments=[_payment_read(payment) for payment in payments],
     )
@@ -971,15 +1054,30 @@ async def delete_category(
 
 @router.get("/structures", response_model=list[FeeStructureRead])
 async def list_structures(
+    request: Request,
+    category_id: int | None = Query(default=None),
     school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    structures = await async_query(db, FeeStructure).options(
-        *_structure_load_options()
-    ).filter(
-        FeeStructure.school_id == school_id
-    ).order_by(
+    session_id = await selected_academic_session_id(
+        db=db,
+        school_id=school_id,
+        request=request,
+        current_user=current_user,
+    )
+    query = apply_academic_session_filter(
+        async_query(db, FeeStructure).options(*_structure_load_options()).filter(
+            FeeStructure.school_id == school_id
+        ),
+        FeeStructure,
+        session_id,
+    )
+
+    if category_id:
+        query = query.filter(FeeStructure.category_id == category_id)
+
+    structures = await query.order_by(
         FeeStructure.id.desc()
     ).all()
 
@@ -1049,15 +1147,36 @@ async def delete_structure(
 
 @router.get("/assignments", response_model=list[FeeAssignmentRead])
 async def list_assignments(
+    request: Request,
+    class_id: int | None = Query(default=None),
+    category_id: int | None = Query(default=None),
     school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    assignments = await async_query(db, FeeAssignment).options(
-        *_assignment_load_options()
-    ).filter(
-        FeeAssignment.school_id == school_id
-    ).order_by(
+    session_id = await selected_academic_session_id(
+        db=db,
+        school_id=school_id,
+        request=request,
+        current_user=current_user,
+    )
+    query = apply_academic_session_filter(
+        async_query(db, FeeAssignment).options(*_assignment_load_options()).filter(
+            FeeAssignment.school_id == school_id
+        ),
+        FeeAssignment,
+        session_id,
+    )
+
+    if class_id:
+        query = query.filter(FeeAssignment.class_id == class_id)
+
+    if category_id:
+        query = query.join(FeeStructure, FeeAssignment.fee_structure_id == FeeStructure.id).filter(
+            FeeStructure.category_id == category_id
+        )
+
+    assignments = await query.order_by(
         FeeAssignment.id.desc()
     ).all()
 
@@ -1174,16 +1293,31 @@ async def delete_assignment(
 
 @router.get("/records", response_model=list[StudentFeeRecordRead])
 async def list_records(
+    request: Request,
     student_id: int | None = Query(default=None),
     class_id: int | None = Query(default=None),
     section_id: int | None = Query(default=None),
+    category_id: int | None = Query(default=None),
+    fee_structure_id: int | None = Query(default=None),
+    fee_type: str | None = Query(default=None),
+    search: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=150, ge=1, le=500),
     school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    query = _records_query(db, school_id).join(Student, StudentFeeRecord.student_id == Student.id)
+    session_id = await selected_academic_session_id(
+        db=db,
+        school_id=school_id,
+        request=request,
+        current_user=current_user,
+    )
+    query = apply_academic_session_filter(
+        _records_query(db, school_id),
+        StudentFeeRecord,
+        session_id,
+    ).join(Student, StudentFeeRecord.student_id == Student.id)
 
     if student_id:
         query = query.filter(StudentFeeRecord.student_id == student_id)
@@ -1194,12 +1328,30 @@ async def list_records(
     if section_id:
         query = query.filter(Student.section_id == section_id)
 
+    if fee_structure_id:
+        query = query.filter(StudentFeeRecord.fee_structure_id == fee_structure_id)
+
+    query = _apply_record_category_filter(query, category_id, fee_type)
+
+    if search:
+        pattern = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                StudentFeeRecord.title.ilike(pattern),
+                Student.admission_no.ilike(pattern),
+                Student.first_name.ilike(pattern),
+                Student.last_name.ilike(pattern),
+            )
+        )
+
     if status_filter:
         query = query.filter(StudentFeeRecord.status == status_filter.upper())
 
     records = await query.options(
         *_record_load_options()
     ).order_by(
+        Student.class_id.asc(),
+        Student.roll_number.asc(),
         StudentFeeRecord.due_date.asc(),
         StudentFeeRecord.id.desc(),
     ).limit(limit).all()
@@ -1282,15 +1434,22 @@ async def delete_record(
 
 @router.get("/payments", response_model=list[FeePaymentRead])
 async def list_payments(
+    request: Request,
     from_date: date | None = Query(default=None),
     to_date: date | None = Query(default=None),
     student_id: int | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
-    query = _payment_query(db, school_id)
+    session_id = await selected_academic_session_id(
+        db=db,
+        school_id=school_id,
+        request=request,
+        current_user=current_user,
+    )
+    query = _apply_payment_session_filter(_payment_query(db, school_id), session_id)
 
     if from_date:
         query = query.filter(FeePayment.payment_date >= from_date)
@@ -1407,14 +1566,24 @@ async def get_receipt(
 
 @router.get("/daily-collection", response_model=DailyCollectionReport)
 async def daily_collection(
+    request: Request,
     report_date: date | None = Query(default=None),
     school_id: int = Depends(current_school_id),
-    _: User = Depends(require_roles(*ADMIN_ROLES)),
+    current_user: User = Depends(require_roles(*ADMIN_ROLES)),
     db: AsyncSession = Depends(get_async_db),
 ):
+    session_id = await selected_academic_session_id(
+        db=db,
+        school_id=school_id,
+        request=request,
+        current_user=current_user,
+    )
     selected_date = report_date or date.today()
 
-    payments = await _payment_query(db, school_id).options(
+    payments = await _apply_payment_session_filter(
+        _payment_query(db, school_id),
+        session_id,
+    ).options(
         *_payment_load_options()
     ).filter(
         FeePayment.payment_date == selected_date

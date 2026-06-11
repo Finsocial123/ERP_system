@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Edit2, Link2, Search, Trash2, UserPlus, X } from "lucide-react";
+import { Edit2, Link2, Search, Trash2, UserPlus, UserRound, X } from "lucide-react";
 
 import AppShell from "@/components/AppShell";
 import { Button, Card, Input, Label, Textarea } from "@/components/ui";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, fileUrl } from "@/lib/api";
 import type { AcademicClass, AcademicSession, ClassTeacherAssignment, Department, Section, Subject, Teacher, TeacherSubjectAssignment } from "@/types";
 
 type TeacherForm = {
@@ -410,7 +410,22 @@ export default function TeachersPage() {
                 <tr><td className="px-4 py-5 text-slate-500" colSpan={6}>No teachers found.</td></tr>
               ) : teachers.map((teacher) => (
                 <tr key={teacher.id} className="hover:bg-slate-50">
-                  <td className="px-4 py-3 font-medium text-slate-900">{teacher.full_name}<p className="text-xs font-normal text-slate-500">{teacher.email || teacher.phone || "-"}</p></td>
+                  <td className="px-4 py-3 font-medium text-slate-900">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-100 text-slate-400">
+                        {teacher.photo_url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={fileUrl(teacher.photo_url)} alt={teacher.full_name} className="h-full w-full object-cover" />
+                        ) : (
+                          <UserRound size={18} />
+                        )}
+                      </div>
+                      <div>
+                        <p>{teacher.full_name}</p>
+                        <p className="text-xs font-normal text-slate-500">{teacher.email || teacher.phone || "-"}</p>
+                      </div>
+                    </div>
+                  </td>
                   <td className="px-4 py-3 text-slate-600">{teacher.employee_id}</td>
                   <td className="px-4 py-3 text-slate-600">{teacher.department_id ? departmentById.get(teacher.department_id) : "-"}</td>
                   <td className="px-4 py-3 text-slate-600">{teacher.specialization || "-"}</td>

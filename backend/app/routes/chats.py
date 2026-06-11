@@ -1,61 +1,7 @@
-"""
-chats.py — patched to add AI response caching for identical lesson questions.
-
-How it works
-------------
-When a student sends a message, before touching the LLM we check:
-
-  1. Is this request cacheable?
-       - lesson_id present         (content-grounded)
-       - history length == 0       (first turn only; 0 prior messages in session)
-       - web_search == False       (time-sensitive results must never be cached)
-       - enhance_prompt == False   (rewritten prompt is non-deterministic)
-
-  2. Cache hit?
-       - Build key: ai:chat:{school_id}:{lesson_id}:{lang}:{sha256(normalized_question)}
-       - If found in Redis → replay the cached text as a pseudo-stream → done.
-         No embedding call. No RAG. No LLM call.
-
-  3. Cache miss with coalescing:
-       - Attempt to acquire lock:ai:chat:{school_id}:{lesson_id}:{lang}:{hash}
-       - If lock acquired  → this worker is the ONE that calls the LLM.
-       - If lock NOT acquired → another worker is already computing.
-         Poll Redis for the result (0.25 s interval, max 55 s).
-         When result appears → replay as pseudo-stream.
-
-  4. After LLM generates the full response:
-       - Store full text in Redis with TTL 24 h.
-       - Release lock.
-       - Continue saving ChatMessage to DB as before.
-
-What is NEVER cached
---------------------
-- web_search=True requests        (Tavily results are current-moment data)
-- enhance_prompt=True requests    (prompt was non-deterministically rewritten)
-- Multi-turn messages (history > 0) (prior context makes response user-specific)
-- Requests without lesson_id      (general chat, not content-grounded)
-- Tool-call responses             (tool result is dynamic/real-time)
-
-Streaming on cache hit
-----------------------
-The cache stores the full assembled response string.
-On a hit, we replay it as a single-token SSE event followed by 'done'.
-The frontend receives the same event structure as a live stream — it cannot
-tell the difference. Response appears instantly (~5 ms vs ~2000 ms).
-
-Changes vs original
---------------------
-* Added school_id dependency (needed for tenant-safe cache key)
-* Added _is_cacheable() gate before any AI work
-* Added _cached_stream_response() for instant replay
-* Wrapped event_generator() LLM path with lock + post-store
-* All other logic (history, RAG, tool calls, DB writes) is UNCHANGED
-"""
-
 import asyncio
 import json
 import logging
-import re
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 import uuid
@@ -75,16 +21,18 @@ from app.services.tools.executor import execute_tool
 from app.schemas.chats import ChatRequest
 from app.models.chats import ChatMessage, ChatRole, ChatSession
 from app.models.user import User
-from app.dependencies.auth import get_current_user, current_school_id   # ← current_school_id added
-from app.services.ai_cache import ai_cache, _lock                        # ← NEW
+from app.dependencies.auth import get_current_user, current_school_id
+from app.services.ai_cache import ai_cache, _lock
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix='/sessions', tags=['Chats'])
 
 
-# ---------------------------------------------------------------------------
-# Helpers (unchanged)
-# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def _noop_lock():
+    """Used for non-cacheable requests — zero Redis overhead."""
+    yield False
+
 
 async def _get_session_or_404(session_id: str, db: AsyncSession) -> ChatSession:
     result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
@@ -102,7 +50,7 @@ async def _update_session_title(gen_db: AsyncSession, session_id: str, title: st
 
 
 # ---------------------------------------------------------------------------
-# Session CRUD (unchanged)
+# Session CRUD — unchanged
 # ---------------------------------------------------------------------------
 
 @router.post('', status_code=201)
@@ -163,7 +111,7 @@ async def get_session_messages(
 
 
 # ---------------------------------------------------------------------------
-# Send message — main endpoint with caching
+# Send message
 # ---------------------------------------------------------------------------
 
 @router.post('/{session_id}/messages')
@@ -173,7 +121,7 @@ async def send_message_stream(
     db: Annotated[AsyncSession, Depends(get_async_db)],
     session_factory: Annotated[async_sessionmaker, Depends(get_session_factory)],
     current_user: User = Depends(get_current_user),
-    school_id: int = Depends(current_school_id),   # ← NEW: for tenant-safe cache key
+    school_id: int = Depends(current_school_id),
 ):
     if not request.content or not request.content.strip():
         raise HTTPException(
@@ -185,9 +133,7 @@ async def send_message_stream(
     if session.user_id != current_user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, 'Not your session')
 
-    # ------------------------------------------------------------------ #
-    # Redirect quiz/summary requests to dedicated features (unchanged)   #
-    # ------------------------------------------------------------------ #
+    # Redirect keywords — unchanged
     BLOCK_KEYWORDS = ['summarize', 'summary', 'overview', 'key points', 'summarise', 'quiz']
     if any(kw in request.content.lower() for kw in BLOCK_KEYWORDS):
         async def redirect_generator():
@@ -196,10 +142,7 @@ async def send_message_stream(
             yield f"data: {json.dumps({'status': 'done'})}\n\n"
         return StreamingResponse(redirect_generator(), media_type='text/event-stream')
 
-    # ------------------------------------------------------------------ #
-    # Gather: embedding + history + (optional) prompt enhancement        #
-    # (unchanged from original)                                          #
-    # ------------------------------------------------------------------ #
+    # Parallel pre-processing — unchanged
     try:
         async def _get_embedding() -> list[float] | None:
             if request.lesson_id is None:
@@ -254,62 +197,78 @@ async def send_message_stream(
         embedding = None
         history = []
 
-    # ------------------------------------------------------------------ #
-    # AI Response Cache — check BEFORE saving user message to DB        #
-    #                                                                    #
-    # history here is the list of PRIOR messages (before this turn).    #
-    # history_len == 0 means this is the first message in the session.  #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Cache gate
+    # ------------------------------------------------------------------
     cacheable = ai_cache.is_chat_cacheable(
         lesson_id=request.lesson_id,
-        history_len=len(history),          # 0 = first message, cacheable
+        history_len=len(history),
         web_search=request.web_search,
         enhance_prompt=request.enhance_prompt,
     )
 
+    # FIX: always define lock_key so event_generator() closure never hits
+    # a NameError when cacheable=False. When not cacheable, the value is
+    # never actually used — _noop_lock() is selected instead.
+    lock_key: str | None = (
+        ai_cache.get_chat_lock_key(
+            school_id, request.lesson_id, request.language, request.content
+        )
+        if cacheable else None
+    )
+
     if cacheable:
+        # Cache hit — zero embedding cost, zero LLM cost
         cached_response = await ai_cache.get_chat(
             school_id=school_id,
             lesson_id=request.lesson_id,
             language=request.language,
-            question=request.content,      # normalized internally
+            question=request.content,
         )
         if cached_response is not None:
-            # ---------------------------------------------------------- #
-            # CACHE HIT — save user + assistant messages to DB, then     #
-            # replay the cached text as a pseudo-stream.                 #
-            # The frontend receives the exact same SSE event structure.  #
-            # ---------------------------------------------------------- #
-            user_msg = ChatMessage(
-                session_id=session_id,
-                role=ChatRole.USER,
-                content=request.content,
-                user_id=current_user.id,
-                is_enhanced=False,
-            )
-            db.add(user_msg)
-
-            assistant_msg = ChatMessage(
-                session_id=session_id,
-                role=ChatRole.ASSISTANT,
-                content=cached_response,
-                user_id=current_user.id,
-            )
-            db.add(assistant_msg)
+            # Persist messages so chat history stays consistent
+            db.add(ChatMessage(
+                session_id=session_id, role=ChatRole.USER,
+                content=request.content, user_id=current_user.id, is_enhanced=False,
+            ))
+            db.add(ChatMessage(
+                session_id=session_id, role=ChatRole.ASSISTANT,
+                content=cached_response, user_id=current_user.id,
+            ))
             await db.commit()
 
-            async def cached_stream_generator():
-                # Emit the full response as a single token event so the
-                # frontend's streaming handler receives it identically to
-                # a real streamed response.
+            async def _cached_stream():
                 yield f"data: {json.dumps({'token': cached_response, 'from_cache': True})}\n\n"
                 yield f"data: {json.dumps({'status': 'done'})}\n\n"
+            return StreamingResponse(_cached_stream(), media_type='text/event-stream')
 
-            return StreamingResponse(cached_stream_generator(), media_type='text/event-stream')
+        # Coalescing — check if another worker is already computing
+        from app.core.redis import get_redis as _get_redis
+        _redis = _get_redis()
+        if _redis is not None and await _redis.exists(lock_key):
+            logger.info("[AI_LOCK WAIT] key=%s waiting for concurrent worker", lock_key)
+            waited = await ai_cache.wait_for_chat(
+                school_id, request.lesson_id, request.language, request.content
+            )
+            if waited is not None:
+                # FIX: also save user_msg here — was missing in previous version
+                db.add(ChatMessage(
+                    session_id=session_id, role=ChatRole.USER,
+                    content=request.content, user_id=current_user.id, is_enhanced=False,
+                ))
+                db.add(ChatMessage(
+                    session_id=session_id, role=ChatRole.ASSISTANT,
+                    content=waited, user_id=current_user.id,
+                ))
+                await db.commit()
 
-    # ------------------------------------------------------------------ #
-    # Save user message (original position — before RAG and LLM)        #
-    # ------------------------------------------------------------------ #
+                async def _waited_stream():
+                    yield f"data: {json.dumps({'token': waited, 'from_cache': True})}\n\n"
+                    yield f"data: {json.dumps({'status': 'done'})}\n\n"
+                return StreamingResponse(_waited_stream(), media_type='text/event-stream')
+            # Lock holder crashed — fall through to compute independently
+
+    # Save user message — original position, unchanged
     user_msg = ChatMessage(
         session_id=session_id,
         role=ChatRole.USER,
@@ -320,9 +279,7 @@ async def send_message_stream(
     db.add(user_msg)
     await db.commit()
 
-    # ------------------------------------------------------------------ #
-    # RAG (unchanged)                                                    #
-    # ------------------------------------------------------------------ #
+    # RAG — unchanged
     context = None
     if embedding is not None:
         try:
@@ -347,9 +304,7 @@ async def send_message_stream(
     else:
         user_content = enhanced_content
 
-    # ------------------------------------------------------------------ #
-    # Build message history (unchanged)                                  #
-    # ------------------------------------------------------------------ #
+    # Build message history — unchanged
     raw_history = []
     for msg in history:
         if msg.role == ChatRole.ASSISTANT and msg.tool_calls is not None:
@@ -377,59 +332,15 @@ async def send_message_stream(
         max_tokens=50000,
     )
     messages = [{'role': 'system', 'content': system_prompt}] + trimmed_history
+    logger.debug('MESSAGES: %s', json.dumps(messages, indent=2))
 
-    # ------------------------------------------------------------------ #
-    # Acquire coalescing lock (only when cacheable)                      #
-    #                                                                    #
-    # If cacheable=True and we reached here, it means cache was empty.  #
-    # Acquire a lock so that only ONE worker calls the LLM for this     #
-    # exact question. Concurrent identical requests wait for the result. #
-    # ------------------------------------------------------------------ #
-    if cacheable:
-        lock_key = ai_cache.get_chat_lock_key(
-            school_id, request.lesson_id, request.language, request.content
-        )
-
-        # Check if another worker already holds the lock
-        from app.core.redis import get_redis as _get_redis
-        _redis = _get_redis()
-        if _redis is not None:
-            already_locked = await _redis.exists(lock_key)
-            if already_locked:
-                # Another worker is computing — wait for the result
-                logger.info("[AI_LOCK WAIT] key=%s — waiting for concurrent worker", lock_key)
-                waited_response = await ai_cache.wait_for_chat(
-                    school_id, request.lesson_id, request.language, request.content
-                )
-                if waited_response is not None:
-                    # The concurrent worker finished — save to DB and replay
-                    assistant_msg_waited = ChatMessage(
-                        session_id=session_id,
-                        role=ChatRole.ASSISTANT,
-                        content=waited_response,
-                        user_id=current_user.id,
-                    )
-                    db.add(assistant_msg_waited)
-                    await db.commit()
-
-                    async def waited_stream_generator():
-                        yield f"data: {json.dumps({'token': waited_response, 'from_cache': True})}\n\n"
-                        yield f"data: {json.dumps({'status': 'done'})}\n\n"
-
-                    return StreamingResponse(
-                        waited_stream_generator(), media_type='text/event-stream'
-                    )
-                # Lock holder crashed — fall through to compute independently
-
-    # ------------------------------------------------------------------ #
-    # LLM stream event generator                                         #
-    # ------------------------------------------------------------------ #
+    # Streaming generator
     async def event_generator():
         async with session_factory() as gen_db:
-            # Acquire lock before streaming starts (if cacheable)
+            # FIX: lock_key is always defined above (None when not cacheable)
+            # _noop_lock() used when not cacheable — zero Redis overhead
             lock_ctx = _lock(lock_key) if cacheable else _noop_lock()
             async with lock_ctx as lock_acquired:
-
                 try:
                     full_response = []
 
@@ -465,9 +376,7 @@ async def send_message_stream(
                             full_response.append(delta.content)
                             yield f"data: {json.dumps({'token': delta.content})}\n\n"
 
-                    # -------------------------------------------------- #
-                    # Tool call branch (unchanged)                        #
-                    # -------------------------------------------------- #
+                    # Tool call branch — unchanged, never cached
                     if finish_reason == 'tool_calls' and tool_call_name and tool_call_id:
                         tool_args = json.loads(''.join(tool_call_args_parts))
                         yield f"data: {json.dumps({'status': 'thinking', 'tool': tool_call_name})}\n\n"
@@ -525,28 +434,22 @@ async def send_message_stream(
                         gen_db.add(final_assistant_msg)
                         await _update_session_title(gen_db, session_id, enhanced_content)
                         await gen_db.commit()
-                        # Tool responses are NOT cached (dynamic/real-time content)
                         yield f"data: {json.dumps({'status': 'done'})}\n\n"
 
                     else:
-                        # -------------------------------------------------- #
-                        # Normal response branch                              #
-                        # -------------------------------------------------- #
+                        # Normal response branch
                         assembled = ''.join(full_response)
                         final_assistant_msg = ChatMessage(
                             session_id=session_id,
                             role=ChatRole.ASSISTANT,
-                            content=assembled,
+                            content=assembled, 
                             user_id=current_user.id,
                         )
                         gen_db.add(final_assistant_msg)
                         await _update_session_title(gen_db, session_id, enhanced_content)
                         await gen_db.commit()
 
-                        # -------------------------------------------------- #
-                        # Store in cache (only if this was a cacheable request
-                        # and the lock was acquired by this worker)           #
-                        # -------------------------------------------------- #
+                        # Store in cache only when this worker is the lock holder
                         if cacheable and lock_acquired and assembled:
                             await ai_cache.set_chat(
                                 school_id=school_id,
@@ -570,16 +473,3 @@ async def send_message_stream(
                     yield f"data: {json.dumps({'error': 'Something went wrong. Please try again.'})}\n\n"
 
     return StreamingResponse(event_generator(), media_type='text/event-stream')
-
-
-# ---------------------------------------------------------------------------
-# No-op lock context manager for non-cacheable requests
-# (avoids an if/else duplication inside event_generator)
-# ---------------------------------------------------------------------------
-
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def _noop_lock():
-    """Used when the request is not cacheable — no lock needed."""
-    yield False

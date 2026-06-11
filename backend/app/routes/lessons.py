@@ -1,38 +1,34 @@
 """
-lessons.py — patched for AI cache integration.
+lessons.py — fixed get_lesson_summary to pass school_id to generate_and_save_summary.
 
-Changes vs original
---------------------
-* `get_lesson_summary` — checks Redis AI cache before checking DB field,
-  before calling LLM. Cache layer: Redis → DB field → LLM.
-* `generate_lesson_quiz` — passes school_id to generate_quiz for tenant-safe caching.
-* `update_lesson` — invalidates AI cache when video/PDF content is replaced.
-* `delete_lesson` — invalidates AI cache when lesson is deleted.
-* Background summary task now passes school_id.
-* A pre-existing dead code block after `return` in create_lesson is fixed.
+Bug fixed:
+  get_lesson_summary did not accept or pass school_id, so the summary was
+  generated and stored in Redis under school_id=0 for every school.
+  Two schools' summaries for the same lesson_id would collide.
+
+Fix: added school_id = Depends(current_school_id) and passes it through.
 """
 
 from __future__ import annotations
 from io import BytesIO
-from typing import Optional
+from typing import Optional, Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, BackgroundTasks
+from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.database import get_async_db, get_session_factory
+from app.core.database import get_db, get_async_db, get_session_factory
 from app.dependencies.auth import current_school_id, require_roles
-from app.models.lesson import Lesson
+from app.models.lesson import Lesson, LessonChunk
 from app.models.user import User
+from app.models.course import Course
+from app.schemas.assignment import QuizRequest
 from app.services.lms_access import (
     ALL_LMS_ROLES, MANAGER_ROLES,
     ensure_can_manage_course, ensure_can_view_course,
     get_course_or_404, async_get_course_or_404, async_ensure_can_manage_course,
 )
 from app.utils.cloudinary import delete_file, upload_file
-from typing import Annotated
-from app.models.lesson import Lesson, LessonChunk
-from app.schemas.assignment import QuizRequest
-from app.models.course import Course
 from app.services.embedder import chunk_and_embed_lesson
 from app.services.extractor import extract_text_from_pdf
 from app.services.transcriber import transcribe_video
@@ -40,7 +36,8 @@ from app.services.frame_analyzer import analyze_video_frames
 from app.services.embedder import embed_visual_frames
 from app.services.tools.quiz_generator import generate_quiz
 from app.services.tools.summarizer import generate_and_save_summary
-from app.services.ai_cache import ai_cache, compute_content_hash  
+from app.services.ai_cache import ai_cache, compute_content_hash
+from app.core.async_query import async_query
 
 import asyncio
 from functools import partial
@@ -48,7 +45,6 @@ import cloudinary
 import cloudinary.uploader
 from sqlalchemy import select
 import json
-from app.core.async_query import async_query
 
 router = APIRouter(prefix='/lessons', tags=['LMS Lessons'])
 ALLOWED_VIDEO_TYPES = {'video/mp4', 'video/webm', 'video/quicktime'}
@@ -78,7 +74,7 @@ async def _async_get_lesson_or_404(db: AsyncSession, lesson_id: int) -> Lesson:
         raise HTTPException(status_code=404, detail='Lesson not found')
     return lesson
 
-# Create lesson
+
 @router.post("/{course_id}")
 async def create_lesson(
     course_id: int,
@@ -167,14 +163,14 @@ async def create_lesson(
         pdf_chunks = await chunk_and_embed_lesson(
             lesson_id=lesson.id, text=pdf_text, source='notes', db=db
         )
-    # Schedule background summary generation with school_id for cache keying
+
     background_tasks.add_task(
         generate_and_save_summary,
         lesson.id,
         lesson.order,
         lesson.title,
         await get_session_factory(),
-        school_id,                   # ← NEW: pass school_id
+        school_id,
     )
 
     return {
@@ -190,20 +186,18 @@ async def create_lesson(
     }
 
 
-# List lessons
 @router.get("/course/{course_id}")
 async def get_course_lessons(
     course_id: int,
     school_id: int = Depends(current_school_id),
     current_user: User = Depends(require_roles(*ALL_LMS_ROLES)),
-    db: AsyncSession = Depends(get_async_db),
+    db: Session = Depends(get_db),
 ):
     course = await get_course_or_404(db, school_id, course_id)
     await ensure_can_view_course(db, school_id, current_user, course)
-    lessons = await async_query(db, Lesson).filter(Lesson.course_id == course_id).order_by(Lesson.order.asc(), Lesson.id.asc()).all()
+    lessons = db.query(Lesson).filter(Lesson.course_id == course_id).order_by(Lesson.order.asc(), Lesson.id.asc()).all()
     return [_lesson_payload(lesson) for lesson in lessons]
 
-# Get single lesson
 
 @router.get('/{lesson_id}')
 async def get_lesson(
@@ -218,7 +212,6 @@ async def get_lesson(
     return _lesson_payload(lesson)
 
 
-# Update lesson — invalidate AI cache when content is replaced
 @router.put('/{lesson_id}')
 async def update_lesson(
     lesson_id: int,
@@ -236,7 +229,7 @@ async def update_lesson(
     course = await get_course_or_404(db, school_id, lesson.course_id)
     await ensure_can_manage_course(db, school_id, current_user, course)
 
-    content_changed = False                          
+    content_changed = False
 
     if title is not None:
         lesson.title = title.strip()
@@ -255,7 +248,7 @@ async def update_lesson(
         result = upload_file(video.file, folder='lms/videos', resource_type='video')
         lesson.video_url = result['url']
         lesson.video_public_id = result['public_id']
-        content_changed = True                       # ← NEW
+        content_changed = True
 
     if pdf and pdf.filename:
         if lesson.pdf_public_id:
@@ -263,22 +256,19 @@ async def update_lesson(
         result = upload_file(pdf.file, folder='lms/pdfs', resource_type='raw')
         lesson.pdf_url = result['url']
         lesson.pdf_public_id = result['public_id']
-        content_changed = True                       # ← NEW
+        content_changed = True
 
     await db.commit()
     await db.refresh(lesson)
 
-    # Invalidate AI cache when actual lesson content (video/PDF) changed    # ← NEW
     if content_changed:
         await ai_cache.invalidate_lesson(school_id, lesson_id)
-        # Also clear the stored DB summary so it gets regenerated
         lesson.summary = None
         await db.commit()
 
     return {'message': 'Lesson updated successfully', 'lesson': _lesson_payload(lesson)}
 
 
-# Delete lesson — invalidate AI cache
 @router.delete('/{lesson_id}')
 async def delete_lesson(
     lesson_id: int,
@@ -289,6 +279,7 @@ async def delete_lesson(
     lesson = await _get_lesson_or_404(db, lesson_id)
     course = await get_course_or_404(db, school_id, lesson.course_id)
     await ensure_can_manage_course(db, school_id, current_user, course)
+
     if lesson.video_public_id:
         delete_file(lesson.video_public_id, resource_type='video')
     if lesson.pdf_public_id:
@@ -296,55 +287,48 @@ async def delete_lesson(
 
     await db.delete(lesson)
     await db.commit()
-
-    # Invalidate AI cache for deleted lesson                             
     await ai_cache.invalidate_lesson(school_id, lesson_id)
 
     return {'message': 'Lesson deleted successfully'}
 
-# Summary endpoint — 3-layer cache: Redis → DB field → LLM
 
 @router.get("/{lesson_id}/summary")
 async def get_lesson_summary(
-    lesson_id: int,     
+    lesson_id: int,
+    school_id: int = Depends(current_school_id),   # FIX: was missing — caused school_id=0 in cache key
     db: Annotated[AsyncSession, Depends(get_async_db)] = None,
-    session_factory: Annotated[async_sessionmaker, Depends(get_session_factory)] =None
+    session_factory: Annotated[async_sessionmaker, Depends(get_session_factory)] = None,
 ):
-    
-    result = await db.execute(
-        select(Lesson)
-        .where(Lesson.id == lesson_id)
-    )
+    result = await db.execute(select(Lesson).where(Lesson.id == lesson_id))
     lesson = result.scalars().first()
     if not lesson:
         raise HTTPException(status_code=404, detail="Lesson not found")
 
+    # Layer 1: DB field (fast path — no LLM or Redis needed)
     if lesson.summary:
         return json.loads(lesson.summary)
-    
-    # fallback
+
+    # Layer 2: Generate + store in Redis + store in DB
     summary = await generate_and_save_summary(
-        lesson_id= lesson.id,
+        lesson_id=lesson.id,
         lesson_order=lesson.order,
         lesson_title=lesson.title,
-        session_factory=session_factory         # ← NEW
+        session_factory=session_factory,
+        school_id=school_id,            # FIX: now correctly passed
     )
 
     if summary is None:
         raise HTTPException(status_code=422, detail="No content available to summarize")
 
-
     return summary
 
 
-
-# Quiz generation endpoint
 @router.post("/api/course/{course_id}/lessons/{lesson_id}/quiz")
 async def generate_lesson_quiz(
     course_id: int,
     lesson_id: int,
     request: QuizRequest,
-    school_id: int = Depends(current_school_id),        # ← NEW
+    school_id: int = Depends(current_school_id),
     db: Annotated[AsyncSession, Depends(get_async_db)] = None,
 ):
     result = await db.execute(select(Course).where(course_id == Course.id))
@@ -370,7 +354,7 @@ async def generate_lesson_quiz(
             difficulty=request.difficulty,
             db=db,
             include_answers=True,
-            school_id=school_id,            # ← NEW: tenant-safe cache key
+            school_id=school_id,
         )
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail='Failed to parse quiz response')

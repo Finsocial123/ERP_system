@@ -440,12 +440,23 @@ class AICacheService:
         self, school_id: int, lesson_id: int, language: str, question: str
     ) -> str | None:
         key = self._chat_key(school_id, lesson_id, language, question)
-        result = await _get(key)
-        if result is not None:
-            logger.info("[AI_CACHE HIT] key=%s", key)
-            return result  # stored as plain string
-        logger.info("[AI_CACHE MISS] key=%s", key)
-        return None
+        # BUG FIX: chat responses are stored as raw strings via redis.setex,
+        # NOT as JSON. Using _get() would call json.loads() on plain text
+        # and always raise JSONDecodeError, returning None even on cache hits.
+        # We must read directly from Redis to get the raw string.
+        redis = get_redis()
+        if redis is None:
+            return None
+        try:
+            raw = await redis.get(key)
+            if raw is not None:
+                logger.info("[AI_CACHE HIT] key=%s", key)
+                return raw
+            logger.info("[AI_CACHE MISS] key=%s", key)
+            return None
+        except Exception as exc:
+            logger.debug("[AI_CACHE] GET error key=%s: %s", key, exc)
+            return None
 
     async def set_chat(
         self, school_id: int, lesson_id: int, language: str, question: str, response: str

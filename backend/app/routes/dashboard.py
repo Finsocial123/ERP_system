@@ -16,8 +16,8 @@ Changes vs original
 
 from datetime import date, datetime, timedelta
 from typing import Any
-from sqlalchemy.orm import selectinload
-from fastapi import APIRouter, Depends, Query,Request
+
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, inspect, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -35,9 +35,7 @@ from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, T
 from app.models.school import School
 from app.models.timetable import TimetableEntry
 from app.models.user import User, UserRole
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.async_query import async_query
-from app.services.cache import cache                        # ← NEW
+from app.services.cache import cache
 
 router = APIRouter(prefix='/dashboard', tags=['Phase 3 - Dashboard and Quick Analytics'])
 ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
@@ -567,38 +565,41 @@ async def _admin_charts(db: AsyncSession, school_id: int, counts: dict[str, int]
     ), SchoolClass, session)
     class_rows = await class_query.order_by(SchoolClass.name.asc()).all()
 
+    # Batch query: 1 DB hit for all classes instead of N per-class queries
     students_by_class_map: dict[int, int] = {}
     if class_rows:
-        student_count_query = _session_filter(async_query(
-            db,
-            Student.class_id,
+        count_query = _session_filter(async_query(
+            db, Student.class_id,
             func.count(Student.id),
         ).filter(
             Student.school_id == school_id,
             Student.is_active.is_(True),
-            Student.class_id.in_([school_class.id for school_class in class_rows]),
+            Student.class_id.in_([sc.id for sc in class_rows]),
         ), Student, session)
-        rows = await student_count_query.group_by(Student.class_id).all()
-        students_by_class_map = {int(class_id): int(count or 0) for class_id, count in rows if class_id is not None}
+        rows = await count_query.group_by(Student.class_id).all()
+        students_by_class_map = {int(cid): int(cnt or 0) for cid, cnt in rows if cid is not None}
 
     students_by_class = [
-        {"label": school_class.name, "value": students_by_class_map.get(school_class.id, 0)}
-        for school_class in class_rows
+        {"label": sc.name, "value": students_by_class_map.get(sc.id, 0)}
+        for sc in class_rows
     ]
 
     setup_summary = [
-        {"label": "Classes", "value": counts["classes"]},
-        {"label": "Sections", "value": counts["sections"]},
-        {"label": "Subjects", "value": counts["subjects"]},
+        {"label": "Classes",     "value": counts["classes"]},
+        {"label": "Sections",    "value": counts["sections"]},
+        {"label": "Subjects",    "value": counts["subjects"]},
         {"label": "Departments", "value": counts["departments"]},
-        {"label": "Exams", "value": counts.get("exams", 0)},
+        {"label": "Exams",       "value": counts.get("exams", 0)},
         {"label": "Fee Records", "value": counts.get("fee_records", 0)},
     ]
-    people_summary = [{"label": "Students", "value": counts["students"]}, {"label": "Teachers", "value": counts["teachers"]}]
+    people_summary = [
+        {"label": "Students", "value": counts["students"]},
+        {"label": "Teachers", "value": counts["teachers"]},
+    ]
     return [
-        {"title": "People overview", "type": "bar", "items": people_summary},
-        {"title": "Academic setup", "type": "bar", "items": setup_summary},
-        {"title": "Students by class", "type": "bar", "items": students_by_class or [{"label": "No classes", "value": 0}]},
+        {"title": "People overview",    "type": "bar", "items": people_summary},
+        {"title": "Academic setup",     "type": "bar", "items": setup_summary},
+        {"title": "Students by class",  "type": "bar", "items": students_by_class or [{"label": "No classes", "value": 0}]},
     ]
 
 
@@ -810,39 +811,74 @@ async def overview(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
-    school = await db.get(School, school_id)
-    session = await selected_academic_session(db, school_id, request, current_user)
     role = current_user.role
     uid = current_user.id
 
+    # ------------------------------------------------------------------ #
+    # FAST CACHE CHECK                                                     #
+    # Read session_id from request header/param WITHOUT a DB query.       #
+    # selected_academic_session() makes a DB call — we skip it on HIT.   #
+    # On miss we call it properly below.                                   #
+    # ------------------------------------------------------------------ #
+    from app.dependencies.academic_session import SESSION_HEADER
+    raw_session_id = (
+        request.headers.get(SESSION_HEADER)
+        or request.query_params.get("academic_session_id")
+        or request.query_params.get("session_id")
+    )
+    try:
+        fast_session_id = int(raw_session_id) if raw_session_id else None
+    except (ValueError, TypeError):
+        fast_session_id = None
+
+    if fast_session_id is not None:
+        # We have a session id from the request — check cache immediately,
+        # before any DB call at all.
+        if role == UserRole.TEACHER.value:
+            cached = await cache.get_teacher_dashboard(school_id, uid, fast_session_id)
+        elif role == UserRole.STUDENT.value:
+            cached = await cache.get_student_dashboard(school_id, uid, fast_session_id)
+        elif role == UserRole.PARENT.value:
+            cached = await cache.get_parent_dashboard(school_id, uid, fast_session_id)
+        else:
+            cached = await cache.get_admin_dashboard(school_id, fast_session_id)
+
+        if cached is not None:
+            # Pure cache hit — zero DB queries after auth
+            return cached
+
+    # ------------------------------------------------------------------ #
+    # Cache miss (or no session header) — do the full DB work             #
+    # ------------------------------------------------------------------ #
+    school = await db.get(School, school_id)
+    session = await selected_academic_session(db, school_id, request, current_user)
     session_id = session.id if session else 0
 
+    # If fast_session_id was None we haven't checked cache yet — check now
+    if fast_session_id is None:
+        if role == UserRole.TEACHER.value:
+            cached = await cache.get_teacher_dashboard(school_id, uid, session_id)
+        elif role == UserRole.STUDENT.value:
+            cached = await cache.get_student_dashboard(school_id, uid, session_id)
+        elif role == UserRole.PARENT.value:
+            cached = await cache.get_parent_dashboard(school_id, uid, session_id)
+        else:
+            cached = await cache.get_admin_dashboard(school_id, session_id)
+
+        if cached is not None:
+            return cached
+
     # ------------------------------------------------------------------ #
-    # Cache lookup                                                         #
+    # Full recompute                                                       #
     # ------------------------------------------------------------------ #
     if role == UserRole.TEACHER.value:
-        cached = await cache.get_teacher_dashboard(school_id, uid, session_id)
+        dashboard_data = await _teacher_dashboard(db, school_id, current_user, session)
     elif role == UserRole.STUDENT.value:
-        cached = await cache.get_student_dashboard(school_id, uid, session_id)
+        dashboard_data = await _student_dashboard(db, school_id, current_user, session)
     elif role == UserRole.PARENT.value:
-        cached = await cache.get_parent_dashboard(school_id, uid, session_id)
+        dashboard_data = await _parent_dashboard(db, school_id, current_user, session)
     else:
-        cached = await cache.get_admin_dashboard(school_id, session_id)
-
-    if cached is not None:
-        return cached
-
-    # ------------------------------------------------------------------ #
-    # Cache miss — compute                                                 #
-    # ------------------------------------------------------------------ #
-    if role == UserRole.TEACHER.value:
-        dashboard_data = await _teacher_dashboard(db, school_id, current_user,session)
-    elif role == UserRole.STUDENT.value:
-        dashboard_data = await _student_dashboard(db, school_id, current_user,session)
-    elif role == UserRole.PARENT.value:
-        dashboard_data = await _parent_dashboard(db, school_id, current_user,session)
-    else:
-        dashboard_data = await _admin_dashboard(db, school_id,session)
+        dashboard_data = await _admin_dashboard(db, school_id, session)
 
     result = {
         'school': {
@@ -867,13 +903,13 @@ async def overview(
     # Persist to cache                                                     #
     # ------------------------------------------------------------------ #
     if role == UserRole.TEACHER.value:
-        await cache.set_teacher_dashboard(school_id,uid,  session_id,result)
+        await cache.set_teacher_dashboard(school_id, uid, session_id, result)
     elif role == UserRole.STUDENT.value:
-        await cache.set_student_dashboard(school_id,uid,  session_id,result)
+        await cache.set_student_dashboard(school_id, uid, session_id, result)
     elif role == UserRole.PARENT.value:
-        await cache.set_parent_dashboard(school_id,uid, session_id,result)
+        await cache.set_parent_dashboard(school_id, uid, session_id, result)
     else:
-        await cache.set_admin_dashboard(school_id, session_id,result) 
+        await cache.set_admin_dashboard(school_id, session_id, result)
     return result
 
 

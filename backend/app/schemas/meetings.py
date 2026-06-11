@@ -29,7 +29,7 @@ class MeetingListItemOut(BaseModel):
     recording_url: str | None
 
     class Config:
-        from_attributes: True
+        from_attributes = True
 
 class MeetingListOut(BaseModel):
     items: list[MeetingListItemOut]
@@ -64,3 +64,14 @@ class MeetingCreateOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class TeacherMeetingSchedule(BaseModel):
+    class_id: int
+    section_id: int | None = None
+    title: str 
+    scheduled_at: datetime
+
+class AdminMeetingSchedule(BaseModel):
+    title: str
+    scheduled_at: datetime

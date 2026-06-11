@@ -2,7 +2,8 @@ import uuid
 import secrets
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
+import asyncio
 
 from datetime import datetime, timezone, timedelta
 
@@ -77,7 +78,6 @@ async def create_teacher_class_meeting(
         created_by_user_id=created_by_user_id,
         teacher_id=teacher_id,
         class_id=class_id,
-        section_id=section_id,
     )
     db.add(meeting)
     await db.commit()
@@ -197,7 +197,6 @@ async def get_active_meeting_for_class(
     db: AsyncSession,
     school_id: int,
     class_id: int,
-    section_id: int | None = None,
 ) -> Meeting | None:
     query = select(Meeting).where(
         Meeting.school_id == school_id,
@@ -219,11 +218,6 @@ async def list_meetings(
     search: str | None = None,
 ) -> dict:
     
-    all_meetings = await db.execute(
-        select(Meeting.id, Meeting.title, Meeting.class_id, Meeting.section_id, Meeting.status, Meeting.meeting_type)
-        .where(Meeting.school_id == current_user.school_id)
-    )
-    print(f"DEBUG all meetings in school: {all_meetings.all()}")
 
     query = (
         select(Meeting)
@@ -246,10 +240,7 @@ async def list_meetings(
         )
         student = student_result.scalars().first()
         if not student:
-            print(f"DEBUG: No student profile found for user_id={current_user.id}")
             return {"items": [], "total": 0}
-
-        print(f"DEBUG student: class_id={student.class_id} section_id={student.section_id}")
 
         query = query.where(
             Meeting.class_id == student.class_id,
@@ -281,6 +272,8 @@ async def list_meetings(
     items = result.scalars().all()
 
     return {"items": items, "total": total}
+
+
 
 async def get_teacher_classes(
     db: AsyncSession,

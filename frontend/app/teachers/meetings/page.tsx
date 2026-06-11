@@ -946,7 +946,7 @@ export default function MeetingsPage() {
 
   useEffect(() => {
     if (activeTab !== "live") return;
-    const interval = setInterval(fetchLive, 30000);
+    const interval = setInterval(fetchLive, 60000);
     return () => clearInterval(interval);
   }, [activeTab, fetchLive]);
 

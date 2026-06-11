@@ -457,15 +457,23 @@ export default function StudentMeetingsPage() {
     fetchScheduled();
   }, [fetchLive, fetchScheduled]);
 
+  // poll live every 60s
+  useEffect(() => {
+    if (activeTab !== "live") return;
+    const interval = setInterval(fetchLive, 60000);
+    return () => clearInterval(interval);
+  }, [activeTab, fetchLive]);
+
+  // poll scheduled every 5 minutes
+  useEffect(() => {
+    if (activeTab !== "live") return;
+    const interval = setInterval(fetchScheduled, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [activeTab, fetchScheduled]);
+
   useEffect(() => {
     if (activeTab === "past") fetchPast();
   }, [activeTab, fetchPast]);
-
-  useEffect(() => {
-    if (activeTab !== "live") return;
-    const interval = setInterval(fetchLive, 20000);
-    return () => clearInterval(interval);
-  }, [activeTab, fetchLive]);
 
   async function handleJoin(meetingId: number) {
     setJoining(meetingId);

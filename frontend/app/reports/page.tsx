@@ -9,7 +9,7 @@ import {
 
 import AppShell from "@/components/AppShell";
 import { Button, Card, Input, Label } from "@/components/ui";
-import { ACADEMIC_SESSION_CHANGED_EVENT, apiFetch, getSelectedAcademicSessionId, setSelectedAcademicSessionId } from "@/lib/api";
+import { ACADEMIC_SESSION_CHANGED_EVENT, apiFetch, fileUrl, getSelectedAcademicSessionId, setSelectedAcademicSessionId } from "@/lib/api";
 import type { AcademicClass, AcademicSession, Section } from "@/types";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -47,6 +47,7 @@ type StudentReport = {
 
 type TeacherRow = {
   teacher_id: number; employee_id: string; full_name: string;
+  photo_url?: string | null;
   department_name?: string | null; email?: string | null; phone?: string | null;
   qualification?: string | null; joining_date?: string | null;
   status: string; subjects_assigned: number; classes_assigned: number;
@@ -487,7 +488,19 @@ export default function ReportsPage() {
                           const r = row as unknown as StudentRow;
                           return (
                             <tr key={r.student_id} className="hover:bg-slate-50 transition">
-                              <td className="px-4 py-2.5 font-medium text-slate-900">{r.full_name}</td>
+                              <td className="px-4 py-2.5 font-medium text-slate-900">
+                                <div className="flex items-center gap-3">
+                                  <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-100 text-slate-400">
+                                    {r.photo_url ? (
+                                      // eslint-disable-next-line @next/next/no-img-element
+                                      <img src={fileUrl(r.photo_url)} alt={r.full_name} className="h-full w-full object-cover" />
+                                    ) : (
+                                      <UserRound size={17} />
+                                    )}
+                                  </div>
+                                  <span>{r.full_name}</span>
+                                </div>
+                              </td>
                               <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{r.admission_no}</td>
                               <td className="px-4 py-2.5 text-slate-600">{r.class_name ?? "—"}</td>
                               <td className="px-4 py-2.5 text-slate-600">{r.section_name ?? "—"}</td>
@@ -650,7 +663,19 @@ export default function ReportsPage() {
                           const r = row as unknown as TeacherRow;
                           return (
                             <tr key={r.teacher_id} className="hover:bg-slate-50 transition">
-                              <td className="px-4 py-2.5 font-medium text-slate-900">{r.full_name}</td>
+                              <td className="px-4 py-2.5 font-medium text-slate-900">
+                                <div className="flex items-center gap-3">
+                                  <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-100 text-slate-400">
+                                    {r.photo_url ? (
+                                      // eslint-disable-next-line @next/next/no-img-element
+                                      <img src={fileUrl(r.photo_url)} alt={r.full_name} className="h-full w-full object-cover" />
+                                    ) : (
+                                      <UserRound size={17} />
+                                    )}
+                                  </div>
+                                  <span>{r.full_name}</span>
+                                </div>
+                              </td>
                               <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{r.employee_id}</td>
                               <td className="px-4 py-2.5 text-slate-600">{r.department_name ?? "—"}</td>
                               <td className="px-4 py-2.5 text-slate-500 text-xs">{r.email ?? "—"}</td>

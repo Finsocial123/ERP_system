@@ -151,7 +151,7 @@ async def teacher_report(request: Request, department_id: int | None=Query(defau
     for t in teachers:
         subjects_count = subj_counts.get(t.id, 0)
         classes_count = class_counts.get(t.id, 0)
-        rows.append(TeacherReportRow(teacher_id=t.id, employee_id=t.employee_id, full_name=t.full_name, department_name=dept_map.get(t.department_id) if t.department_id else None, email=t.email, phone=t.phone, qualification=t.qualification, joining_date=str(t.joining_date) if t.joining_date else None, status=t.status if t.status else 'ACTIVE' if t.is_active else 'INACTIVE', subjects_assigned=subjects_count, classes_assigned=classes_count))
+        rows.append(TeacherReportRow(teacher_id=t.id, employee_id=t.employee_id, full_name=t.full_name, photo_url=t.photo_url, department_name=dept_map.get(t.department_id) if t.department_id else None, email=t.email, phone=t.phone, qualification=t.qualification, joining_date=str(t.joining_date) if t.joining_date else None, status=t.status if t.status else 'ACTIVE' if t.is_active else 'INACTIVE', subjects_assigned=subjects_count, classes_assigned=classes_count))
     total = await async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.academic_session_id == session_id).count()
     active = await async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.academic_session_id == session_id, Teacher.is_active.is_(True)).count()
     dept_counts: dict = {}

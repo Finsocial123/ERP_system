@@ -58,6 +58,7 @@ class TeacherReportRow(BaseModel):
     teacher_id: int
     employee_id: str
     full_name: str
+    photo_url: str | None = None
     department_name: str | None = None
     email: str | None = None
     phone: str | None = None

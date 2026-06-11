@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BookOpen,
   ChevronDown,
@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 
 import AppShell from "@/components/AppShell";
-import { apiFetch, apiUpload, fileUrl, updateSavedAuthUser } from "@/lib/api";
+import { ACADEMIC_SESSION_CHANGED_EVENT, apiFetch, apiUpload, fileUrl, updateSavedAuthUser } from "@/lib/api";
 
 type AnyRecord = Record<string, any>;
 
@@ -611,22 +611,29 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let mounted = true;
-    apiFetch<ProfileResponse>("/profile")
-      .then((data) => {
-        if (mounted) setProfile(data);
-      })
-      .catch((err) => {
-        if (mounted) setError(err instanceof Error ? err.message : "Failed to load profile.");
-      })
-      .finally(() => {
-        if (mounted) setLoading(false);
-      });
-    return () => {
-      mounted = false;
-    };
+  const loadProfile = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setProfile(await apiFetch<ProfileResponse>("/profile"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load profile.");
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadProfile();
+  }, [loadProfile]);
+
+  useEffect(() => {
+    const onSessionChanged = () => {
+      loadProfile();
+    };
+    window.addEventListener(ACADEMIC_SESSION_CHANGED_EVENT, onSessionChanged);
+    return () => window.removeEventListener(ACADEMIC_SESSION_CHANGED_EVENT, onSessionChanged);
+  }, [loadProfile]);
 
   const content = useMemo(() => {
     if (!profile) return null;
@@ -647,6 +654,9 @@ export default function ProfilePage() {
               <p className="flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-slate-400"><ShieldCheck size={16} /> My Profile</p>
               <h1 className="mt-2 text-3xl font-black text-slate-950">{profile.account.full_name}</h1>
               <p className="mt-1 text-slate-500">{formatRole(profile.account.role)} · Login ID: {profile.account.login_id}</p>
+              {profile.summary?.academic_session_name && (
+                <p className="mt-1 text-sm font-semibold text-slate-600">Selected Session: {profile.summary.academic_session_name}</p>
+              )}
             </div>
             {profile.school && (
               <div className="rounded-3xl border border-slate-200 bg-white px-5 py-4 shadow-sm">

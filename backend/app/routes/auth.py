@@ -1,19 +1,20 @@
 from datetime import datetime, timedelta
 import hashlib
 import json
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.core.database import get_async_db
-from app.core.security import create_access_token, get_password_hash, verify_password
+from app.core.security import create_access_token, create_refresh_token, get_password_hash, hash_token, verify_password
 from app.core.utils import build_school_code, generate_numeric_otp, generate_reset_token, normalize_login_id, normalize_school_code, slugify
 from app.dependencies.auth import get_current_user
 from app.models.school import School
 from app.models.user import User, UserRole
+from app.models.session import RefreshToken
 from app.models.people import Teacher
 from app.models.verification import PendingSchoolRegistration
-from app.schemas.auth import AuthResponse, ChangePasswordRequest, ForgotPasswordRequest, ForgotPasswordResponse, LoginRequest, ResetPasswordRequest, SchoolRegisterRequest, SchoolRegistrationOtpResponse, SchoolRegistrationVerifyRequest, UserPublic
+from app.schemas.auth import AuthResponse, ChangePasswordRequest, ForgotPasswordRequest, ForgotPasswordResponse, LoginRequest, ResetPasswordRequest, SchoolRegisterRequest, SchoolRegistrationOtpResponse, SchoolRegistrationVerifyRequest, TokenRefreshResponse, UserPublic
 from app.schemas.common import MessageResponse
 from app.utils.email import EmailNotConfiguredError, send_password_reset_email, send_school_registration_otp_email
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +39,87 @@ def _hash_value(value: str) -> str:
 
 def _hash_reset_token(token: str) -> str:
     return _hash_value(token)
+
+def _refresh_token_max_age_seconds() -> int:
+    return settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
+
+
+def _access_token_expires_in_seconds() -> int:
+    return settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+
+
+def _cookie_domain() -> str | None:
+    return settings.REFRESH_TOKEN_COOKIE_DOMAIN.strip() or None
+
+
+def _client_ip(request: Request) -> str | None:
+    forwarded_for = request.headers.get('x-forwarded-for')
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip()[:64]
+    return request.client.host[:64] if request.client and request.client.host else None
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=settings.REFRESH_TOKEN_COOKIE_NAME,
+        value=token,
+        max_age=_refresh_token_max_age_seconds(),
+        path=settings.REFRESH_TOKEN_COOKIE_PATH,
+        domain=_cookie_domain(),
+        secure=settings.REFRESH_TOKEN_COOKIE_SECURE,
+        httponly=True,
+        samesite=settings.REFRESH_TOKEN_COOKIE_SAMESITE.lower(),
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=settings.REFRESH_TOKEN_COOKIE_NAME,
+        path=settings.REFRESH_TOKEN_COOKIE_PATH,
+        domain=_cookie_domain(),
+    )
+
+
+async def _create_refresh_token_record(db: AsyncSession, user: User, request: Request) -> tuple[str, RefreshToken]:
+    raw_token = create_refresh_token()
+    token = RefreshToken(
+        user_id=user.id,
+        token_hash=hash_token(raw_token),
+        expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        user_agent=(request.headers.get('user-agent') or '')[:512] or None,
+        ip_address=_client_ip(request),
+    )
+    db.add(token)
+    await db.flush()
+    return raw_token, token
+
+
+async def _issue_auth_response(
+    db: AsyncSession,
+    response: Response,
+    request: Request,
+    user: User,
+    school: School | None,
+) -> AuthResponse:
+    refresh_token, _ = await _create_refresh_token_record(db, user, request)
+    _set_refresh_cookie(response, refresh_token)
+    access_token = create_access_token(user.id, {'role': user.role, 'school_id': user.school_id})
+    user_public = await _build_user_public(db, user)
+    return AuthResponse(
+        access_token=access_token,
+        expires_in=_access_token_expires_in_seconds(),
+        refresh_expires_in=_refresh_token_max_age_seconds(),
+        user=user_public,
+        school=school,
+    )
+
+
+async def _find_valid_refresh_token(db: AsyncSession, raw_token: str) -> RefreshToken | None:
+    return await async_query(db, RefreshToken).filter(
+        RefreshToken.token_hash == hash_token(raw_token),
+        RefreshToken.revoked_at.is_(None),
+        RefreshToken.expires_at > datetime.utcnow(),
+    ).first()
 
 async def _school_by_code(db: AsyncSession, code: str) -> School | None:
     return await async_query(db, School).filter(School.school_code == normalize_school_code(code), School.is_active.is_(True)).first()
@@ -120,7 +202,7 @@ async def request_school_registration_otp(payload: SchoolRegisterRequest, db: As
     return SchoolRegistrationOtpResponse(message=message, owner_email=owner_email, expires_in_minutes=settings.OTP_EXPIRE_MINUTES, debug_otp=otp if settings.EMAIL_OTP_DEBUG else None)
 
 @router.post('/verify-school-registration', response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-async def verify_school_registration(payload: SchoolRegistrationVerifyRequest, db: AsyncSession=Depends(get_async_db)):
+async def verify_school_registration(payload: SchoolRegistrationVerifyRequest, response: Response, request: Request, db: AsyncSession=Depends(get_async_db)):
     owner_email = str(payload.owner_email).lower()
     pending = await _find_pending_registration(db, owner_email)
     if not pending:
@@ -148,11 +230,12 @@ async def verify_school_registration(payload: SchoolRegistrationVerifyRequest, d
         raise HTTPException(status_code=400, detail='School or owner already exists') from exc
     await db.refresh(owner)
     await db.refresh(school)
-    token = create_access_token(owner.id, {'role': owner.role, 'school_id': owner.school_id})
-    return AuthResponse(access_token=token, user=owner, school=school)
+    auth_response = await _issue_auth_response(db, response, request, owner, school)
+    await db.commit()
+    return auth_response
 
 @router.post('/login', response_model=AuthResponse)
-async def login(payload: LoginRequest, db: AsyncSession=Depends(get_async_db)):
+async def login(payload: LoginRequest, response: Response, request: Request, db: AsyncSession=Depends(get_async_db)):
     login_identifier = payload.login_id or (str(payload.email).lower() if payload.email else '')
     if not login_identifier.strip():
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=GENERIC_LOGIN_ERROR)
@@ -170,18 +253,68 @@ async def login(payload: LoginRequest, db: AsyncSession=Depends(get_async_db)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"This account is registered as {user.role.replace('_', ' ').title()}. Please select the correct portal tab.")
     user.last_login_at = datetime.utcnow()
     user.failed_login_attempts = 0
+    auth_response = await _issue_auth_response(db, response, request, user, school)
     await db.commit()
-    await db.refresh(user)
-    token = create_access_token(user.id, {'role': user.role, 'school_id': user.school_id})
-    user_public = await _build_user_public(db, user)
-    return AuthResponse(access_token=token, user=user_public, school=school)
+    return auth_response
+
+
+@router.post('/refresh', response_model=TokenRefreshResponse)
+async def refresh_access_token(request: Request, response: Response, db: AsyncSession=Depends(get_async_db)):
+    raw_refresh_token = request.cookies.get(settings.REFRESH_TOKEN_COOKIE_NAME)
+    if not raw_refresh_token:
+        _clear_refresh_cookie(response)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Refresh token is missing')
+
+    stored_token = await _find_valid_refresh_token(db, raw_refresh_token)
+    if not stored_token:
+        _clear_refresh_cookie(response)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Refresh token is invalid or expired')
+
+    user = await db.get(User, stored_token.user_id)
+    if not user or not user.is_active:
+        stored_token.revoked_at = datetime.utcnow()
+        await db.commit()
+        _clear_refresh_cookie(response)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='User not found or inactive')
+
+    now = datetime.utcnow()
+    stored_token.revoked_at = now
+    stored_token.last_used_at = now
+    new_refresh_token, new_record = await _create_refresh_token_record(db, user, request)
+    await db.flush()
+    stored_token.replaced_by_token_id = new_record.id
+    await db.commit()
+
+    _set_refresh_cookie(response, new_refresh_token)
+    access_token = create_access_token(user.id, {'role': user.role, 'school_id': user.school_id})
+    return TokenRefreshResponse(
+        access_token=access_token,
+        expires_in=_access_token_expires_in_seconds(),
+    )
+
+
+@router.post('/logout', response_model=MessageResponse)
+async def logout(request: Request, response: Response, db: AsyncSession=Depends(get_async_db)):
+    raw_refresh_token = request.cookies.get(settings.REFRESH_TOKEN_COOKIE_NAME)
+    if raw_refresh_token:
+        stored_token = await async_query(db, RefreshToken).filter(
+            RefreshToken.token_hash == hash_token(raw_refresh_token),
+            RefreshToken.revoked_at.is_(None),
+        ).first()
+        if stored_token:
+            stored_token.revoked_at = datetime.utcnow()
+            stored_token.last_used_at = datetime.utcnow()
+            await db.commit()
+
+    _clear_refresh_cookie(response)
+    return {'message': 'Logged out successfully'}
 
 @router.get('/me', response_model=AuthResponse)
 async def me(current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
     school = await db.get(School, current_user.school_id) if current_user.school_id else None
     token = create_access_token(current_user.id, {'role': current_user.role, 'school_id': current_user.school_id})
     user_public = await _build_user_public(db, current_user)
-    return AuthResponse(access_token=token, user=user_public, school=school)
+    return AuthResponse(access_token=token, expires_in=_access_token_expires_in_seconds(), user=user_public, school=school)
 
 @router.post('/change-password', response_model=MessageResponse)
 async def change_password(payload: ChangePasswordRequest, current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
@@ -227,5 +360,6 @@ async def reset_password(payload: ResetPasswordRequest, db: AsyncSession=Depends
     user.must_change_password = False
     user.password_reset_token_hash = None
     user.password_reset_expires_at = None
+    await async_query(db, RefreshToken).filter(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None)).update({'revoked_at': datetime.utcnow()})
     await db.commit()
     return {'message': 'Password reset successfully. You can login with your new password.'}

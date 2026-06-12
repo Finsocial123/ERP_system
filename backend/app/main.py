@@ -38,6 +38,7 @@ from app.models import (  # noqa: F401
     Teacher,
     TeacherSubject,
     User,
+    RefreshToken,
     PendingSchoolRegistration,
     Announcement,
     Complaint,

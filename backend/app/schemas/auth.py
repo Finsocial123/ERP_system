@@ -114,5 +114,13 @@ class UserPublic(BaseModel):
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    expires_in: int | None = None
+    refresh_expires_in: int | None = None
     user: UserPublic
     school: SchoolPublic | None = None
+
+
+class TokenRefreshResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int

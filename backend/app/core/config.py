@@ -9,7 +9,13 @@ class Settings(BaseSettings):
     ASYNC_DATABASE_URL: str = "sqlite+aiosqlite:///./erp_phase1.db"
     SECRET_KEY: str = "change-this-secret-key-before-production"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 15
+    REFRESH_TOKEN_COOKIE_NAME: str = "erp_refresh_token"
+    REFRESH_TOKEN_COOKIE_SECURE: bool = False
+    REFRESH_TOKEN_COOKIE_SAMESITE: str = "lax"
+    REFRESH_TOKEN_COOKIE_DOMAIN: str = ""
+    REFRESH_TOKEN_COOKIE_PATH: str = "/auth"
     BACKEND_CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
     FRONTEND_BASE_URL: str = "http://localhost:3000"
 

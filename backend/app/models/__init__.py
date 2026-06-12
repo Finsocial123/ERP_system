@@ -7,6 +7,7 @@ from app.models.fee import FeeAssignment, FeeCategory, FeeExpense, FeePayment, F
 from app.models.school import School
 from app.models.branding import SchoolBranding
 from app.models.user import User
+from app.models.session import RefreshToken
 from app.models.verification import PendingSchoolRegistration
 from app.models.course import Course
 from app.models.lesson import Lesson
@@ -27,6 +28,7 @@ __all__ = [
     "School",
     "SchoolBranding",
     "User",
+    "RefreshToken",
     "PendingSchoolRegistration",
     "AcademicSession",
     "Department",

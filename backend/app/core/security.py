@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
+import secrets
 from typing import Any, Optional
 
 from jose import JWTError, jwt
@@ -38,6 +40,7 @@ def create_access_token(
     payload: dict[str, Any] = {
         "sub": str(subject),
         "exp": expire,
+        "type": "access",
     }
 
     if extra_claims:
@@ -48,6 +51,14 @@ def create_access_token(
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM,
     )
+
+
+def create_refresh_token() -> str:
+    return secrets.token_urlsafe(64)
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def decode_token(token: str) -> dict[str, Any]:

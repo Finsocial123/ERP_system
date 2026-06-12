@@ -111,9 +111,8 @@ export default function TimetableManager() {
   }, [entryForm.class_id, meta]);
 
   const filteredSubjectsForEntry = useMemo(() => {
-    if (!meta) return [];
-    if (!entryForm.class_id) return meta.subjects;
-    return meta.subjects.filter((item) => !item.extra || item.extra === entryForm.class_id);
+    if (!meta || !entryForm.class_id) return [];
+    return meta.subjects.filter((item) => item.extra === entryForm.class_id);
   }, [entryForm.class_id, meta]);
 
   const filteredSectionsForView = useMemo(() => {
@@ -443,7 +442,7 @@ export default function TimetableManager() {
               <div><Label>Section</Label><SelectBox value={entryForm.section_id} onChange={(value) => setEntryForm({ ...entryForm, section_id: value })}><option value="">All sections</option>{filteredSectionsForEntry.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</SelectBox></div>
               <div><Label>Day</Label><SelectBox value={entryForm.day_id} onChange={(value) => setEntryForm({ ...entryForm, day_id: value })} required><option value="">Select day</option>{meta?.days.filter((d) => d.is_active).map((item) => <option key={item.id} value={item.id}>{item.display_name}</option>)}</SelectBox></div>
               <div><Label>Period</Label><SelectBox value={entryForm.period_id} onChange={(value) => setEntryForm({ ...entryForm, period_id: value })} required><option value="">Select period</option>{meta?.periods.filter((p) => p.is_active).map((item) => <option key={item.id} value={item.id}>P{item.period_number} - {item.name}</option>)}</SelectBox></div>
-              <div><Label>Subject</Label><SelectBox value={entryForm.subject_id} onChange={(value) => setEntryForm({ ...entryForm, subject_id: value })}><option value="">Optional subject</option>{filteredSubjectsForEntry.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</SelectBox></div>
+              <div><Label>Subject</Label><SelectBox value={entryForm.subject_id} onChange={(value) => setEntryForm({ ...entryForm, subject_id: value })}><option value="">{entryForm.class_id ? "Optional subject" : "Select class first"}</option>{filteredSubjectsForEntry.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</SelectBox></div>
               <div><Label>Teacher</Label><SelectBox value={entryForm.teacher_id} onChange={(value) => setEntryForm({ ...entryForm, teacher_id: value })}><option value="">Optional teacher</option>{meta?.teachers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</SelectBox></div>
               <div><Label>Room Optional</Label><Input value={entryForm.room} onChange={(e) => setEntryForm({ ...entryForm, room: e.target.value })} placeholder="Room 101 / Lab A" /></div>
               <div className="md:col-span-2"><Label>Note</Label><Textarea value={entryForm.note} onChange={(e) => setEntryForm({ ...entryForm, note: e.target.value })} placeholder="Optional note" /></div>

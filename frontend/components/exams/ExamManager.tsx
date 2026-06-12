@@ -135,8 +135,8 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
   const filteredSubjects = useMemo(() => {
     if (!meta) return [];
     const examClass = selectedExam?.class_id ? String(selectedExam.class_id) : examForm.class_id;
-    if (!examClass) return meta.subjects;
-    return meta.subjects.filter((item) => !item.extra || item.extra === examClass);
+    if (!examClass) return [];
+    return meta.subjects.filter((item) => item.extra === examClass);
   }, [examForm.class_id, meta, selectedExam?.class_id]);
 
   const loadData = async () => {
@@ -635,7 +635,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
               <div>
                 <Label>Subject</Label>
                 <SelectBox value={subjectForm.subject_id} onChange={(value) => setSubjectForm({ ...subjectForm, subject_id: value })} required>
-                  <option value="">Select subject</option>
+                  <option value="">{selectedExam || examForm.class_id ? "Select subject" : "Select exam/class first"}</option>
                   {filteredSubjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </SelectBox>
               </div>

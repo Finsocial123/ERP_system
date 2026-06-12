@@ -210,7 +210,7 @@ async def courses_meta(
             subject_ids = {item.subject_id for item in teacher_subjects if item.subject_id is not None}
             if class_ids:
                 class_query = class_query.filter(SchoolClass.id.in_(class_ids))
-                subject_query = subject_query.filter(or_(Subject.class_id.in_(class_ids), Subject.class_id.is_(None)))
+                subject_query = subject_query.filter(Subject.class_id.in_(class_ids))
             if section_ids:
                 section_query = section_query.filter(Section.id.in_(section_ids))
             if subject_ids:
@@ -228,7 +228,7 @@ async def courses_meta(
     return CourseMetaResponse(
         classes=[CourseMetaItem(id=item.id, name=item.name, extra=item.code) for item in await class_query.order_by(SchoolClass.name.asc()).all()],
         sections=[CourseMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in await section_query.order_by(Section.name.asc()).all()],
-        subjects=[CourseMetaItem(id=item.id, name=item.name, extra=item.code) for item in await subject_query.order_by(Subject.name.asc()).all()],
+        subjects=[CourseMetaItem(id=item.id, name=item.name, extra=str(item.class_id) if item.class_id else None) for item in await subject_query.order_by(Subject.name.asc()).all()],
         teachers=_teacher_meta_items(teachers),
         current_academic_session_id=session_id,
     )

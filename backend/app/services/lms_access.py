@@ -85,8 +85,8 @@ async def validate_course_scope(db: AsyncSession, school_id: int, class_id: int,
     subject = await validate_same_school(db, Subject, subject_id, school_id, 'Subject')
     if section and section.class_id != class_id:
         raise HTTPException(status_code=400, detail='Selected section does not belong to selected class')
-    if subject and subject.class_id is not None and (subject.class_id != class_id):
-        raise HTTPException(status_code=400, detail='Selected subject is linked to another class')
+    if subject and subject.class_id != class_id:
+        raise HTTPException(status_code=400, detail='Selected subject is not assigned to the selected class')
     return (school_class, section, subject)
 
 async def teacher_has_scope(db: AsyncSession, school_id: int, teacher: Teacher, class_id: int, section_id: int | None, subject_id: int | None) -> bool:

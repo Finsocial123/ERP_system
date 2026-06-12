@@ -81,6 +81,11 @@ export default function HomeworkManager({ mode }: Props) {
     return meta.sections.filter((section) => section.extra === classId);
   }, [form.class_id, meta]);
 
+  const filteredSubjects = useMemo(() => {
+    if (!meta || !form.class_id) return [];
+    return meta.subjects.filter((subject) => subject.extra === form.class_id);
+  }, [form.class_id, meta]);
+
   const loadData = async () => {
     setLoading(true);
     setError("");
@@ -123,8 +128,11 @@ export default function HomeworkManager({ mode }: Props) {
   };
 
   const update = (key: keyof FormState, value: string | File | null) => {
-    setForm((prev) => ({ ...prev, [key]: value } as FormState));
-    if (key === "class_id") setForm((prev) => ({ ...prev, section_id: "" }));
+    setForm((prev) => ({
+      ...prev,
+      [key]: value,
+      ...(key === "class_id" ? { section_id: "", subject_id: "" } : {}),
+    } as FormState));
   };
 
   const resetForm = () => {
@@ -239,7 +247,7 @@ export default function HomeworkManager({ mode }: Props) {
             <div className="md:col-span-2"><Label>Homework Title</Label><Input value={form.title} onChange={(e) => update("title", e.target.value)} required placeholder="Chapter 4 worksheet" /></div>
             <div><Label>Class</Label><SelectBox value={form.class_id} onChange={(value) => update("class_id", value)} required><option value="">Select class</option>{meta?.classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</SelectBox></div>
             <div><Label>Section</Label><SelectBox value={form.section_id} onChange={(value) => update("section_id", value)}><option value="">All sections</option>{filteredSections.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</SelectBox></div>
-            <div><Label>Subject</Label><SelectBox value={form.subject_id} onChange={(value) => update("subject_id", value)}><option value="">Optional subject</option>{meta?.subjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</SelectBox></div>
+            <div><Label>Subject</Label><SelectBox value={form.subject_id} onChange={(value) => update("subject_id", value)}><option value="">{form.class_id ? "Optional subject" : "Select class first"}</option>{filteredSubjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</SelectBox></div>
             <div><Label>Due Date</Label><Input type="date" value={form.due_date} onChange={(e) => update("due_date", e.target.value)} required /></div>
             {mode === "admin" && (
               <div className="md:col-span-2"><Label>Teacher</Label><SelectBox value={form.teacher_id} onChange={(value) => update("teacher_id", value)}><option value="">No teacher selected</option>{meta?.teachers.map((item) => <option key={item.id} value={item.id}>{item.name} {item.extra ? `(${item.extra})` : ""}</option>)}</SelectBox></div>

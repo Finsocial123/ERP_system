@@ -147,6 +147,11 @@ export default function CourseManager({ mode }: Props) {
     return meta.sections.filter((section) => section.extra === classId);
   }, [courseForm.class_id, meta]);
 
+  const filteredSubjects = useMemo(() => {
+    if (!meta || !courseForm.class_id) return [];
+    return meta.subjects.filter((subject) => subject.extra === courseForm.class_id);
+  }, [courseForm.class_id, meta]);
+
   const visibleCourses = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return courses;
@@ -219,7 +224,7 @@ export default function CourseManager({ mode }: Props) {
 
   const updateCourse = (key: keyof CourseForm, value: string | File | null) => {
     setCourseForm((prev) => ({ ...prev, [key]: value } as CourseForm));
-    if (key === "class_id") setCourseForm((prev) => ({ ...prev, section_id: "" }));
+    if (key === "class_id") setCourseForm((prev) => ({ ...prev, section_id: "", subject_id: "" }));
   };
 
   const updateLesson = (key: keyof LessonForm, value: string | File | null) => {
@@ -418,8 +423,8 @@ export default function CourseManager({ mode }: Props) {
             <div>
               <Label>Subject</Label>
               <SelectBox value={courseForm.subject_id} onChange={(value) => updateCourse("subject_id", value)}>
-                <option value="">Select subject</option>
-                {meta?.subjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                <option value="">{courseForm.class_id ? "Select subject" : "Select class first"}</option>
+                {filteredSubjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
               </SelectBox>
             </div>
             {mode === "admin" && (

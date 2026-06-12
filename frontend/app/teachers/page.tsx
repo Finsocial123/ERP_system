@@ -93,10 +93,11 @@ export default function TeachersPage() {
   const teacherById = useMemo(() => new Map(teachers.map((item) => [item.id, item.full_name])), [teachers]);
 
   const subjectSections = useMemo(() => sections.filter((item) => !subjectForm.class_id || item.class_id === Number(subjectForm.class_id)), [sections, subjectForm.class_id]);
+  const filteredSubjectsForAssignment = useMemo(() => subjects.filter((item) => subjectForm.class_id && item.class_id === Number(subjectForm.class_id)), [subjects, subjectForm.class_id]);
   const classTeacherSections = useMemo(() => sections.filter((item) => !classTeacherForm.class_id || item.class_id === Number(classTeacherForm.class_id)), [sections, classTeacherForm.class_id]);
 
   const setField = (name: keyof TeacherForm, value: string | boolean) => setForm((prev) => ({ ...prev, [name]: value }));
-  const setSubjectField = (name: keyof SubjectForm, value: string) => setSubjectForm((prev) => ({ ...prev, [name]: value, ...(name === "class_id" ? { section_id: "" } : {}) }));
+  const setSubjectField = (name: keyof SubjectForm, value: string) => setSubjectForm((prev) => ({ ...prev, [name]: value, ...(name === "class_id" ? { section_id: "", subject_id: "" } : {}) }));
   const setClassTeacherField = (name: keyof ClassTeacherForm, value: string) => setClassTeacherForm((prev) => ({ ...prev, [name]: value, ...(name === "class_id" ? { section_id: "" } : {}) }));
 
   const loadSetup = async () => {
@@ -239,7 +240,7 @@ export default function TeachersPage() {
         method: "POST",
         body: JSON.stringify({
           subject_id: Number(subjectForm.subject_id),
-          class_id: toNullableNumber(subjectForm.class_id),
+          class_id: Number(subjectForm.class_id),
           section_id: toNullableNumber(subjectForm.section_id),
         }),
       });
@@ -444,7 +445,7 @@ export default function TeachersPage() {
       <div className="mt-6 grid gap-6 xl:grid-cols-2">
         <Card>
           <h2 className="mb-1 text-lg font-bold text-slate-900">Assign Teacher to Subject</h2>
-          <p className="mb-4 text-sm text-slate-500">Select a teacher, subject, and optional class/section scope.</p>
+          <p className="mb-4 text-sm text-slate-500">Select a teacher, class, subject, and optional section scope.</p>
           <form onSubmit={assignSubject} className="grid gap-3 md:grid-cols-2">
             <div>
               <Label>Teacher *</Label>
@@ -454,17 +455,17 @@ export default function TeachersPage() {
               </select>
             </div>
             <div>
-              <Label>Subject *</Label>
-              <select required className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" value={subjectForm.subject_id} onChange={(e) => setSubjectField("subject_id", e.target.value)}>
-                <option value="">Select subject</option>
-                {subjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              <Label>Class *</Label>
+              <select required className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" value={subjectForm.class_id} onChange={(e) => setSubjectField("class_id", e.target.value)}>
+                <option value="">Select class</option>
+                {classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
               </select>
             </div>
             <div>
-              <Label>Class</Label>
-              <select className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" value={subjectForm.class_id} onChange={(e) => setSubjectField("class_id", e.target.value)}>
-                <option value="">All / no class scope</option>
-                {classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              <Label>Subject *</Label>
+              <select required className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" value={subjectForm.subject_id} onChange={(e) => setSubjectField("subject_id", e.target.value)}>
+                <option value="">{subjectForm.class_id ? "Select subject" : "Select class first"}</option>
+                {filteredSubjectsForAssignment.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
               </select>
             </div>
             <div>

@@ -97,8 +97,8 @@ async def _validate_assignment_scope(db: AsyncSession, school_id: int, class_id:
     subject = await _validate_same_school(db, Subject, subject_id, school_id, 'Subject')
     if section and section.class_id != class_id:
         raise HTTPException(status_code=400, detail='Selected section does not belong to selected class')
-    if subject and subject.class_id is not None and (subject.class_id != class_id):
-        raise HTTPException(status_code=400, detail='Selected subject is linked to another class')
+    if subject and subject.class_id != class_id:
+        raise HTTPException(status_code=400, detail='Selected subject does not belong to selected class')
     return (school_class, section, subject)
 
 def _parse_form_date(value: str) -> date:
@@ -209,14 +209,14 @@ async def homework_meta(request: Request, school_id: int=Depends(current_school_
         section_ids = {section_id for _, section_id in scopes if section_id is not None}
         if class_ids:
             class_query = class_query.filter(SchoolClass.id.in_(class_ids))
-            subject_query = subject_query.filter(or_(Subject.class_id.in_(class_ids), Subject.class_id.is_(None)))
+            subject_query = subject_query.filter(Subject.class_id.in_(class_ids))
         if section_ids:
             section_query = section_query.filter(Section.id.in_(section_ids))
     teacher_query = async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True))
     if session_id is not None:
         teacher_query = teacher_query.filter(Teacher.academic_session_id == session_id)
     teachers = await teacher_query.order_by(Teacher.full_name.asc()).all()
-    return HomeworkMetaResponse(classes=[HomeworkMetaItem(id=item.id, name=item.name, extra=item.code) for item in await class_query.all()], sections=[HomeworkMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in await section_query.all()], subjects=[HomeworkMetaItem(id=item.id, name=item.name, extra=item.code) for item in await subject_query.all()], teachers=[HomeworkMetaItem(id=item.id, name=item.full_name, extra=item.employee_id) for item in teachers], current_academic_session_id=session.id if session else None)
+    return HomeworkMetaResponse(classes=[HomeworkMetaItem(id=item.id, name=item.name, extra=item.code) for item in await class_query.all()], sections=[HomeworkMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in await section_query.all()], subjects=[HomeworkMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in await subject_query.all()], teachers=[HomeworkMetaItem(id=item.id, name=item.full_name, extra=item.employee_id) for item in teachers], current_academic_session_id=session.id if session else None)
 
 @router.get('/assignments', response_model=list[HomeworkAssignmentRead])
 async def list_assignments(request: Request, class_id: int | None=Query(default=None), section_id: int | None=Query(default=None), subject_id: int | None=Query(default=None), search: str | None=Query(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):

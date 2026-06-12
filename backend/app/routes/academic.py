@@ -178,11 +178,14 @@ async def _replicate_previous_active_setup(
         Subject.is_active.is_(True),
     ).order_by(Subject.id.asc()).all()
     for old in subjects:
+        new_class_id = class_map.get(old.class_id) if old.class_id else None
+        if not new_class_id:
+            continue
         new = Subject(
             school_id=school_id,
             academic_session_id=target_session_id,
             department_id=dept_map.get(old.department_id) if old.department_id else None,
-            class_id=class_map.get(old.class_id) if old.class_id else None,
+            class_id=new_class_id,
             name=old.name,
             code=old.code,
             is_active=old.is_active,
@@ -526,13 +529,18 @@ async def delete_section(
 @router.get("/subjects", response_model=list[SubjectRead])
 async def list_subjects(
     request: Request,
+    class_id: int | None = Query(default=None),
     school_id: int = Depends(current_school_id),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
-    session_id = await selected_academic_session_id(db, school_id, request=request)
+    session_id = await selected_academic_session_id(db, school_id, request=request, current_user=current_user)
     query = async_query(db, Subject).filter(Subject.school_id == school_id)
     if session_id is not None:
         query = query.filter(Subject.academic_session_id == session_id)
+    if class_id is not None:
+        await _validate_class(db, class_id, school_id, session_id)
+        query = query.filter(Subject.class_id == class_id)
     return await query.order_by(Subject.id.desc()).all()
 
 
@@ -550,7 +558,7 @@ async def create_subject(
     data["academic_session_id"] = session_id
     item = Subject(school_id=current_user.school_id, **data)
     db.add(item)
-    await _commit_or_duplicate(db, "Subject already exists in this academic session")
+    await _commit_or_duplicate(db, "Subject already exists for this class in this academic session")
     await db.refresh(item)
     return item
 
@@ -573,10 +581,12 @@ async def update_subject(
     if "department_id" in values:
         await _validate_department(db, values.get("department_id"), current_user.school_id, session_id)
     if "class_id" in values:
+        if values.get("class_id") is None:
+            raise HTTPException(status_code=400, detail="Class is required for every subject")
         await _validate_class(db, values.get("class_id"), current_user.school_id, session_id)
     for key, value in values.items():
         setattr(item, key, value)
-    await _commit_or_duplicate(db, "Subject already exists in this academic session")
+    await _commit_or_duplicate(db, "Subject already exists for this class in this academic session")
     await db.refresh(item)
     return item
 

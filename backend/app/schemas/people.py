@@ -167,7 +167,7 @@ class TeacherRead(BaseModel):
 class TeacherSubjectCreate(BaseModel):
     academic_session_id: int | None = None
     subject_id: int
-    class_id: int | None = None
+    class_id: int
     section_id: int | None = None
 
 

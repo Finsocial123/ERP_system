@@ -110,8 +110,8 @@ async def _validate_entry_scope(db: AsyncSession, school_id: int, class_id: int,
         raise HTTPException(status_code=400, detail='Selected day is inactive')
     if period and (not period.is_active):
         raise HTTPException(status_code=400, detail='Selected period is inactive')
-    if subject and subject.class_id is not None and (subject.class_id != class_id):
-        raise HTTPException(status_code=400, detail='Selected subject is linked to another class')
+    if subject and subject.class_id != class_id:
+        raise HTTPException(status_code=400, detail='Selected subject does not belong to selected class')
     if teacher and (not teacher.is_active):
         raise HTTPException(status_code=400, detail='Selected teacher is inactive')
     if session and (not session.is_active):

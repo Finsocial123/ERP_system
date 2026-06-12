@@ -39,6 +39,14 @@ def _drop_postgres_constraints(engine, table_name: str, constraint_names: list[s
             conn.execute(text(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {name}"))
 
 
+def _drop_postgres_indexes(engine, index_names: list[str]) -> None:
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        for name in index_names:
+            conn.execute(text(f"DROP INDEX IF EXISTS {name}"))
+
+
 def _create_postgres_unique_indexes(engine) -> None:
     if engine.dialect.name != "postgresql":
         return
@@ -46,7 +54,7 @@ def _create_postgres_unique_indexes(engine) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_departments_school_session_name_unique ON departments (school_id, academic_session_id, lower(name)) WHERE academic_session_id IS NOT NULL",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_school_classes_school_session_name_unique ON school_classes (school_id, academic_session_id, lower(name)) WHERE academic_session_id IS NOT NULL",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_sections_school_session_class_name_unique ON sections (school_id, academic_session_id, class_id, lower(name)) WHERE academic_session_id IS NOT NULL",
-        "CREATE UNIQUE INDEX IF NOT EXISTS ix_subjects_school_session_name_unique ON subjects (school_id, academic_session_id, lower(name)) WHERE academic_session_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_subjects_school_session_class_name_unique ON subjects (school_id, academic_session_id, class_id, lower(name)) WHERE academic_session_id IS NOT NULL",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_students_school_session_admission_unique ON students (school_id, academic_session_id, admission_no) WHERE academic_session_id IS NOT NULL AND admission_no IS NOT NULL",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_teachers_school_session_employee_unique ON teachers (school_id, academic_session_id, employee_id) WHERE academic_session_id IS NOT NULL AND employee_id IS NOT NULL",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_teacher_subjects_session_scope_unique ON teacher_subjects (school_id, academic_session_id, teacher_id, subject_id, class_id, COALESCE(section_id, 0)) WHERE academic_session_id IS NOT NULL",
@@ -147,10 +155,11 @@ def _ensure_academic_session_scoping(engine) -> None:
     _drop_postgres_constraints(engine, "departments", ["uq_department_school_name"])
     _drop_postgres_constraints(engine, "school_classes", ["uq_class_school_name"])
     _drop_postgres_constraints(engine, "sections", ["uq_section_school_class_name"])
-    _drop_postgres_constraints(engine, "subjects", ["uq_subject_school_name"])
+    _drop_postgres_constraints(engine, "subjects", ["uq_subject_school_name", "uq_subject_school_session_name"])
     _drop_postgres_constraints(engine, "students", ["uq_student_school_admission_no"])
     _drop_postgres_constraints(engine, "teachers", ["uq_teacher_school_employee_id"])
     _drop_postgres_constraints(engine, "teacher_subjects", ["uq_teacher_subject_scope"])
+    _drop_postgres_indexes(engine, ["ix_subjects_school_session_name_unique"])
     _create_postgres_unique_indexes(engine)
 
 def run_startup_migrations(engine) -> None:

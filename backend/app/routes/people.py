@@ -513,10 +513,12 @@ async def assign_teacher_subject(teacher_id: int, payload: TeacherSubjectCreate,
     session_id = await writable_selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=payload.academic_session_id)
     teacher = await _get_or_404(db, Teacher, teacher_id, school_id)
     await assert_item_session_is_writable(db, school_id, teacher)
-    await _validate_same_school(db, Subject, payload.subject_id, school_id, 'Subject')
+    subject = await _validate_same_school(db, Subject, payload.subject_id, school_id, 'Subject')
     await _validate_same_school(db, SchoolClass, payload.class_id, school_id, 'Class')
     await _validate_same_school(db, Section, payload.section_id, school_id, 'Section')
     await _validate_section_belongs_to_class(db, payload.section_id, payload.class_id, school_id)
+    if subject and subject.class_id != payload.class_id:
+        raise HTTPException(status_code=400, detail='Selected subject does not belong to selected class')
     data = payload.model_dump()
     data['academic_session_id'] = session_id
     assignment = TeacherSubject(school_id=school_id, teacher_id=teacher_id, **data)

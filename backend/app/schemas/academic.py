@@ -107,7 +107,7 @@ class SubjectCreate(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     code: str | None = None
     department_id: int | None = None
-    class_id: int | None = None
+    class_id: int
 
 
 class SubjectUpdate(BaseModel):

@@ -329,8 +329,8 @@ async def _validate_exam_subject_scope(
     subject = await _get_or_404(db, Subject, subject_id, school_id, "Subject")
     teacher = await _get_or_404(db, Teacher, teacher_id, school_id, "Teacher")
 
-    if subject and subject.class_id is not None and subject.class_id != exam.class_id:
-        raise HTTPException(status_code=400, detail="Selected subject is linked to another class")
+    if subject and subject.class_id != exam.class_id:
+        raise HTTPException(status_code=400, detail="Selected subject does not belong to selected exam class")
 
     if teacher and not teacher.is_active:
         raise HTTPException(status_code=400, detail="Selected teacher is inactive")

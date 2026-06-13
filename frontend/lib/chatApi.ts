@@ -1,4 +1,4 @@
-import { API_BASE, apiFetch, getToken } from "@/lib/api";
+import { apiFetch, authFetch } from "@/lib/api";
 import type { ChatMessage, ChatSession } from "@/types";
 
 export async function createChatSession(): Promise<ChatSession> {
@@ -44,13 +44,10 @@ export async function streamLessonChatMessage(params: {
   signal?: AbortSignal;
   callbacks: StreamCallbacks;
 }): Promise<void> {
-  const token = getToken();
-
-  const res = await fetch(`${API_BASE}/sessions/${params.sessionId}/messages`, {
+  const res = await authFetch(`/sessions/${params.sessionId}/messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify({
       content: params.content,

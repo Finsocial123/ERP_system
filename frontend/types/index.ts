@@ -57,6 +57,8 @@
   export type AuthResponse = {
     access_token: string;
     token_type: string;
+    expires_in?: number | null;
+    refresh_expires_in?: number | null;
     user: User;
     school?: School | null;
   };

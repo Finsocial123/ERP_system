@@ -29,9 +29,11 @@ import {
 
 import {
   ACADEMIC_SESSION_CHANGED_EVENT,
+  AUTH_LOGGED_OUT_EVENT,
   AUTH_PROFILE_UPDATED_EVENT,
+  AUTH_TOKEN_REFRESHED_EVENT,
   apiFetch,
-  clearAuth,
+  logoutUser,
   dashboardPathForRole,
   fileUrl,
   getSavedAuth,
@@ -271,6 +273,20 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener(AUTH_PROFILE_UPDATED_EVENT, onAuthProfileUpdated);
   }, []);
 
+  useEffect(() => {
+    const onAuthTokenRefreshed = (event: Event) => {
+      const updated = (event as CustomEvent<AuthResponse>).detail;
+      setAuth((prev) => (prev ? { ...prev, access_token: updated.access_token } : prev));
+    };
+    const onLoggedOut = () => router.replace("/login");
+    window.addEventListener(AUTH_TOKEN_REFRESHED_EVENT, onAuthTokenRefreshed);
+    window.addEventListener(AUTH_LOGGED_OUT_EVENT, onLoggedOut);
+    return () => {
+      window.removeEventListener(AUTH_TOKEN_REFRESHED_EVENT, onAuthTokenRefreshed);
+      window.removeEventListener(AUTH_LOGGED_OUT_EVENT, onLoggedOut);
+    };
+  }, [router]);
+
   const visibleNav = useMemo(() => {
     if (!auth) return [];
     return navItems.filter((item) => item.roles.includes(auth.user.role));
@@ -346,7 +362,7 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
   };
 
 
-  const logout = () => { clearAuth(); router.replace("/login"); };
+  const logout = async () => { await logoutUser(); router.replace("/login"); };
 
   if (!auth) {
     return (

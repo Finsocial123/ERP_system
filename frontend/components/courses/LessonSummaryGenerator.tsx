@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { BookMarked, Loader2, AlertCircle, CheckCircle } from "lucide-react";
 import type { LMSLesson } from "@/types";
-import { API_BASE } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 
 type Props = {
   lesson: LMSLesson;
@@ -32,18 +32,7 @@ export default function LessonSummaryGenerator({
     setState("loading");
     setError("");
     try {
-      const res = await fetch(`${API_BASE}/lessons/${lesson.id}/summary`, {
-        method: "GET",
-        headers: { "Content-Type": "application/json" },
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.detail || "Failed to fetch summary");
-      }
-
-      const data = await res.json();
-      console.log(data)
+      const data = await apiFetch<SummaryContent>(`/lessons/${lesson.id}/summary`);
       setSummary(data);
       setState("completed");
     } catch (err) {

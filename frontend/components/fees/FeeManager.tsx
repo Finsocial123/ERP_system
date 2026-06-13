@@ -1,998 +1,1936 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CalendarDays, CheckCircle2, Clock, Edit2, Eye, Loader2, MapPin, Plus, RefreshCcw, Save, Search, Trash2 } from "lucide-react";
+import { Loader2, Plus, ReceiptText, RefreshCw, Trash2 } from "lucide-react";
 
 import { AppSection } from "@/components/CrudManager";
 import { Button, Card, Input, Label, Textarea } from "@/components/ui";
-import { apiFetch } from "@/lib/api";
-import type { ClassResult, Exam, ExamMark, ExamMeta, ExamSubject, ExamTimetableItem, SubjectResult } from "@/types";
+import { ACADEMIC_SESSION_CHANGED_EVENT, apiFetch } from "@/lib/api";
+import type {
+  DailyCollectionReport,
+  FeeAssignment,
+  FeeCategory,
+  FeeDashboard,
+  FeeExpense,
+  FeeMeta,
+  FeePayment,
+  FeeReceipt,
+  FeeStructure,
+  StudentFeeRecord,
+} from "@/types";
 
-type ExamForm = {
+type TabKey = "dashboard" | "categories" | "structures" | "assign" | "records" | "payments" | "expenses";
+
+type CategoryForm = {
   name: string;
-  exam_type: string;
+  code: string;
   description: string;
+};
+
+type StructureForm = {
+  name: string;
+  category_id: string;
+  academic_session_id: string;
+  amount: string;
+  due_date: string;
+  description: string;
+};
+
+type AssignmentForm = {
+  fee_structure_id: string;
+  academic_session_id: string;
   class_id: string;
   section_id: string;
+  student_id: string;
+  assigned_amount: string;
+  due_date: string;
+  note: string;
+};
+
+type RecordForm = {
+  student_id: string;
+  fee_structure_id: string;
   academic_session_id: string;
-  start_date: string;
-  end_date: string;
+  title: string;
+  amount: string;
+  discount_amount: string;
+  fine_amount: string;
+  due_date: string;
+  note: string;
 };
 
-type SubjectForm = {
-  subject_id: string;
-  teacher_id: string;
-  max_marks: string;
-  pass_marks: string;
-  exam_date: string;
-  start_time: string;
-  end_time: string;
-  room: string;
-  timetable_note: string;
+type PaymentForm = {
+  student_fee_record_id: string;
+  amount: string;
+  payment_date: string;
+  payment_mode: string;
+  reference_no: string;
+  note: string;
 };
 
-type MarkDraft = {
-  student_id: number;
-  marks_obtained: string;
-  is_absent: boolean;
-  remarks: string;
+type ExpenseForm = {
+  title: string;
+  category: string;
+  amount: string;
+  expense_date: string;
+  payment_mode: string;
+  vendor_name: string;
+  reference_no: string;
+  note: string;
 };
 
-const emptyExam: ExamForm = {
-  name: "",
-  exam_type: "",
-  description: "",
+type RecordFilters = {
+  class_id: string;
+  section_id: string;
+  category_id: string;
+  fee_type: string;
+  status: string;
+  search: string;
+};
+
+const tabs: { key: TabKey; label: string }[] = [
+  { key: "dashboard", label: "Dashboard" },
+  { key: "categories", label: "Categories" },
+  { key: "structures", label: "Structures" },
+  { key: "assign", label: "Assign Fee" },
+  { key: "records", label: "Student Records" },
+  { key: "payments", label: "Payments" },
+  { key: "expenses", label: "Expenses" },
+];
+
+const inputClass =
+  "w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm outline-none transition focus:border-slate-400";
+
+const paymentModes = ["CASH", "UPI", "CARD", "BANK_TRANSFER", "CHEQUE", "ONLINE", "OTHER"];
+const recordStatusOptions = ["PENDING", "PARTIAL", "PAID", "OVERDUE", "WAIVED"];
+
+const emptyRecordFilters: RecordFilters = {
   class_id: "",
   section_id: "",
-  academic_session_id: "",
-  start_date: "",
-  end_date: "",
+  category_id: "",
+  fee_type: "",
+  status: "",
+  search: "",
 };
 
-const emptySubject: SubjectForm = {
-  subject_id: "",
-  teacher_id: "",
-  max_marks: "100",
-  pass_marks: "33",
-  exam_date: "",
-  start_time: "09:00",
-  end_time: "12:00",
-  room: "",
-  timetable_note: "",
-};
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
 
-function SelectBox({ value, onChange, children, required = false }: { value: string; onChange: (value: string) => void; children: React.ReactNode; required?: boolean }) {
+function money(value?: number | null) {
+  return `₹${Number(value || 0).toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function numberOrNull(value: string) {
+  return value === "" ? null : Number(value);
+}
+
+function Select({
+  value,
+  onChange,
+  children,
+  required = false,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  children: React.ReactNode;
+  required?: boolean;
+}) {
   return (
     <select
+      className={inputClass}
       value={value}
       onChange={(event) => onChange(event.target.value)}
       required={required}
-      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm outline-none transition focus:border-slate-400"
     >
       {children}
     </select>
   );
 }
 
-function statusClass(status: string) {
-  if (status === "PASS" || status === "PUBLISHED" || status === "MANUAL") return "bg-emerald-50 text-emerald-700";
-  if (status === "FAIL" || status === "ABSENT") return "bg-red-50 text-red-700";
-  if (status === "AUTO_FROM_EXAM_START") return "bg-sky-50 text-sky-700";
-  return "bg-amber-50 text-amber-700";
+function Empty({ text }: { text: string }) {
+  return <p className="p-5 text-sm text-slate-500">{text}</p>;
 }
 
-function displayDate(value?: string | null) {
-  if (!value) return "-";
-  return value.slice(0, 10);
-}
-
-function displayTime(value?: string | null) {
-  if (!value) return "-";
-  return value.slice(0, 5);
-}
-
-function numberOrNull(value: string) {
-  if (value.trim() === "") return null;
-  return Number(value);
-}
-
-function LoadingTableRow({ colSpan, text }: { colSpan: number; text: string }) {
+function ScopedLoader({ text = "Refreshing data..." }: { text?: string }) {
   return (
-    <tr>
-      <td colSpan={colSpan} className="px-4 py-3">
-        <span className="mx-auto flex w-fit items-center gap-2 rounded-full bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-600">
-          <Loader2 size={16} className="animate-spin" />
-          {text}
-        </span>
-      </td>
-    </tr>
+    <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-white/75 backdrop-blur-[1px]">
+      <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm">
+        <Loader2 size={16} className="animate-spin" />
+        {text}
+      </div>
+    </div>
   );
 }
 
 function InlineLoader({ text }: { text: string }) {
   return (
-    <span className="inline-flex items-center gap-2 rounded-full bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-600">
-      <Loader2 size={16} className="animate-spin" />
+    <span className="inline-flex items-center gap-2 text-sm font-medium text-slate-500">
+      <Loader2 size={15} className="animate-spin" />
       {text}
     </span>
   );
 }
 
-export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teacher" }) {
-  const [tab, setTab] = useState<"exams" | "subjects" | "timetable" | "marks" | "reports">("exams");
-  const [meta, setMeta] = useState<ExamMeta | null>(null);
-  const [exams, setExams] = useState<Exam[]>([]);
-  const [selectedExamId, setSelectedExamId] = useState("");
-  const [examSubjects, setExamSubjects] = useState<ExamSubject[]>([]);
-  const [examTimetable, setExamTimetable] = useState<ExamTimetableItem[]>([]);
-  const [selectedSubjectId, setSelectedSubjectId] = useState("");
-  const [marks, setMarks] = useState<ExamMark[]>([]);
-  const [markDrafts, setMarkDrafts] = useState<Record<number, MarkDraft>>({});
-  const [classResult, setClassResult] = useState<ClassResult | null>(null);
-  const [subjectResult, setSubjectResult] = useState<SubjectResult | null>(null);
-  const [examForm, setExamForm] = useState<ExamForm>(emptyExam);
-  const [subjectForm, setSubjectForm] = useState<SubjectForm>(emptySubject);
-  const [editingExam, setEditingExam] = useState<Exam | null>(null);
-  const [editingSubject, setEditingSubject] = useState<ExamSubject | null>(null);
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [autoStartTime, setAutoStartTime] = useState("09:00");
-  const [autoEndTime, setAutoEndTime] = useState("12:00");
-  const [autoRoom, setAutoRoom] = useState("");
-  const [autoOverride, setAutoOverride] = useState(false);
+function StatusBadge({ status }: { status: string }) {
+  const tone =
+    status === "PAID"
+      ? "bg-emerald-50 text-emerald-700"
+      : status === "PARTIAL"
+        ? "bg-amber-50 text-amber-700"
+        : status === "OVERDUE"
+          ? "bg-red-50 text-red-700"
+          : status === "WAIVED"
+            ? "bg-sky-50 text-sky-700"
+            : status === "ACTIVE"
+              ? "bg-emerald-50 text-emerald-700"
+              : status === "INACTIVE"
+                ? "bg-red-50 text-red-700"
+                : "bg-slate-100 text-slate-700";
+
+  return <span className={`rounded-full px-2 py-1 text-xs font-semibold ${tone}`}>{status}</span>;
+}
+
+function SummaryCard({ label, value, helper }: { label: string; value: string | number; helper: string }) {
+  const rawValue = String(value);
+  const isLong = rawValue.length > 10;
+
+  return (
+    <Card>
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</p>
+      <p className={`mt-2 font-bold text-slate-900 break-all leading-tight ${isLong ? "text-lg" : "text-2xl"}`}>
+        {value}
+      </p>
+      <p className="mt-1 text-xs text-slate-500">{helper}</p>
+    </Card>
+  );
+}
+
+export default function FeeManager() {
+  const [activeTab, setActiveTab] = useState<TabKey>("dashboard");
+
+  const [meta, setMeta] = useState<FeeMeta | null>(null);
+  const [dashboard, setDashboard] = useState<FeeDashboard | null>(null);
+  const [dailyReport, setDailyReport] = useState<DailyCollectionReport | null>(null);
+  const [reportDate, setReportDate] = useState(today());
+
+  const [categories, setCategories] = useState<FeeCategory[]>([]);
+  const [structures, setStructures] = useState<FeeStructure[]>([]);
+  const [assignments, setAssignments] = useState<FeeAssignment[]>([]);
+  const [records, setRecords] = useState<StudentFeeRecord[]>([]);
+  const [payments, setPayments] = useState<FeePayment[]>([]);
+  const [expenses, setExpenses] = useState<FeeExpense[]>([]);
+  const [lastReceipt, setLastReceipt] = useState<FeeReceipt | null>(null);
+
+  const [recordFilters, setRecordFilters] = useState<RecordFilters>(emptyRecordFilters);
+
   const [loading, setLoading] = useState(true);
-  const [examListLoading, setExamListLoading] = useState(false);
-  const [subjectListLoading, setSubjectListLoading] = useState(false);
-  const [timetableLoading, setTimetableLoading] = useState(false);
-  const [marksLoading, setMarksLoading] = useState(false);
-  const [reportsLoading, setReportsLoading] = useState(false);
+  const [tabLoading, setTabLoading] = useState<Partial<Record<TabKey, boolean>>>({});
+  const [reportLoading, setReportLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
+  const [message, setMessage] = useState("");
 
-  const selectedExam = useMemo(() => exams.find((item) => String(item.id) === selectedExamId) || null, [exams, selectedExamId]);
-  const selectedSubject = useMemo(() => examSubjects.find((item) => String(item.id) === selectedSubjectId) || null, [examSubjects, selectedSubjectId]);
+  const [loadedTabs, setLoadedTabs] = useState<Partial<Record<TabKey, boolean>>>({});
 
-  const filteredSections = useMemo(() => {
-    if (!meta) return [];
-    if (!examForm.class_id) return meta.sections;
-    return meta.sections.filter((item) => item.extra === examForm.class_id);
-  }, [examForm.class_id, meta]);
+  const [categoryForm, setCategoryForm] = useState<CategoryForm>({
+    name: "",
+    code: "",
+    description: "",
+  });
 
-  const filteredSubjects = useMemo(() => {
-    if (!meta) return [];
-    const examClass = selectedExam?.class_id ? String(selectedExam.class_id) : examForm.class_id;
-    if (!examClass) return [];
-    return meta.subjects.filter((item) => item.extra === examClass);
-  }, [examForm.class_id, meta, selectedExam?.class_id]);
+  const [structureForm, setStructureForm] = useState<StructureForm>({
+    name: "",
+    category_id: "",
+    academic_session_id: "",
+    amount: "",
+    due_date: "",
+    description: "",
+  });
 
-  const loadData = async (showPageLoader = false) => {
-    const shouldShowPageLoader = showPageLoader || !meta;
-    if (shouldShowPageLoader) {
-      setLoading(true);
-    } else {
-      setExamListLoading(true);
-    }
+  const [assignmentForm, setAssignmentForm] = useState<AssignmentForm>({
+    fee_structure_id: "",
+    academic_session_id: "",
+    class_id: "",
+    section_id: "",
+    student_id: "",
+    assigned_amount: "",
+    due_date: "",
+    note: "",
+  });
+
+  const [recordForm, setRecordForm] = useState<RecordForm>({
+    student_id: "",
+    fee_structure_id: "",
+    academic_session_id: "",
+    title: "",
+    amount: "",
+    discount_amount: "0",
+    fine_amount: "0",
+    due_date: "",
+    note: "",
+  });
+
+  const [paymentForm, setPaymentForm] = useState<PaymentForm>({
+    student_fee_record_id: "",
+    amount: "",
+    payment_date: today(),
+    payment_mode: "CASH",
+    reference_no: "",
+    note: "",
+  });
+
+  const [expenseForm, setExpenseForm] = useState<ExpenseForm>({
+    title: "",
+    category: "",
+    amount: "",
+    expense_date: today(),
+    payment_mode: "CASH",
+    vendor_name: "",
+    reference_no: "",
+    note: "",
+  });
+
+  const selectedPaymentRecord = useMemo(
+    () => records.find((record) => String(record.id) === paymentForm.student_fee_record_id),
+    [paymentForm.student_fee_record_id, records]
+  );
+
+  const markLoaded = (tab: TabKey) => {
+    setLoadedTabs((previous) => ({ ...previous, [tab]: true }));
+  };
+
+  const setTabRefreshing = (tab: TabKey, value: boolean) => {
+    setTabLoading((previous) => ({ ...previous, [tab]: value }));
+  };
+
+  const currentSessionQuery = (metaData: FeeMeta | null = meta) => {
+    const sessionId = metaData?.current_academic_session_id;
+    return sessionId ? `academic_session_id=${sessionId}` : "";
+  };
+
+  const recordFilterQuery = (filters: RecordFilters = recordFilters) => {
+    const params = new URLSearchParams();
+
+    if (filters.class_id) params.set("class_id", filters.class_id);
+    if (filters.section_id) params.set("section_id", filters.section_id);
+    if (filters.category_id) params.set("category_id", filters.category_id);
+    if (filters.fee_type) params.set("fee_type", filters.fee_type);
+    if (filters.status) params.set("status", filters.status);
+    if (filters.search.trim()) params.set("search", filters.search.trim());
+
+    return params.toString();
+  };
+
+  const recordsPath = (filters: RecordFilters = recordFilters) => {
+    const query = currentSessionQuery();
+    const extra = ["limit=250", recordFilterQuery(filters)].filter(Boolean).join("&");
+    const params = [query, extra].filter(Boolean).join("&");
+
+    return params ? `/fees/records?${params}` : "/fees/records";
+  };
+
+  const loadDashboardData = async (metaData: FeeMeta | null = meta) => {
+    const query = currentSessionQuery(metaData);
+    const separator = query ? "&" : "";
+
+    const [dashboardData, reportData] = await Promise.all([
+      apiFetch<FeeDashboard>(`/fees/dashboard${query ? `?${query}` : ""}`),
+      apiFetch<DailyCollectionReport>(`/fees/daily-collection?${query}${separator}report_date=${reportDate}`),
+    ]);
+
+    setDashboard(dashboardData);
+    setDailyReport(reportData);
+    markLoaded("dashboard");
+  };
+
+  const loadTabData = async (tab: TabKey = activeTab, force = false) => {
+    if (!force && loadedTabs[tab]) return;
+
+    setTabRefreshing(tab, true);
     setError("");
+
     try {
-      const params = new URLSearchParams();
-      if (search.trim()) params.set("q", search.trim());
-      if (statusFilter) params.set("status", statusFilter);
-      const [metaData, examData] = await Promise.all([
-        apiFetch<ExamMeta>("/exams/meta"),
-        apiFetch<Exam[]>(`/exams${params.toString() ? `?${params.toString()}` : ""}`),
-      ]);
+      const query = currentSessionQuery();
+
+      const withQuery = (path: string, extra = "") => {
+        const params = [query, extra].filter(Boolean).join("&");
+        return params ? `${path}?${params}` : path;
+      };
+
+      if (tab === "dashboard") {
+        await loadDashboardData();
+      } else if (tab === "categories") {
+        setCategories(await apiFetch<FeeCategory[]>("/fees/categories"));
+        markLoaded(tab);
+      } else if (tab === "structures") {
+        setStructures(await apiFetch<FeeStructure[]>(withQuery("/fees/structures")));
+        markLoaded(tab);
+      } else if (tab === "assign") {
+        setAssignments(await apiFetch<FeeAssignment[]>(withQuery("/fees/assignments")));
+        markLoaded(tab);
+      } else if (tab === "records") {
+        setRecords(await apiFetch<StudentFeeRecord[]>(recordsPath()));
+        markLoaded(tab);
+      } else if (tab === "payments") {
+        const [recordsData, paymentsData] = await Promise.all([
+          apiFetch<StudentFeeRecord[]>(withQuery("/fees/records", "status=PENDING&limit=250")),
+          apiFetch<FeePayment[]>(withQuery("/fees/payments", "limit=100")),
+        ]);
+
+        setRecords(recordsData);
+        setPayments(paymentsData);
+        markLoaded(tab);
+      } else if (tab === "expenses") {
+        setExpenses(await apiFetch<FeeExpense[]>(withQuery("/fees/expenses", "limit=100")));
+        markLoaded(tab);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load fee data");
+    } finally {
+      setTabRefreshing(tab, false);
+    }
+  };
+
+  const loadInitial = async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const metaData = await apiFetch<FeeMeta>("/fees/meta");
+
       setMeta(metaData);
-      setExams(examData);
-      setExamForm((prev) => ({ ...prev, academic_session_id: prev.academic_session_id || String(metaData.current_academic_session_id || "") }));
-      if (!selectedExamId && examData.length) setSelectedExamId(String(examData[0].id));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load exams");
-    } finally {
-      if (shouldShowPageLoader) {
-        setLoading(false);
-      } else {
-        setExamListLoading(false);
-      }
-    }
-  };
 
-  const loadSubjects = async (examId: string) => {
-    if (!examId) {
-      setExamSubjects([]);
-      setExamTimetable([]);
-      setSelectedSubjectId("");
-      return;
-    }
-    setSubjectListLoading(true);
-    try {
-      const data = await apiFetch<ExamSubject[]>(`/exams/${examId}/subjects`);
-      setExamSubjects(data);
-      setSelectedSubjectId((prev) => (prev && data.some((item) => String(item.id) === prev) ? prev : data.length ? String(data[0].id) : ""));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load exam subjects");
-    } finally {
-      setSubjectListLoading(false);
-    }
-  };
+      setStructureForm((prev) => ({
+        ...prev,
+        academic_session_id: prev.academic_session_id || String(metaData.current_academic_session_id || ""),
+      }));
 
-  const loadTimetable = async () => {
-    if (!selectedExamId) {
-      setExamTimetable([]);
-      return;
-    }
-    setTimetableLoading(true);
-    try {
-      const data = await apiFetch<ExamTimetableItem[]>(`/exams/${selectedExamId}/timetable`);
-      setExamTimetable(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load exam timetable");
-    } finally {
-      setTimetableLoading(false);
-    }
-  };
+      setAssignmentForm((prev) => ({
+        ...prev,
+        academic_session_id: prev.academic_session_id || String(metaData.current_academic_session_id || ""),
+      }));
 
-  const loadMarks = async () => {
-    if (!selectedExamId || !selectedSubjectId) {
-      setMarks([]);
-      setMarkDrafts({});
-      return;
-    }
-    setMarksLoading(true);
-    try {
-      const data = await apiFetch<ExamMark[]>(`/exams/${selectedExamId}/marks?exam_subject_id=${selectedSubjectId}`);
-      setMarks(data);
-      const drafts: Record<number, MarkDraft> = {};
-      data.forEach((item) => {
-        drafts[item.student_id] = {
-          student_id: item.student_id,
-          marks_obtained: item.marks_obtained === null || item.marks_obtained === undefined ? "" : String(item.marks_obtained),
-          is_absent: Boolean(item.is_absent),
-          remarks: item.remarks || "",
-        };
-      });
-      setMarkDrafts(drafts);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load marks");
-    } finally {
-      setMarksLoading(false);
-    }
-  };
+      setRecordForm((prev) => ({
+        ...prev,
+        academic_session_id: prev.academic_session_id || String(metaData.current_academic_session_id || ""),
+      }));
 
-  const loadReports = async () => {
-    if (!selectedExamId) {
-      setClassResult(null);
-      setSubjectResult(null);
-      return;
-    }
-    setReportsLoading(true);
-    try {
-      const classData = await apiFetch<ClassResult>(`/exams/${selectedExamId}/class-result`);
-      setClassResult(classData);
-      if (selectedSubjectId) {
-        const subjectData = await apiFetch<SubjectResult>(`/exams/${selectedExamId}/subject-result/${selectedSubjectId}`);
-        setSubjectResult(subjectData);
-      } else {
-        setSubjectResult(null);
-      }
+      await loadDashboardData(metaData);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load reports");
+      setError(err instanceof Error ? err.message : "Failed to load fee module");
     } finally {
-      setReportsLoading(false);
+      setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadData(true);
+    loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    loadSubjects(selectedExamId);
+    const onSessionChanged = () => {
+      setLoadedTabs({});
+      setRecordFilters(emptyRecordFilters);
+      setRecords([]);
+      setPayments([]);
+      setAssignments([]);
+      setStructures([]);
+
+      void (async () => {
+        await loadInitial();
+        await loadTabData(activeTab, true);
+      })();
+    };
+
+    window.addEventListener(ACADEMIC_SESSION_CHANGED_EVENT, onSessionChanged);
+
+    return () => window.removeEventListener(ACADEMIC_SESSION_CHANGED_EVENT, onSessionChanged);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedExamId]);
+  }, [activeTab]);
 
   useEffect(() => {
-    if (tab === "timetable") loadTimetable();
-    if (tab === "marks") loadMarks();
-    if (tab === "reports") loadReports();
+    if (!meta) return;
+
+    loadTabData(activeTab);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, selectedExamId, selectedSubjectId]);
+  }, [activeTab, meta?.current_academic_session_id]);
 
-  const resetExam = () => {
-    setExamForm({ ...emptyExam, academic_session_id: String(meta?.current_academic_session_id || "") });
-    setEditingExam(null);
-  };
-
-  const resetSubject = () => {
-    setSubjectForm(emptySubject);
-    setEditingSubject(null);
-  };
-
-  const saveExam = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setSaving(true);
+  const refreshReport = async () => {
+    setReportLoading(true);
     setError("");
-    setSuccess("");
-    const payload = {
-      name: examForm.name.trim(),
-      exam_type: examForm.exam_type.trim() || null,
-      description: examForm.description.trim() || null,
-      class_id: Number(examForm.class_id),
-      section_id: examForm.section_id ? Number(examForm.section_id) : null,
-      academic_session_id: examForm.academic_session_id ? Number(examForm.academic_session_id) : null,
-      start_date: examForm.start_date || null,
-      end_date: examForm.end_date || null,
-    };
+
     try {
-      const saved = await apiFetch<Exam>(editingExam ? `/exams/${editingExam.id}` : "/exams", {
-        method: editingExam ? "PUT" : "POST",
-        body: JSON.stringify(payload),
-      });
-      setSuccess(editingExam ? "Exam updated successfully" : "Exam created successfully");
-      setSelectedExamId(String(saved.id));
-      resetExam();
-      await loadData();
+      const query = currentSessionQuery();
+      const separator = query ? "&" : "";
+
+      setDailyReport(
+        await apiFetch<DailyCollectionReport>(`/fees/daily-collection?${query}${separator}report_date=${reportDate}`)
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save exam");
+      setError(err instanceof Error ? err.message : "Failed to load daily report");
     } finally {
-      setSaving(false);
+      setReportLoading(false);
     }
-  };
-
-  const editExam = (exam: Exam) => {
-    setEditingExam(exam);
-    setExamForm({
-      name: exam.name,
-      exam_type: exam.exam_type || "",
-      description: exam.description || "",
-      class_id: String(exam.class_id),
-      section_id: exam.section_id ? String(exam.section_id) : "",
-      academic_session_id: exam.academic_session_id ? String(exam.academic_session_id) : "",
-      start_date: exam.start_date || "",
-      end_date: exam.end_date || "",
-    });
-    setTab("exams");
-  };
-
-  const deleteExam = async (exam: Exam) => {
-    if (!confirm(`Delete exam ${exam.name}?`)) return;
-    setError("");
-    setSuccess("");
-    try {
-      await apiFetch(`/exams/${exam.id}`, { method: "DELETE" });
-      if (selectedExamId === String(exam.id)) setSelectedExamId("");
-      setSuccess("Exam deleted successfully");
-      await loadData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete exam");
-    }
-  };
-
-  const publishToggle = async (exam: Exam) => {
-    setError("");
-    setSuccess("");
-    try {
-      const action = exam.result_status === "PUBLISHED" ? "unpublish" : "publish";
-      await apiFetch(`/exams/${exam.id}/${action}`, { method: "POST" });
-      setSuccess(action === "publish" ? "Result published successfully" : "Result moved back to draft");
-      await loadData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update result status");
-    }
-  };
-
-  const saveSubject = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!selectedExamId) {
-      setError("Select an exam first");
-      return;
-    }
-    setSaving(true);
-    setError("");
-    setSuccess("");
-    const payload = {
-      subject_id: Number(subjectForm.subject_id),
-      teacher_id: subjectForm.teacher_id ? Number(subjectForm.teacher_id) : null,
-      max_marks: Number(subjectForm.max_marks),
-      pass_marks: Number(subjectForm.pass_marks),
-      exam_date: subjectForm.exam_date || null,
-      start_time: subjectForm.start_time || null,
-      end_time: subjectForm.end_time || null,
-      room: subjectForm.room.trim() || null,
-      timetable_note: subjectForm.timetable_note.trim() || null,
-    };
-    try {
-      const saved = await apiFetch<ExamSubject>(editingSubject ? `/exams/${selectedExamId}/subjects/${editingSubject.id}` : `/exams/${selectedExamId}/subjects`, {
-        method: editingSubject ? "PUT" : "POST",
-        body: JSON.stringify(payload),
-      });
-      setSelectedSubjectId(String(saved.id));
-      setSuccess(editingSubject ? "Exam subject and timetable updated successfully" : "Exam subject added to timetable successfully");
-      resetSubject();
-      await loadSubjects(selectedExamId);
-      await loadTimetable();
-      await loadData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save exam subject");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const editSubject = (subject: ExamSubject) => {
-    setEditingSubject(subject);
-    setSubjectForm({
-      subject_id: String(subject.subject_id),
-      teacher_id: subject.teacher_id ? String(subject.teacher_id) : "",
-      max_marks: String(subject.max_marks),
-      pass_marks: String(subject.pass_marks),
-      exam_date: subject.exam_date || "",
-      start_time: subject.start_time ? subject.start_time.slice(0, 5) : "09:00",
-      end_time: subject.end_time ? subject.end_time.slice(0, 5) : "12:00",
-      room: subject.room || "",
-      timetable_note: subject.timetable_note || "",
-    });
-    setTab("subjects");
-  };
-
-  const deleteSubject = async (subject: ExamSubject) => {
-    if (!selectedExamId || !confirm(`Remove ${subject.subject_name || "subject"} from this exam?`)) return;
-    setError("");
-    setSuccess("");
-    try {
-      await apiFetch(`/exams/${selectedExamId}/subjects/${subject.id}`, { method: "DELETE" });
-      if (selectedSubjectId === String(subject.id)) setSelectedSubjectId("");
-      setSuccess("Exam subject removed successfully");
-      await loadSubjects(selectedExamId);
-      await loadTimetable();
-      await loadData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to remove subject");
-    }
-  };
-
-  const autoScheduleTimetable = async () => {
-    if (!selectedExamId) {
-      setError("Select an exam first");
-      return;
-    }
-    setSaving(true);
-    setError("");
-    setSuccess("");
-    const params = new URLSearchParams({
-      start_time: autoStartTime,
-      end_time: autoEndTime,
-      override_existing: String(autoOverride),
-    });
-    if (autoRoom.trim()) params.set("room", autoRoom.trim());
-    try {
-      await apiFetch<ExamSubject[]>(`/exams/${selectedExamId}/auto-schedule-timetable?${params.toString()}`, { method: "POST" });
-      setSuccess("Exam timetable generated from exam dates successfully");
-      await loadSubjects(selectedExamId);
-      await loadTimetable();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to auto schedule timetable");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const saveMarks = async () => {
-    if (!selectedExamId || !selectedSubjectId) return;
-    setSaving(true);
-    setError("");
-    setSuccess("");
-    const payload = {
-      exam_subject_id: Number(selectedSubjectId),
-      marks: Object.values(markDrafts).map((draft) => ({
-        student_id: draft.student_id,
-        marks_obtained: draft.is_absent ? null : numberOrNull(draft.marks_obtained),
-        is_absent: draft.is_absent,
-        remarks: draft.remarks.trim() || null,
-      })),
-    };
-    try {
-      await apiFetch(`/exams/${selectedExamId}/marks/bulk`, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      setSuccess("Marks saved successfully");
-      await loadMarks();
-      await loadReports();
-      await loadData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save marks");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const updateDraft = (studentId: number, changes: Partial<MarkDraft>) => {
-    setMarkDrafts((prev) => ({
-      ...prev,
-      [studentId]: { ...prev[studentId], student_id: studentId, ...changes },
-    }));
-  };
-
-  const applySearch = async (event: React.FormEvent) => {
-    event.preventDefault();
-    await loadData();
   };
 
   const refreshCurrentTab = async () => {
-    if (tab === "exams") {
-      await loadData();
-      return;
-    }
-
-    const tasks: Promise<void>[] = [loadData()];
-    if (tab === "subjects") tasks.push(loadSubjects(selectedExamId));
-    if (tab === "timetable") tasks.push(loadTimetable());
-    if (tab === "marks") tasks.push(loadMarks());
-    if (tab === "reports") tasks.push(loadReports());
-    await Promise.all(tasks);
+    await loadTabData(activeTab, true);
   };
 
-  const moduleReady = Boolean(meta);
-  const isRefreshing = examListLoading || subjectListLoading || timetableLoading || marksLoading || reportsLoading;
-  const selectedExamLabel = selectedExam ? `${selectedExam.name} · ${selectedExam.class_name || "Class"}${selectedExam.section_name ? ` - ${selectedExam.section_name}` : ""}` : "Select an exam";
+  const applyRecordFilters = async () => {
+    await loadTabData("records", true);
+  };
+
+  const clearRecordFilters = async () => {
+    setRecordFilters(emptyRecordFilters);
+    setTabRefreshing("records", true);
+    setError("");
+
+    try {
+      setRecords(await apiFetch<StudentFeeRecord[]>(recordsPath(emptyRecordFilters)));
+      markLoaded("records");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load fee records");
+    } finally {
+      setTabRefreshing("records", false);
+    }
+  };
+
+  const afterSave = async (success: string) => {
+    setMessage(success);
+    setSaving(false);
+    setLoadedTabs({});
+
+    await loadDashboardData();
+    await loadTabData(activeTab, true);
+  };
+
+  const saveCategory = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    try {
+      await apiFetch("/fees/categories", {
+        method: "POST",
+        body: JSON.stringify({
+          name: categoryForm.name,
+          code: categoryForm.code || null,
+          description: categoryForm.description || null,
+          is_active: true,
+        }),
+      });
+
+      setCategoryForm({ name: "", code: "", description: "" });
+
+      await afterSave("Fee category created");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save category");
+      setSaving(false);
+    }
+  };
+
+  const saveStructure = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    try {
+      await apiFetch("/fees/structures", {
+        method: "POST",
+        body: JSON.stringify({
+          name: structureForm.name,
+          category_id: Number(structureForm.category_id),
+          academic_session_id: numberOrNull(structureForm.academic_session_id),
+          amount: Number(structureForm.amount),
+          due_date: structureForm.due_date || null,
+          description: structureForm.description || null,
+          is_active: true,
+        }),
+      });
+
+      setStructureForm((prev) => ({
+        ...prev,
+        name: "",
+        category_id: "",
+        amount: "",
+        due_date: "",
+        description: "",
+      }));
+
+      await afterSave("Fee structure created");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save structure");
+      setSaving(false);
+    }
+  };
+
+  const saveAssignment = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    try {
+      await apiFetch("/fees/assignments", {
+        method: "POST",
+        body: JSON.stringify({
+          fee_structure_id: Number(assignmentForm.fee_structure_id),
+          academic_session_id: numberOrNull(assignmentForm.academic_session_id),
+          class_id: numberOrNull(assignmentForm.class_id),
+          section_id: numberOrNull(assignmentForm.section_id),
+          student_id: numberOrNull(assignmentForm.student_id),
+          assigned_amount: numberOrNull(assignmentForm.assigned_amount),
+          due_date: assignmentForm.due_date || null,
+          note: assignmentForm.note || null,
+          generate_records: true,
+        }),
+      });
+
+      setAssignmentForm((prev) => ({
+        ...prev,
+        fee_structure_id: "",
+        class_id: "",
+        section_id: "",
+        student_id: "",
+        assigned_amount: "",
+        due_date: "",
+        note: "",
+      }));
+
+      await afterSave("Fee assigned and student records generated");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to assign fee");
+      setSaving(false);
+    }
+  };
+
+  const saveManualRecord = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    try {
+      await apiFetch("/fees/records", {
+        method: "POST",
+        body: JSON.stringify({
+          student_id: Number(recordForm.student_id),
+          fee_structure_id: numberOrNull(recordForm.fee_structure_id),
+          academic_session_id: numberOrNull(recordForm.academic_session_id),
+          title: recordForm.title,
+          amount: Number(recordForm.amount),
+          discount_amount: Number(recordForm.discount_amount || 0),
+          fine_amount: Number(recordForm.fine_amount || 0),
+          due_date: recordForm.due_date || null,
+          note: recordForm.note || null,
+        }),
+      });
+
+      setRecordForm((prev) => ({
+        ...prev,
+        student_id: "",
+        fee_structure_id: "",
+        title: "",
+        amount: "",
+        discount_amount: "0",
+        fine_amount: "0",
+        due_date: "",
+        note: "",
+      }));
+
+      await afterSave("Manual student fee record created");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create fee record");
+      setSaving(false);
+    }
+  };
+
+  const savePayment = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const receipt = await apiFetch<FeeReceipt>("/fees/payments", {
+        method: "POST",
+        body: JSON.stringify({
+          student_fee_record_id: Number(paymentForm.student_fee_record_id),
+          amount: Number(paymentForm.amount),
+          payment_date: paymentForm.payment_date || null,
+          payment_mode: paymentForm.payment_mode,
+          reference_no: paymentForm.reference_no || null,
+          note: paymentForm.note || null,
+        }),
+      });
+
+      setLastReceipt(receipt);
+
+      setPaymentForm({
+        student_fee_record_id: "",
+        amount: "",
+        payment_date: today(),
+        payment_mode: "CASH",
+        reference_no: "",
+        note: "",
+      });
+
+      await afterSave(`Payment saved. Receipt: ${receipt.payment.receipt_no}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save payment");
+      setSaving(false);
+    }
+  };
+
+  const saveExpense = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    try {
+      await apiFetch("/fees/expenses", {
+        method: "POST",
+        body: JSON.stringify({
+          title: expenseForm.title,
+          category: expenseForm.category || null,
+          amount: Number(expenseForm.amount),
+          expense_date: expenseForm.expense_date || null,
+          payment_mode: expenseForm.payment_mode,
+          vendor_name: expenseForm.vendor_name || null,
+          reference_no: expenseForm.reference_no || null,
+          note: expenseForm.note || null,
+        }),
+      });
+
+      setExpenseForm({
+        title: "",
+        category: "",
+        amount: "",
+        expense_date: today(),
+        payment_mode: "CASH",
+        vendor_name: "",
+        reference_no: "",
+        note: "",
+      });
+
+      await afterSave("Expense entry saved");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save expense");
+      setSaving(false);
+    }
+  };
+
+  const deactivate = async (path: string, success: string) => {
+    if (!confirm("Are you sure?")) return;
+
+    setError("");
+    setMessage("");
+
+    try {
+      await apiFetch(path, { method: "DELETE" });
+      await afterSave(success);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+    }
+  };
+
+  const openReceipt = async (paymentId: number) => {
+    setError("");
+
+    try {
+      setLastReceipt(await apiFetch<FeeReceipt>(`/fees/receipts/${paymentId}`));
+      setActiveTab("payments");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to open receipt");
+    }
+  };
+
+  const pendingRecords = records.filter((record) => ["PENDING", "PARTIAL", "OVERDUE"].includes(record.status));
+  const filteredSections = meta?.sections.filter((section) => !assignmentForm.class_id || section.extra === assignmentForm.class_id) || [];
+  const recordFilteredSections = meta?.sections.filter((section) => !recordFilters.class_id || section.extra === recordFilters.class_id) || [];
+  const activeRecordFilterCount = Object.values(recordFilters).filter((value) => value.trim() !== "").length;
+
+  const currentTabRefreshing = Boolean(tabLoading[activeTab]);
+  const dashboardRefreshing = Boolean(tabLoading.dashboard);
+  const recordsRefreshing = Boolean(tabLoading.records);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Exam and Result Management</h1>
-          <p className="text-sm text-slate-500">Create exams, prepare exam timetable, enter marks, publish results and view reports.</p>
-        </div>
-        <Button onClick={refreshCurrentTab} disabled={loading || isRefreshing} className="flex items-center gap-2">
-          <RefreshCcw size={16} className={isRefreshing ? "animate-spin" : ""} /> {isRefreshing ? "Refreshing..." : "Refresh"}
-        </Button>
-      </div>
-
-      {error && <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</div>}
-      {success && <div className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-700">{success}</div>}
-
-      <div className="flex flex-wrap gap-2">
-        {[
-          ["exams", "Create Exam"],
-          ["subjects", "Exam Subjects"],
-          ["timetable", "Exam Timetable"],
-          ["marks", "Marks Entry"],
-          ["reports", "Reports"],
-        ].map(([value, label]) => (
+    <AppSection
+      title="Fee Management"
+      description="Create fee categories and structures, assign fees, collect payments, generate receipts, track pending fees and record expenses."
+    >
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        {tabs.map((tab) => (
           <button
-            key={value}
+            key={tab.key}
             type="button"
-            onClick={() => setTab(value as typeof tab)}
-            className={`rounded-xl px-4 py-2 text-sm font-semibold ${tab === value ? "bg-slate-900 text-white" : "border border-slate-200 bg-white text-slate-700"}`}
+            onClick={() => setActiveTab(tab.key)}
+            className={`rounded-xl px-3 py-2 text-sm font-semibold transition ${
+              activeTab === tab.key
+                ? "bg-slate-900 text-white"
+                : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
+            }`}
           >
-            {label}
+            {tab.label}
           </button>
         ))}
+
+        <button
+          type="button"
+          onClick={refreshCurrentTab}
+          disabled={loading || currentTabRefreshing}
+          className="ml-auto inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <RefreshCw size={15} className={currentTabRefreshing ? "animate-spin" : ""} />
+          {currentTabRefreshing ? "Refreshing..." : "Refresh"}
+        </button>
       </div>
 
-      {loading && !moduleReady && <Card><InlineLoader text="Loading exam module..." /></Card>}
+      {error && <p className="mb-4 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+      {message && <p className="mb-4 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{message}</p>}
 
-      {moduleReady && tab === "exams" && (
-        <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
-          <AppSection title={editingExam ? "Edit exam" : "Create exam"} description="Choose class, optional section, exam date range and academic session.">
-            <form onSubmit={saveExam} className="space-y-4">
-              <div>
-                <Label>Exam Name</Label>
-                <Input value={examForm.name} onChange={(event) => setExamForm({ ...examForm, name: event.target.value })} placeholder="Mid Term Exam" required />
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <Label>Exam Type</Label>
-                  <Input value={examForm.exam_type} onChange={(event) => setExamForm({ ...examForm, exam_type: event.target.value })} placeholder="Term / Unit Test" />
-                </div>
-                <div>
-                  <Label>Academic Session</Label>
-                  <SelectBox value={examForm.academic_session_id} onChange={(value) => setExamForm({ ...examForm, academic_session_id: value })}>
-                    <option value="">Latest / Current</option>
-                    {meta?.academic_sessions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                  </SelectBox>
-                </div>
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <Label>Class</Label>
-                  <SelectBox value={examForm.class_id} onChange={(value) => setExamForm({ ...examForm, class_id: value, section_id: "" })} required>
-                    <option value="">Select class</option>
-                    {meta?.classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                  </SelectBox>
-                </div>
-                <div>
-                  <Label>Section</Label>
-                  <SelectBox value={examForm.section_id} onChange={(value) => setExamForm({ ...examForm, section_id: value })}>
-                    <option value="">All sections</option>
-                    {filteredSections.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                  </SelectBox>
-                </div>
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <Label>Start Date</Label>
-                  <Input type="date" value={examForm.start_date} onChange={(event) => setExamForm({ ...examForm, start_date: event.target.value })} />
-                </div>
-                <div>
-                  <Label>End Date</Label>
-                  <Input type="date" value={examForm.end_date} onChange={(event) => setExamForm({ ...examForm, end_date: event.target.value })} />
-                </div>
-              </div>
-              <div>
-                <Label>Description</Label>
-                <Textarea value={examForm.description} onChange={(event) => setExamForm({ ...examForm, description: event.target.value })} placeholder="Optional exam instructions" />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button disabled={saving} className="flex items-center gap-2"><Plus size={16} /> {editingExam ? "Update Exam" : "Create Exam"}</Button>
-                {editingExam && <button type="button" onClick={resetExam} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700">Cancel</button>}
-              </div>
-            </form>
-          </AppSection>
-
-          <AppSection title="Exam list" description="Select an exam to manage timetable, subjects, marks and reports.">
-            <form onSubmit={applySearch} className="mb-4 grid gap-3 md:grid-cols-[1fr_180px_auto]">
+      {loading && !meta ? (
+        <Card>
+          <InlineLoader text="Loading fee data..." />
+        </Card>
+      ) : (
+        <>
+          {activeTab === "dashboard" && dashboard && (
+            <div className="space-y-6">
               <div className="relative">
-                <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
-                <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search exams" className="pl-9" />
-              </div>
-              <SelectBox value={statusFilter} onChange={setStatusFilter}>
-                <option value="">All status</option>
-                <option value="DRAFT">Draft</option>
-                <option value="PUBLISHED">Published</option>
-              </SelectBox>
-              <Button type="submit">Search</Button>
-            </form>
+                {dashboardRefreshing && <ScopedLoader text="Refreshing dashboard summary..." />}
 
-            <div className="overflow-x-auto rounded-2xl border border-slate-200">
-              <table className="min-w-full divide-y divide-slate-200 text-sm">
-                <thead className="bg-slate-50 text-left text-slate-600">
+                <div className="grid gap-4 md:grid-cols-4">
+                  <SummaryCard label="Total Billable" value={money(dashboard.total_billable)} helper="All generated fee records" />
+                  <SummaryCard label="Total Paid" value={money(dashboard.total_paid)} helper="Total fee collection" />
+                  <SummaryCard label="Pending" value={money(dashboard.total_pending)} helper="Pending/partial/overdue balance" />
+                  <SummaryCard label="Today Collection" value={money(dashboard.today_collection)} helper="Payments collected today" />
+                  <SummaryCard label="Month Collection" value={money(dashboard.month_collection)} helper="Current month income" />
+                  <SummaryCard label="Month Expense" value={money(dashboard.month_expense)} helper="Current month expenses" />
+                  <SummaryCard label="Net Month" value={money(dashboard.net_month_collection)} helper="Collection minus expenses" />
+                  <SummaryCard label="Overdue Records" value={dashboard.overdue_records} helper="Records past due date" />
+                </div>
+              </div>
+
+              <Card className="relative">
+                {(dashboardRefreshing || reportLoading) && <ScopedLoader text="Loading daily collection report..." />}
+
+                <div className="mb-4 flex flex-wrap items-end gap-3">
+                  <div>
+                    <Label>Daily collection date</Label>
+                    <Input type="date" value={reportDate} onChange={(event) => setReportDate(event.target.value)} />
+                  </div>
+
+                  <Button type="button" onClick={refreshReport} disabled={reportLoading || dashboardRefreshing}>
+                    <span className="inline-flex items-center gap-2">
+                      {reportLoading && <Loader2 size={15} className="animate-spin" />}
+                      Load Report
+                    </span>
+                  </Button>
+                </div>
+
+                <h2 className="font-semibold text-slate-900">Daily Collection Report</h2>
+
+                <p className="mt-1 text-sm text-slate-500">
+                  {dailyReport
+                    ? `${dailyReport.total_payments} payments · ${money(dailyReport.total_collection)} collected`
+                    : "No report loaded"}
+                </p>
+
+                {dailyReport && Object.keys(dailyReport.payment_mode_summary).length > 0 && (
+                  <div className="mt-4 grid gap-3 md:grid-cols-4">
+                    {Object.entries(dailyReport.payment_mode_summary).map(([mode, amount]) => (
+                      <div key={mode} className="rounded-xl border border-slate-200 p-3">
+                        <p className="text-xs uppercase text-slate-400">{mode}</p>
+                        <p className="font-bold text-slate-900">{money(amount)}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            </div>
+          )}
+
+          {activeTab === "categories" && (
+            <div className="space-y-6">
+              <Card>
+                <form onSubmit={saveCategory} className="grid gap-4 md:grid-cols-3">
+                  <div>
+                    <Label>Category Name</Label>
+                    <Input
+                      value={categoryForm.name}
+                      onChange={(event) => setCategoryForm((prev) => ({ ...prev, name: event.target.value }))}
+                      placeholder="Tuition Fee"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Code</Label>
+                    <Input
+                      value={categoryForm.code}
+                      onChange={(event) => setCategoryForm((prev) => ({ ...prev, code: event.target.value }))}
+                      placeholder="TUTION"
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <Label>Description</Label>
+                    <Textarea
+                      value={categoryForm.description}
+                      onChange={(event) => setCategoryForm((prev) => ({ ...prev, description: event.target.value }))}
+                      placeholder="Optional notes"
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <Button type="submit" disabled={saving}>
+                      <span className="inline-flex items-center gap-2">
+                        {saving ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                        Create Category
+                      </span>
+                    </Button>
+                  </div>
+                </form>
+              </Card>
+
+              <TableWrap
+                empty={categories.length === 0}
+                emptyText="No fee category yet."
+                loading={Boolean(tabLoading.categories)}
+                loadingText="Refreshing fee categories..."
+              >
+                <thead className="bg-slate-100 text-xs uppercase text-slate-500">
                   <tr>
-                    <th className="px-4 py-3">Exam</th>
-                    <th className="px-4 py-3">Class</th>
-                    <th className="px-4 py-3">Dates</th>
+                    <th className="px-4 py-3">Name</th>
+                    <th className="px-4 py-3">Code</th>
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Actions</th>
                   </tr>
                 </thead>
+
                 <tbody className="divide-y divide-slate-100">
-                  {examListLoading && <LoadingTableRow colSpan={5} text="Refreshing exam list..." />}
-                  {exams.map((exam) => (
-                    <tr key={exam.id} className={selectedExamId === String(exam.id) ? "bg-slate-50" : "bg-white"}>
+                  {categories.map((category) => (
+                    <tr key={category.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 font-medium text-slate-900">{category.name}</td>
+                      <td className="px-4 py-3 text-slate-700">{category.code || "-"}</td>
                       <td className="px-4 py-3">
-                        <button type="button" onClick={() => setSelectedExamId(String(exam.id))} className="font-semibold text-slate-900 hover:underline">{exam.name}</button>
-                        <p className="text-xs text-slate-500">{exam.exam_type || "General"} · {exam.subjects_count} subjects · {exam.marks_entered_count} marks</p>
+                        <StatusBadge status={category.is_active ? "ACTIVE" : "INACTIVE"} />
                       </td>
-                      <td className="px-4 py-3 text-slate-600">{exam.class_name}{exam.section_name ? ` - ${exam.section_name}` : " · All sections"}</td>
-                      <td className="px-4 py-3 text-slate-600">{displayDate(exam.start_date)} - {displayDate(exam.end_date)}</td>
-                      <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(exam.result_status)}`}>{exam.result_status}</span></td>
                       <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-2">
-                          <button type="button" onClick={() => editExam(exam)} className="rounded-lg border border-slate-200 p-2 text-slate-600"><Edit2 size={14} /></button>
-                          <button type="button" onClick={() => { setSelectedExamId(String(exam.id)); setTab("timetable"); }} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700">Timetable</button>
-                          <button type="button" onClick={() => publishToggle(exam)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700">{exam.result_status === "PUBLISHED" ? "Unpublish" : "Publish"}</button>
-                          <button type="button" onClick={() => deleteExam(exam)} className="rounded-lg border border-red-100 p-2 text-red-600"><Trash2 size={14} /></button>
-                        </div>
+                        <IconButton onClick={() => deactivate(`/fees/categories/${category.id}`, "Category deactivated")} />
                       </td>
                     </tr>
                   ))}
-                  {!examListLoading && exams.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-500">No exams found.</td></tr>}
                 </tbody>
-              </table>
+              </TableWrap>
             </div>
-          </AppSection>
-        </div>
-      )}
+          )}
 
-      {moduleReady && tab === "subjects" && (
-        <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
-          <AppSection title={editingSubject ? "Edit exam subject" : "Add exam subject"} description="Adding a subject also creates its timetable row. You can set date/time now or auto-generate later.">
-            <div className="mb-4">
-              <Label>Selected Exam</Label>
-              <SelectBox value={selectedExamId} onChange={setSelectedExamId} required>
-                <option value="">Select exam</option>
-                {exams.map((exam) => <option key={exam.id} value={exam.id}>{exam.name} · {exam.class_name}</option>)}
-              </SelectBox>
-            </div>
-            <form onSubmit={saveSubject} className="space-y-4">
-              <div>
-                <Label>Subject</Label>
-                <SelectBox value={subjectForm.subject_id} onChange={(value) => setSubjectForm({ ...subjectForm, subject_id: value })} required>
-                  <option value="">{selectedExam || examForm.class_id ? "Select subject" : "Select exam/class first"}</option>
-                  {filteredSubjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                </SelectBox>
-              </div>
-              <div>
-                <Label>Teacher / Examiner</Label>
-                <SelectBox value={subjectForm.teacher_id} onChange={(value) => setSubjectForm({ ...subjectForm, teacher_id: value })}>
-                  <option value="">Not assigned</option>
-                  {meta?.teachers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                </SelectBox>
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <Label>Max Marks</Label>
-                  <Input type="number" min="1" value={subjectForm.max_marks} onChange={(event) => setSubjectForm({ ...subjectForm, max_marks: event.target.value })} required />
-                </div>
-                <div>
-                  <Label>Pass Marks</Label>
-                  <Input type="number" min="0" value={subjectForm.pass_marks} onChange={(event) => setSubjectForm({ ...subjectForm, pass_marks: event.target.value })} required />
-                </div>
-              </div>
-              <div className="grid gap-4 md:grid-cols-3">
-                <div>
-                  <Label>Exam Date</Label>
-                  <Input type="date" value={subjectForm.exam_date} onChange={(event) => setSubjectForm({ ...subjectForm, exam_date: event.target.value })} />
-                </div>
-                <div>
-                  <Label>Start Time</Label>
-                  <Input type="time" value={subjectForm.start_time} onChange={(event) => setSubjectForm({ ...subjectForm, start_time: event.target.value })} />
-                </div>
-                <div>
-                  <Label>End Time</Label>
-                  <Input type="time" value={subjectForm.end_time} onChange={(event) => setSubjectForm({ ...subjectForm, end_time: event.target.value })} />
-                </div>
-              </div>
-              <div>
-                <Label>Room / Hall</Label>
-                <Input value={subjectForm.room} onChange={(event) => setSubjectForm({ ...subjectForm, room: event.target.value })} placeholder="Room 101 / Main Hall" />
-              </div>
-              <div>
-                <Label>Timetable Instructions</Label>
-                <Textarea value={subjectForm.timetable_note} onChange={(event) => setSubjectForm({ ...subjectForm, timetable_note: event.target.value })} placeholder="Bring admit card, calculator allowed, etc." />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button disabled={saving || !selectedExamId} className="flex items-center gap-2"><Plus size={16} /> {editingSubject ? "Update Subject" : "Add Subject"}</Button>
-                {editingSubject && <button type="button" onClick={resetSubject} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700">Cancel</button>}
-              </div>
-            </form>
-          </AppSection>
+          {activeTab === "structures" && (
+            <div className="space-y-6">
+              <Card>
+                <form onSubmit={saveStructure} className="grid gap-4 md:grid-cols-3">
+                  <div>
+                    <Label>Fee Name</Label>
+                    <Input
+                      value={structureForm.name}
+                      onChange={(event) => setStructureForm((prev) => ({ ...prev, name: event.target.value }))}
+                      placeholder="April Tuition Fee"
+                      required
+                    />
+                  </div>
 
-          <AppSection title="Exam subjects" description={selectedExam ? `${selectedExam.name} subjects` : "Select an exam to view subjects."}>
-            <div className="overflow-x-auto rounded-2xl border border-slate-200">
-              <table className="min-w-full divide-y divide-slate-200 text-sm">
-                <thead className="bg-slate-50 text-left text-slate-600">
+                  <div>
+                    <Label>Category</Label>
+                    <Select
+                      value={structureForm.category_id}
+                      onChange={(value) => setStructureForm((prev) => ({ ...prev, category_id: value }))}
+                      required
+                    >
+                      <option value="">Select category</option>
+                      {meta?.categories.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Academic Session</Label>
+                    <Select
+                      value={structureForm.academic_session_id}
+                      onChange={(value) => setStructureForm((prev) => ({ ...prev, academic_session_id: value }))}
+                    >
+                      <option value="">Optional</option>
+                      {meta?.academic_sessions.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Amount</Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="0.01"
+                      value={structureForm.amount}
+                      onChange={(event) => setStructureForm((prev) => ({ ...prev, amount: event.target.value }))}
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Due Date</Label>
+                    <Input
+                      type="date"
+                      value={structureForm.due_date}
+                      onChange={(event) => setStructureForm((prev) => ({ ...prev, due_date: event.target.value }))}
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <Label>Description</Label>
+                    <Textarea
+                      value={structureForm.description}
+                      onChange={(event) => setStructureForm((prev) => ({ ...prev, description: event.target.value }))}
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <Button type="submit" disabled={saving}>
+                      <span className="inline-flex items-center gap-2">
+                        {saving ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                        Create Structure
+                      </span>
+                    </Button>
+                  </div>
+                </form>
+              </Card>
+
+              <TableWrap
+                empty={structures.length === 0}
+                emptyText="No fee structure yet."
+                loading={Boolean(tabLoading.structures)}
+                loadingText="Refreshing fee structures..."
+              >
+                <thead className="bg-slate-100 text-xs uppercase text-slate-500">
                   <tr>
-                    <th className="px-4 py-3">Subject</th>
-                    <th className="px-4 py-3">Teacher</th>
-                    <th className="px-4 py-3">Marks</th>
-                    <th className="px-4 py-3">Schedule</th>
+                    <th className="px-4 py-3">Fee</th>
+                    <th className="px-4 py-3">Category</th>
+                    <th className="px-4 py-3">Amount</th>
+                    <th className="px-4 py-3">Due Date</th>
+                    <th className="px-4 py-3">Session</th>
                     <th className="px-4 py-3">Actions</th>
                   </tr>
                 </thead>
+
                 <tbody className="divide-y divide-slate-100">
-                  {subjectListLoading && <LoadingTableRow colSpan={5} text="Refreshing exam subjects..." />}
-                  {examSubjects.map((subject) => (
-                    <tr key={subject.id} className={selectedSubjectId === String(subject.id) ? "bg-slate-50" : "bg-white"}>
-                      <td className="px-4 py-3"><button type="button" onClick={() => setSelectedSubjectId(String(subject.id))} className="font-semibold text-slate-900 hover:underline">{subject.subject_name}</button><p className="text-xs text-slate-500">{subject.marks_entered_count} marks entered</p></td>
-                      <td className="px-4 py-3 text-slate-600">{subject.teacher_name || "-"}</td>
-                      <td className="px-4 py-3 text-slate-600">Max {subject.max_marks} · Pass {subject.pass_marks}</td>
-                      <td className="px-4 py-3 text-slate-600">{displayDate(subject.exam_date)} · {displayTime(subject.start_time)} - {displayTime(subject.end_time)}<p className="text-xs text-slate-400">{subject.room || "No room set"}</p></td>
+                  {structures.map((structure) => (
+                    <tr key={structure.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 font-medium text-slate-900">{structure.name}</td>
+                      <td className="px-4 py-3 text-slate-700">{structure.category_name || "-"}</td>
+                      <td className="px-4 py-3 text-slate-700">{money(structure.amount)}</td>
+                      <td className="px-4 py-3 text-slate-700">{structure.due_date || "-"}</td>
+                      <td className="px-4 py-3 text-slate-700">{structure.academic_session_name || "-"}</td>
                       <td className="px-4 py-3">
-                        <div className="flex gap-2">
-                          <button type="button" onClick={() => editSubject(subject)} className="rounded-lg border border-slate-200 p-2 text-slate-600"><Edit2 size={14} /></button>
-                          <button type="button" onClick={() => deleteSubject(subject)} className="rounded-lg border border-red-100 p-2 text-red-600"><Trash2 size={14} /></button>
-                        </div>
+                        <IconButton onClick={() => deactivate(`/fees/structures/${structure.id}`, "Structure deactivated")} />
                       </td>
                     </tr>
                   ))}
-                  {!subjectListLoading && examSubjects.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-500">No subjects added for this exam.</td></tr>}
                 </tbody>
-              </table>
+              </TableWrap>
             </div>
-          </AppSection>
-        </div>
-      )}
+          )}
 
-      {moduleReady && tab === "timetable" && (
-        <div className="space-y-6">
-          <AppSection title="Build exam timetable" description="Students can see this timetable from their Exam page even before results are published.">
-            <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-              <div>
-                <Label>Selected Exam</Label>
-                <SelectBox value={selectedExamId} onChange={setSelectedExamId} required>
-                  <option value="">Select exam</option>
-                  {exams.map((exam) => <option key={exam.id} value={exam.id}>{exam.name} · {exam.class_name}</option>)}
-                </SelectBox>
-              </div>
-              <div className="flex items-end gap-2">
-                <Button type="button" onClick={loadTimetable} disabled={!selectedExamId || timetableLoading} className="flex items-center gap-2">{timetableLoading ? <Loader2 size={16} className="animate-spin" /> : <Eye size={16} />} {timetableLoading ? "Loading..." : "View"}</Button>
-                <button type="button" onClick={() => setTab("subjects")} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700">Add / Edit Subjects</button>
-              </div>
-            </div>
-          </AppSection>
+          {activeTab === "assign" && (
+            <div className="space-y-6">
+              <Card>
+                <form onSubmit={saveAssignment} className="grid gap-4 md:grid-cols-3">
+                  <div>
+                    <Label>Fee Structure</Label>
+                    <Select
+                      value={assignmentForm.fee_structure_id}
+                      onChange={(value) => setAssignmentForm((prev) => ({ ...prev, fee_structure_id: value }))}
+                      required
+                    >
+                      <option value="">Select fee</option>
+                      {meta?.structures.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name} {item.extra ? `· ${item.extra}` : ""}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
 
-          <AppSection title="Automatic timetable generator" description="Uses the exam start date and assigns one subject per day in subject order. Manual subject dates are kept unless override is enabled.">
-            <div className="grid gap-4 md:grid-cols-5">
-              <div>
-                <Label>Start Time</Label>
-                <Input type="time" value={autoStartTime} onChange={(event) => setAutoStartTime(event.target.value)} />
-              </div>
-              <div>
-                <Label>End Time</Label>
-                <Input type="time" value={autoEndTime} onChange={(event) => setAutoEndTime(event.target.value)} />
-              </div>
-              <div>
-                <Label>Room</Label>
-                <Input value={autoRoom} onChange={(event) => setAutoRoom(event.target.value)} placeholder="Optional" />
-              </div>
-              <label className="flex items-end gap-2 pb-2 text-sm font-semibold text-slate-700">
-                <input type="checkbox" checked={autoOverride} onChange={(event) => setAutoOverride(event.target.checked)} /> Override existing
-              </label>
-              <div className="flex items-end">
-                <Button type="button" onClick={autoScheduleTimetable} disabled={saving || !selectedExamId} className="flex items-center gap-2"><CalendarDays size={16} /> Auto Schedule</Button>
-              </div>
-            </div>
-          </AppSection>
+                  <div>
+                    <Label>Academic Session</Label>
+                    <Select
+                      value={assignmentForm.academic_session_id}
+                      onChange={(value) => setAssignmentForm((prev) => ({ ...prev, academic_session_id: value }))}
+                    >
+                      <option value="">Optional</option>
+                      {meta?.academic_sessions.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
 
-          <AppSection title="Exam timetable preview" description={selectedExamLabel}>
-            <div className="mb-4 grid gap-3 md:grid-cols-3">
-              <Card className="flex items-center gap-3"><CalendarDays className="text-slate-400" size={20} /><div><p className="text-xs text-slate-500">Exam Dates</p><p className="font-semibold text-slate-900">{displayDate(selectedExam?.start_date)} - {displayDate(selectedExam?.end_date)}</p></div></Card>
-              <Card className="flex items-center gap-3"><CheckCircle2 className="text-slate-400" size={20} /><div><p className="text-xs text-slate-500">Subjects</p><p className="font-semibold text-slate-900">{examSubjects.length}</p></div></Card>
-              <Card className="flex items-center gap-3"><Clock className="text-slate-400" size={20} /><div><p className="text-xs text-slate-500">Default Auto Time</p><p className="font-semibold text-slate-900">{autoStartTime} - {autoEndTime}</p></div></Card>
-            </div>
-            <div className="overflow-x-auto rounded-2xl border border-slate-200">
-              <table className="min-w-full divide-y divide-slate-200 text-sm">
-                <thead className="bg-slate-50 text-left text-slate-600">
+                  <div>
+                    <Label>Override Amount</Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="0.01"
+                      value={assignmentForm.assigned_amount}
+                      onChange={(event) => setAssignmentForm((prev) => ({ ...prev, assigned_amount: event.target.value }))}
+                      placeholder="Keep blank to use structure amount"
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Assign to Class</Label>
+                    <Select
+                      value={assignmentForm.class_id}
+                      onChange={(value) =>
+                        setAssignmentForm((prev) => ({
+                          ...prev,
+                          class_id: value,
+                          student_id: "",
+                          section_id: "",
+                        }))
+                      }
+                    >
+                      <option value="">No class</option>
+                      {meta?.classes.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Section</Label>
+                    <Select
+                      value={assignmentForm.section_id}
+                      onChange={(value) => setAssignmentForm((prev) => ({ ...prev, section_id: value }))}
+                    >
+                      <option value="">All sections</option>
+                      {filteredSections.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Or Assign to Student</Label>
+                    <Select
+                      value={assignmentForm.student_id}
+                      onChange={(value) =>
+                        setAssignmentForm((prev) => ({
+                          ...prev,
+                          student_id: value,
+                          class_id: "",
+                          section_id: "",
+                        }))
+                      }
+                    >
+                      <option value="">No individual student</option>
+                      {meta?.students.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name} · {item.extra}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Override Due Date</Label>
+                    <Input
+                      type="date"
+                      value={assignmentForm.due_date}
+                      onChange={(event) => setAssignmentForm((prev) => ({ ...prev, due_date: event.target.value }))}
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <Label>Note</Label>
+                    <Textarea
+                      value={assignmentForm.note}
+                      onChange={(event) => setAssignmentForm((prev) => ({ ...prev, note: event.target.value }))}
+                      placeholder="Optional note shown in generated records"
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <Button type="submit" disabled={saving}>
+                      <span className="inline-flex items-center gap-2">
+                        {saving ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                        Assign & Generate Records
+                      </span>
+                    </Button>
+                  </div>
+                </form>
+              </Card>
+
+              <TableWrap
+                empty={assignments.length === 0}
+                emptyText="No fee assignments yet."
+                loading={Boolean(tabLoading.assign)}
+                loadingText="Refreshing fee assignments..."
+              >
+                <thead className="bg-slate-100 text-xs uppercase text-slate-500">
                   <tr>
-                    <th className="px-4 py-3">Date</th>
-                    <th className="px-4 py-3">Time</th>
-                    <th className="px-4 py-3">Subject</th>
-                    <th className="px-4 py-3">Teacher</th>
-                    <th className="px-4 py-3">Room</th>
-                    <th className="px-4 py-3">Source</th>
-                    <th className="px-4 py-3">Action</th>
+                    <th className="px-4 py-3">Fee</th>
+                    <th className="px-4 py-3">Assigned To</th>
+                    <th className="px-4 py-3">Amount</th>
+                    <th className="px-4 py-3">Due</th>
+                    <th className="px-4 py-3">Records</th>
+                    <th className="px-4 py-3">Actions</th>
                   </tr>
                 </thead>
+
                 <tbody className="divide-y divide-slate-100">
-                  {timetableLoading && <LoadingTableRow colSpan={7} text="Refreshing timetable..." />}
-                  {examTimetable.map((item) => (
-                    <tr key={item.exam_subject_id}>
-                      <td className="px-4 py-3 font-semibold text-slate-900">{displayDate(item.exam_date)}</td>
-                      <td className="px-4 py-3 text-slate-600">{displayTime(item.start_time)} - {displayTime(item.end_time)}</td>
-                      <td className="px-4 py-3"><p className="font-semibold text-slate-900">{item.subject_name}</p><p className="text-xs text-slate-500">Max {item.max_marks} · Pass {item.pass_marks}</p>{item.timetable_note && <p className="mt-1 text-xs text-slate-500">{item.timetable_note}</p>}</td>
-                      <td className="px-4 py-3 text-slate-600">{item.teacher_name || "-"}</td>
-                      <td className="px-4 py-3 text-slate-600">{item.room || "-"}</td>
-                      <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(item.schedule_source)}`}>{item.schedule_source === "AUTO_FROM_EXAM_START" ? "AUTO" : item.schedule_source}</span></td>
-                      <td className="px-4 py-3"><button type="button" onClick={() => { const subject = examSubjects.find((row) => row.id === item.exam_subject_id); if (subject) editSubject(subject); else setTab("subjects"); }} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700">Edit</button></td>
+                  {assignments.map((assignment) => (
+                    <tr key={assignment.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 font-medium text-slate-900">{assignment.fee_structure_name || "-"}</td>
+                      <td className="px-4 py-3 text-slate-700">
+                        {assignment.student_name ||
+                          [assignment.class_name, assignment.section_name || "All sections"].filter(Boolean).join(" · ") ||
+                          "-"}
+                      </td>
+                      <td className="px-4 py-3 text-slate-700">
+                        {assignment.assigned_amount ? money(assignment.assigned_amount) : "Structure amount"}
+                      </td>
+                      <td className="px-4 py-3 text-slate-700">{assignment.due_date || "Structure due date"}</td>
+                      <td className="px-4 py-3 text-slate-700">{assignment.generated_records_count}</td>
+                      <td className="px-4 py-3">
+                        <IconButton onClick={() => deactivate(`/fees/assignments/${assignment.id}`, "Assignment deactivated")} />
+                      </td>
                     </tr>
                   ))}
-                  {!timetableLoading && examTimetable.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-500">No timetable rows yet. Add subjects or use auto schedule.</td></tr>}
                 </tbody>
-              </table>
+              </TableWrap>
             </div>
-          </AppSection>
-        </div>
-      )}
+          )}
 
-      {moduleReady && tab === "marks" && (
-        <AppSection title="Marks entry" description="Enter marks for one exam subject. Grade and pass/fail status are calculated by backend.">
-          <div className="mb-4 grid gap-3 md:grid-cols-2">
-            <div>
-              <Label>Exam</Label>
-              <SelectBox value={selectedExamId} onChange={(value) => { setSelectedExamId(value); setSelectedSubjectId(""); }}>
-                <option value="">Select exam</option>
-                {exams.map((exam) => <option key={exam.id} value={exam.id}>{exam.name} · {exam.class_name}</option>)}
-              </SelectBox>
+          {activeTab === "records" && (
+            <div className="space-y-6">
+              <Card>
+                <h2 className="mb-4 font-semibold text-slate-900">Manual Student Fee Record</h2>
+
+                <form onSubmit={saveManualRecord} className="grid gap-4 md:grid-cols-3">
+                  <div>
+                    <Label>Student</Label>
+                    <Select
+                      value={recordForm.student_id}
+                      onChange={(value) => setRecordForm((prev) => ({ ...prev, student_id: value }))}
+                      required
+                    >
+                      <option value="">Select student</option>
+                      {meta?.students.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name} · {item.extra}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Linked Structure</Label>
+                    <Select
+                      value={recordForm.fee_structure_id}
+                      onChange={(value) => setRecordForm((prev) => ({ ...prev, fee_structure_id: value }))}
+                    >
+                      <option value="">Optional</option>
+                      {meta?.structures.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Academic Session</Label>
+                    <Select
+                      value={recordForm.academic_session_id}
+                      onChange={(value) => setRecordForm((prev) => ({ ...prev, academic_session_id: value }))}
+                    >
+                      <option value="">Optional</option>
+                      {meta?.academic_sessions.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Title</Label>
+                    <Input
+                      value={recordForm.title}
+                      onChange={(event) => setRecordForm((prev) => ({ ...prev, title: event.target.value }))}
+                      placeholder="Bus Fee / Extra Lab Fee"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Amount</Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="0.01"
+                      value={recordForm.amount}
+                      onChange={(event) => setRecordForm((prev) => ({ ...prev, amount: event.target.value }))}
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Due Date</Label>
+                    <Input
+                      type="date"
+                      value={recordForm.due_date}
+                      onChange={(event) => setRecordForm((prev) => ({ ...prev, due_date: event.target.value }))}
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Discount</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={recordForm.discount_amount}
+                      onChange={(event) => setRecordForm((prev) => ({ ...prev, discount_amount: event.target.value }))}
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Fine</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={recordForm.fine_amount}
+                      onChange={(event) => setRecordForm((prev) => ({ ...prev, fine_amount: event.target.value }))}
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <Label>Note</Label>
+                    <Textarea
+                      value={recordForm.note}
+                      onChange={(event) => setRecordForm((prev) => ({ ...prev, note: event.target.value }))}
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <Button type="submit" disabled={saving}>
+                      <span className="inline-flex items-center gap-2">
+                        {saving && <Loader2 size={16} className="animate-spin" />}
+                        Create Record
+                      </span>
+                    </Button>
+                  </div>
+                </form>
+              </Card>
+
+              <Card>
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 className="font-semibold text-slate-900">Filter Student Fee Records</h2>
+                    <p className="text-sm text-slate-500">
+                      Separate records by class, category, annual/midterm fee category, manual miscellaneous fee, status or student
+                      name/admission no.
+                    </p>
+                  </div>
+
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                    {records.length} shown{activeRecordFilterCount ? ` · ${activeRecordFilterCount} filters` : ""}
+                  </span>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
+                  <div>
+                    <Label>Class</Label>
+                    <Select
+                      value={recordFilters.class_id}
+                      onChange={(value) =>
+                        setRecordFilters((prev) => ({
+                          ...prev,
+                          class_id: value,
+                          section_id: "",
+                        }))
+                      }
+                    >
+                      <option value="">All classes</option>
+                      {meta?.classes.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Section</Label>
+                    <Select
+                      value={recordFilters.section_id}
+                      onChange={(value) => setRecordFilters((prev) => ({ ...prev, section_id: value }))}
+                    >
+                      <option value="">All sections</option>
+                      {recordFilteredSections.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Fee Category</Label>
+                    <Select
+                      value={recordFilters.category_id}
+                      onChange={(value) =>
+                        setRecordFilters((prev) => ({
+                          ...prev,
+                          category_id: value,
+                          fee_type: value ? "STRUCTURED" : prev.fee_type,
+                        }))
+                      }
+                    >
+                      <option value="">All categories</option>
+                      {meta?.categories.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Record Type</Label>
+                    <Select
+                      value={recordFilters.fee_type}
+                      onChange={(value) =>
+                        setRecordFilters((prev) => ({
+                          ...prev,
+                          fee_type: value,
+                          category_id: value === "MISCELLANEOUS" ? "" : prev.category_id,
+                        }))
+                      }
+                    >
+                      <option value="">All records</option>
+                      <option value="STRUCTURED">Structured/category fees</option>
+                      <option value="MISCELLANEOUS">Miscellaneous/manual fees</option>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Status</Label>
+                    <Select
+                      value={recordFilters.status}
+                      onChange={(value) => setRecordFilters((prev) => ({ ...prev, status: value }))}
+                    >
+                      <option value="">All statuses</option>
+                      {recordStatusOptions.map((status) => (
+                        <option key={status} value={status}>
+                          {status}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Search</Label>
+                    <Input
+                      value={recordFilters.search}
+                      onChange={(event) => setRecordFilters((prev) => ({ ...prev, search: event.target.value }))}
+                      placeholder="Student / fee / admission"
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button type="button" onClick={applyRecordFilters} disabled={recordsRefreshing}>
+                    <span className="inline-flex items-center gap-2">
+                      {recordsRefreshing && <Loader2 size={15} className="animate-spin" />}
+                      Apply Filters
+                    </span>
+                  </Button>
+
+                  <button
+                    type="button"
+                    onClick={clearRecordFilters}
+                    disabled={recordsRefreshing}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </Card>
+
+              <RecordsTable
+                records={records}
+                loading={recordsRefreshing}
+                onPay={(record) => {
+                  setActiveTab("payments");
+                  setPaymentForm((prev) => ({
+                    ...prev,
+                    student_fee_record_id: String(record.id),
+                    amount: String(record.balance_amount),
+                  }));
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+              />
             </div>
-            <div>
-              <Label>Subject</Label>
-              <SelectBox value={selectedSubjectId} onChange={setSelectedSubjectId}>
-                <option value="">Select subject</option>
-                {examSubjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.subject_name} · Max {subject.max_marks}</option>)}
-              </SelectBox>
+          )}
+
+          {activeTab === "payments" && (
+            <div className="space-y-6">
+              {lastReceipt && (
+                <Card>
+                  <h2 className="flex items-center gap-2 font-semibold text-slate-900">
+                    <ReceiptText size={18} />
+                    Receipt Generated
+                  </h2>
+
+                  <div className="mt-4 grid gap-3 md:grid-cols-3">
+                    <p className="text-sm">
+                      <span className="text-slate-500">Receipt:</span> <b>{lastReceipt.payment.receipt_no}</b>
+                    </p>
+                    <p className="text-sm">
+                      <span className="text-slate-500">Student:</span> <b>{lastReceipt.payment.student_name}</b>
+                    </p>
+                    <p className="text-sm">
+                      <span className="text-slate-500">Amount:</span> <b>{money(lastReceipt.payment.amount)}</b>
+                    </p>
+                    <p className="text-sm">
+                      <span className="text-slate-500">Fee:</span> <b>{lastReceipt.record.title}</b>
+                    </p>
+                    <p className="text-sm">
+                      <span className="text-slate-500">Paid:</span> <b>{money(lastReceipt.record.paid_amount)}</b>
+                    </p>
+                    <p className="text-sm">
+                      <span className="text-slate-500">Balance:</span> <b>{money(lastReceipt.record.balance_amount)}</b>
+                    </p>
+                  </div>
+                </Card>
+              )}
+
+              <Card>
+                <h2 className="mb-4 font-semibold text-slate-900">Payment Entry</h2>
+
+                <form onSubmit={savePayment} className="grid gap-4 md:grid-cols-3">
+                  <div className="md:col-span-2">
+                    <Label>Pending Fee Record</Label>
+                    <Select
+                      value={paymentForm.student_fee_record_id}
+                      onChange={(value) =>
+                        setPaymentForm((prev) => ({
+                          ...prev,
+                          student_fee_record_id: value,
+                          amount: String(records.find((item) => String(item.id) === value)?.balance_amount || ""),
+                        }))
+                      }
+                      required
+                    >
+                      <option value="">Select pending fee</option>
+                      {pendingRecords.map((record) => (
+                        <option key={record.id} value={record.id}>
+                          {record.student_name} · {record.title} · Balance {money(record.balance_amount)}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Amount</Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="0.01"
+                      max={selectedPaymentRecord?.balance_amount || undefined}
+                      value={paymentForm.amount}
+                      onChange={(event) => setPaymentForm((prev) => ({ ...prev, amount: event.target.value }))}
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Payment Date</Label>
+                    <Input
+                      type="date"
+                      value={paymentForm.payment_date}
+                      onChange={(event) => setPaymentForm((prev) => ({ ...prev, payment_date: event.target.value }))}
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Payment Mode</Label>
+                    <Select
+                      value={paymentForm.payment_mode}
+                      onChange={(value) => setPaymentForm((prev) => ({ ...prev, payment_mode: value }))}
+                      required
+                    >
+                      {paymentModes.map((mode) => (
+                        <option key={mode} value={mode}>
+                          {mode}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Reference No.</Label>
+                    <Input
+                      value={paymentForm.reference_no}
+                      onChange={(event) => setPaymentForm((prev) => ({ ...prev, reference_no: event.target.value }))}
+                      placeholder="UPI ref / cheque no."
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <Label>Note</Label>
+                    <Textarea
+                      value={paymentForm.note}
+                      onChange={(event) => setPaymentForm((prev) => ({ ...prev, note: event.target.value }))}
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <Button type="submit" disabled={saving}>
+                      <span className="inline-flex items-center gap-2">
+                        {saving && <Loader2 size={16} className="animate-spin" />}
+                        Save Payment & Generate Receipt
+                      </span>
+                    </Button>
+                  </div>
+                </form>
+              </Card>
+
+              <PaymentsTable payments={payments} loading={Boolean(tabLoading.payments)} onReceipt={openReceipt} />
             </div>
-          </div>
+          )}
 
-          {selectedSubject && <p className="mb-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">Selected subject: <b>{selectedSubject.subject_name}</b> · Exam: {displayDate(selectedSubject.exam_date)} · {displayTime(selectedSubject.start_time)} - {displayTime(selectedSubject.end_time)} · Max marks: {selectedSubject.max_marks} · Pass marks: {selectedSubject.pass_marks}</p>}
+          {activeTab === "expenses" && (
+            <div className="space-y-6">
+              <Card>
+                <form onSubmit={saveExpense} className="grid gap-4 md:grid-cols-3">
+                  <div>
+                    <Label>Expense Title</Label>
+                    <Input
+                      value={expenseForm.title}
+                      onChange={(event) => setExpenseForm((prev) => ({ ...prev, title: event.target.value }))}
+                      placeholder="Electricity bill"
+                      required
+                    />
+                  </div>
 
-          <div className="overflow-x-auto rounded-2xl border border-slate-200">
-            <table className="min-w-full divide-y divide-slate-200 text-sm">
-              <thead className="bg-slate-50 text-left text-slate-600">
-                <tr>
-                  <th className="px-4 py-3">Student</th>
-                  <th className="px-4 py-3">Marks</th>
-                  <th className="px-4 py-3">Absent</th>
-                  <th className="px-4 py-3">Grade</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Remarks</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {marksLoading && <LoadingTableRow colSpan={6} text="Refreshing marks..." />}
-                {marks.map((mark) => {
-                  const draft = markDrafts[mark.student_id] || { student_id: mark.student_id, marks_obtained: "", is_absent: false, remarks: "" };
-                  return (
-                    <tr key={mark.student_id}>
-                      <td className="px-4 py-3"><p className="font-semibold text-slate-900">{mark.student_name}</p><p className="text-xs text-slate-500">Adm: {mark.admission_no}{mark.roll_number ? ` · Roll: ${mark.roll_number}` : ""}</p></td>
-                      <td className="px-4 py-3"><Input type="number" min="0" max={mark.max_marks} value={draft.marks_obtained} disabled={draft.is_absent} onChange={(event) => updateDraft(mark.student_id, { marks_obtained: event.target.value })} className="w-28" /></td>
-                      <td className="px-4 py-3"><input type="checkbox" checked={draft.is_absent} onChange={(event) => updateDraft(mark.student_id, { is_absent: event.target.checked, marks_obtained: event.target.checked ? "" : draft.marks_obtained })} /></td>
-                      <td className="px-4 py-3 text-slate-600">{mark.grade || "-"}</td>
-                      <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(mark.pass_status)}`}>{mark.pass_status}</span></td>
-                      <td className="px-4 py-3"><Input value={draft.remarks} onChange={(event) => updateDraft(mark.student_id, { remarks: event.target.value })} placeholder="Optional" /></td>
+                  <div>
+                    <Label>Category</Label>
+                    <Input
+                      value={expenseForm.category}
+                      onChange={(event) => setExpenseForm((prev) => ({ ...prev, category: event.target.value }))}
+                      placeholder="Utilities"
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Amount</Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="0.01"
+                      value={expenseForm.amount}
+                      onChange={(event) => setExpenseForm((prev) => ({ ...prev, amount: event.target.value }))}
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Expense Date</Label>
+                    <Input
+                      type="date"
+                      value={expenseForm.expense_date}
+                      onChange={(event) => setExpenseForm((prev) => ({ ...prev, expense_date: event.target.value }))}
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Payment Mode</Label>
+                    <Select
+                      value={expenseForm.payment_mode}
+                      onChange={(value) => setExpenseForm((prev) => ({ ...prev, payment_mode: value }))}
+                    >
+                      {paymentModes.map((mode) => (
+                        <option key={mode} value={mode}>
+                          {mode}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label>Vendor</Label>
+                    <Input
+                      value={expenseForm.vendor_name}
+                      onChange={(event) => setExpenseForm((prev) => ({ ...prev, vendor_name: event.target.value }))}
+                    />
+                  </div>
+
+                  <div>
+                    <Label>Reference No.</Label>
+                    <Input
+                      value={expenseForm.reference_no}
+                      onChange={(event) => setExpenseForm((prev) => ({ ...prev, reference_no: event.target.value }))}
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <Label>Note</Label>
+                    <Textarea
+                      value={expenseForm.note}
+                      onChange={(event) => setExpenseForm((prev) => ({ ...prev, note: event.target.value }))}
+                    />
+                  </div>
+
+                  <div className="md:col-span-3">
+                    <Button type="submit" disabled={saving}>
+                      <span className="inline-flex items-center gap-2">
+                        {saving && <Loader2 size={16} className="animate-spin" />}
+                        Save Expense
+                      </span>
+                    </Button>
+                  </div>
+                </form>
+              </Card>
+
+              <TableWrap
+                empty={expenses.length === 0}
+                emptyText="No expense entries yet."
+                loading={Boolean(tabLoading.expenses)}
+                loadingText="Refreshing expenses..."
+              >
+                <thead className="bg-slate-100 text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3">Title</th>
+                    <th className="px-4 py-3">Category</th>
+                    <th className="px-4 py-3">Date</th>
+                    <th className="px-4 py-3">Mode</th>
+                    <th className="px-4 py-3">Amount</th>
+                    <th className="px-4 py-3">Actions</th>
+                  </tr>
+                </thead>
+
+                <tbody className="divide-y divide-slate-100">
+                  {expenses.map((expense) => (
+                    <tr key={expense.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 font-medium text-slate-900">{expense.title}</td>
+                      <td className="px-4 py-3 text-slate-700">{expense.category || "-"}</td>
+                      <td className="px-4 py-3 text-slate-700">{expense.expense_date}</td>
+                      <td className="px-4 py-3 text-slate-700">{expense.payment_mode}</td>
+                      <td className="px-4 py-3 text-red-700">{money(expense.amount)}</td>
+                      <td className="px-4 py-3">
+                        <IconButton onClick={() => deactivate(`/fees/expenses/${expense.id}`, "Expense deactivated")} />
+                      </td>
                     </tr>
-                  );
-                })}
-                {!marksLoading && marks.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-500">Select an exam subject to enter marks.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button type="button" onClick={saveMarks} disabled={saving || !marks.length} className="flex items-center gap-2"><Save size={16} /> Save Marks</Button>
-            <button type="button" onClick={loadMarks} disabled={marksLoading} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60">{marksLoading && <Loader2 size={16} className="animate-spin" />} {marksLoading ? "Reloading..." : "Reload Marks"}</button>
-          </div>
-        </AppSection>
-      )}
-
-      {moduleReady && tab === "reports" && (
-        <div className="space-y-6">
-          <AppSection title="Result reports" description="View class-wise and subject-wise result before or after publishing.">
-            <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-              <div>
-                <Label>Exam</Label>
-                <SelectBox value={selectedExamId} onChange={(value) => { setSelectedExamId(value); setSelectedSubjectId(""); }}>
-                  <option value="">Select exam</option>
-                  {exams.map((exam) => <option key={exam.id} value={exam.id}>{exam.name} · {exam.class_name}</option>)}
-                </SelectBox>
-              </div>
-              <div>
-                <Label>Subject</Label>
-                <SelectBox value={selectedSubjectId} onChange={setSelectedSubjectId}>
-                  <option value="">Class-wise only</option>
-                  {examSubjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.subject_name}</option>)}
-                </SelectBox>
-              </div>
-              <div className="flex items-end"><Button onClick={loadReports} type="button" disabled={reportsLoading} className="flex items-center gap-2">{reportsLoading ? <Loader2 size={16} className="animate-spin" /> : <Eye size={16} />} {reportsLoading ? "Loading..." : "View"}</Button></div>
+                  ))}
+                </tbody>
+              </TableWrap>
             </div>
-          </AppSection>
-
-          {reportsLoading && <Card><InlineLoader text="Refreshing result reports..." /></Card>}
-
-          {classResult && (
-            <AppSection title="Class-wise result" description={`${classResult.exam.name} · ${classResult.exam.class_name}${classResult.exam.section_name ? ` - ${classResult.exam.section_name}` : ""}`}>
-              <div className="mb-4 grid gap-3 md:grid-cols-4">
-                <Card><p className="text-xs text-slate-500">Students</p><p className="text-2xl font-bold">{classResult.summary.total_students}</p></Card>
-                <Card><p className="text-xs text-slate-500">Passed</p><p className="text-2xl font-bold text-emerald-700">{classResult.summary.passed}</p></Card>
-                <Card><p className="text-xs text-slate-500">Failed</p><p className="text-2xl font-bold text-red-700">{classResult.summary.failed}</p></Card>
-                <Card><p className="text-xs text-slate-500">Average %</p><p className="text-2xl font-bold">{classResult.summary.average_percentage}</p></Card>
-              </div>
-              <div className="overflow-x-auto rounded-2xl border border-slate-200">
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
-                  <thead className="bg-slate-50 text-left text-slate-600"><tr><th className="px-4 py-3">Student</th><th className="px-4 py-3">Marks</th><th className="px-4 py-3">%</th><th className="px-4 py-3">Grade</th><th className="px-4 py-3">Status</th></tr></thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {classResult.results.map((item) => (
-                      <tr key={item.student_id}><td className="px-4 py-3"><p className="font-semibold">{item.student_name}</p><p className="text-xs text-slate-500">{item.admission_no}</p></td><td className="px-4 py-3">{item.marks_obtained}/{item.total_marks}</td><td className="px-4 py-3">{item.percentage}%</td><td className="px-4 py-3">{item.grade}</td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(item.pass_status)}`}>{item.pass_status}</span></td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </AppSection>
           )}
+        </>
+      )}
+    </AppSection>
+  );
+}
 
-          {subjectResult && (
-            <AppSection title="Subject-wise result" description={subjectResult.exam_subject.subject_name || "Subject result"}>
-              <div className="mb-4 grid gap-3 md:grid-cols-4">
-                <Card><p className="text-xs text-slate-500">Students</p><p className="text-2xl font-bold">{subjectResult.summary.total_students}</p></Card>
-                <Card><p className="text-xs text-slate-500">Passed</p><p className="text-2xl font-bold text-emerald-700">{subjectResult.summary.passed}</p></Card>
-                <Card><p className="text-xs text-slate-500">Failed/Absent</p><p className="text-2xl font-bold text-red-700">{subjectResult.summary.failed}</p></Card>
-                <Card><p className="text-xs text-slate-500">Average Marks</p><p className="text-2xl font-bold">{subjectResult.summary.average_marks}</p></Card>
-              </div>
-              <div className="overflow-x-auto rounded-2xl border border-slate-200">
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
-                  <thead className="bg-slate-50 text-left text-slate-600"><tr><th className="px-4 py-3">Student</th><th className="px-4 py-3">Marks</th><th className="px-4 py-3">Grade</th><th className="px-4 py-3">Status</th></tr></thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {subjectResult.results.map((item) => (
-                      <tr key={item.student_id}><td className="px-4 py-3"><p className="font-semibold">{item.student_name}</p><p className="text-xs text-slate-500">{item.admission_no}</p></td><td className="px-4 py-3">{item.is_absent ? "Absent" : item.marks_obtained ?? "-"}/{item.max_marks}</td><td className="px-4 py-3">{item.grade || "-"}</td><td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(item.pass_status)}`}>{item.pass_status}</span></td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </AppSection>
-          )}
+function TableWrap({
+  empty,
+  emptyText,
+  loading = false,
+  loadingText = "Refreshing data...",
+  children,
+}: {
+  empty: boolean;
+  emptyText: string;
+  loading?: boolean;
+  loadingText?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card className="relative overflow-hidden p-0">
+      {loading && <ScopedLoader text={loadingText} />}
+
+      {empty && !loading ? (
+        <Empty text={emptyText} />
+      ) : (
+        <div className={`overflow-x-auto transition ${loading ? "opacity-60" : "opacity-100"}`}>
+          <table className="w-full text-left text-sm">{children}</table>
         </div>
       )}
-    </div>
+    </Card>
+  );
+}
+
+function IconButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="rounded-lg border border-red-200 p-2 text-red-600 hover:bg-red-50">
+      <Trash2 size={15} />
+    </button>
+  );
+}
+
+function RecordsTable({
+  records,
+  loading = false,
+  onPay,
+}: {
+  records: StudentFeeRecord[];
+  loading?: boolean;
+  onPay: (record: StudentFeeRecord) => void;
+}) {
+  return (
+    <TableWrap
+      empty={records.length === 0}
+      emptyText="No student fee records yet."
+      loading={loading}
+      loadingText="Refreshing student fee records..."
+    >
+      <thead className="bg-slate-100 text-xs uppercase text-slate-500">
+        <tr>
+          <th className="px-4 py-3">Student</th>
+          <th className="px-4 py-3">Fee</th>
+          <th className="px-4 py-3">Category</th>
+          <th className="px-4 py-3">Due</th>
+          <th className="px-4 py-3">Billable</th>
+          <th className="px-4 py-3">Paid</th>
+          <th className="px-4 py-3">Balance</th>
+          <th className="px-4 py-3">Status</th>
+          <th className="px-4 py-3">Action</th>
+        </tr>
+      </thead>
+
+      <tbody className="divide-y divide-slate-100">
+        {records.map((record) => (
+          <tr key={record.id} className="hover:bg-slate-50">
+            <td className="px-4 py-3">
+              <p className="font-medium text-slate-900">{record.student_name || "-"}</p>
+              <p className="text-xs text-slate-500">
+                {record.admission_no || "-"} · {record.class_name || "-"}
+                {record.section_name ? `-${record.section_name}` : ""}
+              </p>
+            </td>
+
+            <td className="px-4 py-3 text-slate-700">{record.title}</td>
+
+            <td className="px-4 py-3 text-slate-700">
+              {record.category_name || (record.fee_type === "MISCELLANEOUS" ? "Miscellaneous" : "-")}
+            </td>
+
+            <td className="px-4 py-3 text-slate-700">{record.due_date || "-"}</td>
+            <td className="px-4 py-3 text-slate-700">{money(record.amount + record.fine_amount - record.discount_amount)}</td>
+            <td className="px-4 py-3 text-emerald-700">{money(record.paid_amount)}</td>
+            <td className="px-4 py-3 text-amber-700">{money(record.balance_amount)}</td>
+
+            <td className="px-4 py-3">
+              <StatusBadge status={record.status} />
+            </td>
+
+            <td className="px-4 py-3">
+              {record.balance_amount > 0 && record.status !== "WAIVED" ? (
+                <button
+                  type="button"
+                  onClick={() => onPay(record)}
+                  className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-semibold hover:bg-slate-100"
+                >
+                  Pay
+                </button>
+              ) : (
+                "-"
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </TableWrap>
+  );
+}
+
+function PaymentsTable({
+  payments,
+  loading = false,
+  onReceipt,
+}: {
+  payments: FeePayment[];
+  loading?: boolean;
+  onReceipt: (paymentId: number) => void;
+}) {
+  return (
+    <TableWrap empty={payments.length === 0} emptyText="No payments yet." loading={loading} loadingText="Refreshing payments...">
+      <thead className="bg-slate-100 text-xs uppercase text-slate-500">
+        <tr>
+          <th className="px-4 py-3">Receipt</th>
+          <th className="px-4 py-3">Student</th>
+          <th className="px-4 py-3">Fee</th>
+          <th className="px-4 py-3">Date</th>
+          <th className="px-4 py-3">Mode</th>
+          <th className="px-4 py-3">Amount</th>
+          <th className="px-4 py-3">Action</th>
+        </tr>
+      </thead>
+
+      <tbody className="divide-y divide-slate-100">
+        {payments.map((payment) => (
+          <tr key={payment.id} className="hover:bg-slate-50">
+            <td className="px-4 py-3 font-medium text-slate-900">{payment.receipt_no}</td>
+            <td className="px-4 py-3 text-slate-700">{payment.student_name || "-"}</td>
+            <td className="px-4 py-3 text-slate-700">{payment.fee_title || "-"}</td>
+            <td className="px-4 py-3 text-slate-700">{payment.payment_date}</td>
+            <td className="px-4 py-3 text-slate-700">{payment.payment_mode}</td>
+            <td className="px-4 py-3 text-emerald-700">{money(payment.amount)}</td>
+            <td className="px-4 py-3">
+              <button
+                type="button"
+                onClick={() => onReceipt(payment.id)}
+                className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-semibold hover:bg-slate-100"
+              >
+                Receipt
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </TableWrap>
   );
 }

@@ -173,6 +173,7 @@ export default function FeeManager() {
   const [recordFilters, setRecordFilters] = useState<RecordFilters>(emptyRecordFilters);
 
   const [loading, setLoading] = useState(true);
+  const [tabLoading, setTabLoading] = useState<Partial<Record<TabKey, boolean>>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -193,6 +194,10 @@ export default function FeeManager() {
 
   const markLoaded = (tab: TabKey) => {
     setLoadedTabs((previous) => ({ ...previous, [tab]: true }));
+  };
+
+  const setTabRefreshing = (tab: TabKey, value: boolean) => {
+    setTabLoading((previous) => ({ ...previous, [tab]: value }));
   };
 
   const currentSessionQuery = (metaData: FeeMeta | null = meta) => {
@@ -232,7 +237,7 @@ export default function FeeManager() {
 
   const loadTabData = async (tab: TabKey = activeTab, force = false) => {
     if (!force && loadedTabs[tab]) return;
-    setLoading(true);
+    setTabRefreshing(tab, true);
     setError("");
     try {
       const query = currentSessionQuery();
@@ -270,7 +275,7 @@ export default function FeeManager() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load fee data");
     } finally {
-      setLoading(false);
+      setTabRefreshing(tab, false);
     }
   };
 
@@ -341,7 +346,7 @@ export default function FeeManager() {
 
   const clearRecordFilters = async () => {
     setRecordFilters(emptyRecordFilters);
-    setLoading(true);
+    setTabRefreshing("records", true);
     setError("");
     try {
       setRecords(await apiFetch<StudentFeeRecord[]>(recordsPath(emptyRecordFilters)));
@@ -349,7 +354,7 @@ export default function FeeManager() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load fee records");
     } finally {
-      setLoading(false);
+      setTabRefreshing("records", false);
     }
   };
 
@@ -546,6 +551,8 @@ export default function FeeManager() {
   const filteredSections = meta?.sections.filter((section) => !assignmentForm.class_id || section.extra === assignmentForm.class_id) || [];
   const recordFilteredSections = meta?.sections.filter((section) => !recordFilters.class_id || section.extra === recordFilters.class_id) || [];
   const activeRecordFilterCount = Object.values(recordFilters).filter((value) => value.trim() !== "").length;
+  const currentTabRefreshing = Boolean(tabLoading[activeTab]);
+  const activeTabLabel = tabs.find((item) => item.key === activeTab)?.label || "data";
 
   return (
     <AppSection
@@ -568,16 +575,18 @@ export default function FeeManager() {
         <button
           type="button"
           onClick={refreshCurrentTab}
-          className="ml-auto inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+          disabled={loading || currentTabRefreshing}
+          className="ml-auto inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          <RefreshCw size={15} /> Refresh
+          <RefreshCw size={15} className={currentTabRefreshing ? "animate-spin" : ""} /> {currentTabRefreshing ? "Refreshing..." : "Refresh"}
         </button>
       </div>
 
       {error && <p className="mb-4 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
       {message && <p className="mb-4 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{message}</p>}
+      {currentTabRefreshing && <p className="mb-4 rounded-xl bg-slate-50 px-3 py-2 text-sm font-medium text-slate-600">Refreshing {activeTabLabel} section...</p>}
 
-      {loading ? (
+      {loading && !meta ? (
         <Card>
           <p className="text-sm text-slate-500">Loading fee data...</p>
         </Card>
@@ -901,12 +910,12 @@ export default function FeeManager() {
                   </div>
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
-                  <Button type="button" onClick={applyRecordFilters}>Apply Filters</Button>
-                  <button type="button" onClick={clearRecordFilters} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100">Clear</button>
+                  <Button type="button" onClick={applyRecordFilters} disabled={Boolean(tabLoading.records)}>Apply Filters</Button>
+                  <button type="button" onClick={clearRecordFilters} disabled={Boolean(tabLoading.records)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60">Clear</button>
                 </div>
               </Card>
 
-              <RecordsTable records={records} onPay={(record) => { setActiveTab("payments"); setPaymentForm((prev) => ({ ...prev, student_fee_record_id: String(record.id), amount: String(record.balance_amount) })); window.scrollTo({ top: 0, behavior: "smooth" }); }} />
+              <RecordsTable records={records} loading={Boolean(tabLoading.records)} onPay={(record) => { setActiveTab("payments"); setPaymentForm((prev) => ({ ...prev, student_fee_record_id: String(record.id), amount: String(record.balance_amount) })); window.scrollTo({ top: 0, behavior: "smooth" }); }} />
             </div>
           )}
 
@@ -1044,11 +1053,16 @@ function IconButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-function RecordsTable({ records, onPay }: { records: StudentFeeRecord[]; onPay: (record: StudentFeeRecord) => void }) {
+function RecordsTable({ records, loading, onPay }: { records: StudentFeeRecord[]; loading?: boolean; onPay: (record: StudentFeeRecord) => void }) {
   return (
-    <TableWrap empty={records.length === 0} emptyText="No student fee records yet.">
+    <TableWrap empty={!loading && records.length === 0} emptyText="No student fee records yet.">
       <thead className="bg-slate-100 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Student</th><th className="px-4 py-3">Fee</th><th className="px-4 py-3">Category</th><th className="px-4 py-3">Due</th><th className="px-4 py-3">Billable</th><th className="px-4 py-3">Paid</th><th className="px-4 py-3">Balance</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Action</th></tr></thead>
       <tbody className="divide-y divide-slate-100">
+        {loading && (
+          <tr>
+            <td colSpan={9} className="px-4 py-3 text-center text-sm font-medium text-slate-500">Refreshing student records...</td>
+          </tr>
+        )}
         {records.map((record) => (
           <tr key={record.id} className="hover:bg-slate-50">
             <td className="px-4 py-3"><p className="font-medium text-slate-900">{record.student_name || "-"}</p><p className="text-xs text-slate-500">{record.admission_no || "-"} · {record.class_name || "-"}{record.section_name ? `-${record.section_name}` : ""}</p></td>

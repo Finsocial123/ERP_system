@@ -38,6 +38,7 @@ from app.services.tools.quiz_generator import generate_quiz
 from app.services.tools.summarizer import generate_and_save_summary
 from app.services.ai_cache import ai_cache, compute_content_hash
 from app.core.async_query import async_query
+from app.services.notification_service import notify_student_scope
 
 import asyncio
 from functools import partial
@@ -141,6 +142,22 @@ async def create_lesson(
         course_id=course_id,
     )
     db.add(lesson)
+    await db.flush()
+    if course.status == 'PUBLISHED':
+        await notify_student_scope(
+            db,
+            school_id=school_id,
+            class_id=course.class_id,
+            section_id=course.section_id,
+            academic_session_id=None,
+            title='New lesson added',
+            message=f"{lesson.title} was added to {course.title}.",
+            category='COURSE',
+            priority='NORMAL',
+            created_by=current_user.id,
+            student_link='/student-courses',
+            parent_link='/parent-courses',
+        )
     await db.commit()
     await db.refresh(lesson)
 
@@ -263,6 +280,21 @@ async def update_lesson(
         lesson.pdf_public_id = result['public_id']
         content_changed = True
 
+    if course.status == 'PUBLISHED':
+        await notify_student_scope(
+            db,
+            school_id=school_id,
+            class_id=course.class_id,
+            section_id=course.section_id,
+            academic_session_id=None,
+            title='Lesson updated',
+            message=f"{lesson.title} in {course.title} was updated.",
+            category='COURSE',
+            priority='NORMAL',
+            created_by=current_user.id,
+            student_link='/student-courses',
+            parent_link='/parent-courses',
+        )
     await db.commit()
     await db.refresh(lesson)
 

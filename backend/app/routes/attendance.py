@@ -10,6 +10,7 @@ from app.models.user import User, UserRole
 from app.schemas.attendance import AttendanceRead, AttendanceUpdate, BulkAttendanceCreate, DayAttendanceRecord, StudentAttendanceSummary
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
+from app.services.notification_service import format_date, notify_student_record
 router = APIRouter(prefix='/attendance', tags=['Phase 4 - Attendance'], dependencies=[Depends(require_writable_academic_session)])
 ADMIN_ROLES = [UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN]
 ALLOWED_ROLES = [*ADMIN_ROLES, UserRole.TEACHER]
@@ -99,17 +100,37 @@ async def bulk_mark_attendance(payload: BulkAttendanceCreate, request: Request, 
     if missing:
         raise HTTPException(status_code=400, detail=f'Students not found: {sorted(missing)}')
     results = []
+    students_by_id = {student.id: student for student in students}
+    attendance_notifications: list[tuple[Student, str]] = []
     for entry in payload.entries:
         existing = await async_query(db, StudentAttendance).filter(StudentAttendance.school_id == school_id, StudentAttendance.student_id == entry.student_id, StudentAttendance.date == payload.date, StudentAttendance.session_id == payload.session_id).first()
         if existing:
+            previous_status = existing.status
             existing.status = entry.status
             existing.note = entry.note
             existing.marked_by = current_user.id
             results.append(existing)
+            if entry.status != AttendanceStatus.PRESENT.value and previous_status != entry.status and entry.student_id in students_by_id:
+                attendance_notifications.append((students_by_id[entry.student_id], entry.status))
         else:
             record = StudentAttendance(school_id=school_id, session_id=payload.session_id, student_id=entry.student_id, class_id=payload.class_id, section_id=payload.section_id, date=payload.date, status=entry.status, note=entry.note, marked_by=current_user.id)
             db.add(record)
             results.append(record)
+            if entry.status != AttendanceStatus.PRESENT.value and entry.student_id in students_by_id:
+                attendance_notifications.append((students_by_id[entry.student_id], entry.status))
+    for student, status_value in attendance_notifications:
+        await notify_student_record(
+            db,
+            school_id=school_id,
+            student=student,
+            title='Attendance update',
+            message=f"Attendance marked {status_value.replace('_', ' ').title()} for {format_date(payload.date)}.",
+            category='ATTENDANCE',
+            priority='HIGH' if status_value == AttendanceStatus.ABSENT.value else 'NORMAL',
+            created_by=current_user.id,
+            student_link='/attendance/my',
+            parent_link='/attendance/my',
+        )
     await db.commit()
     for r in results:
         await db.refresh(r)
@@ -135,9 +156,28 @@ async def update_attendance(attendance_id: int, payload: AttendanceUpdate, schoo
         raise HTTPException(status_code=404, detail='Attendance record not found')
     await assert_item_session_is_writable(db, school_id, record, "session_id")
     await _assert_teacher_can_access_class(db, school_id, current_user, record.class_id, record.session_id)
+    previous_status = record.status
     record.status = payload.status
     record.note = payload.note
     record.marked_by = current_user.id
+    if payload.status != AttendanceStatus.PRESENT.value and previous_status != payload.status:
+        student = await async_query(db, Student).filter(
+            Student.school_id == school_id,
+            Student.id == record.student_id,
+        ).first()
+        if student:
+            await notify_student_record(
+                db,
+                school_id=school_id,
+                student=student,
+                title='Attendance update',
+                message=f"Attendance marked {payload.status.replace('_', ' ').title()} for {format_date(record.date)}.",
+                category='ATTENDANCE',
+                priority='HIGH' if payload.status == AttendanceStatus.ABSENT.value else 'NORMAL',
+                created_by=current_user.id,
+                student_link='/attendance/my',
+                parent_link='/attendance/my',
+            )
     await db.commit()
     await db.refresh(record)
     return record

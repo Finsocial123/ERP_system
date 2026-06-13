@@ -80,22 +80,33 @@ export default function NotificationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const loadNotifications = useCallback(async () => {
-    setLoading(true);
+  const loadNotifications = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError("");
     try {
       const data = await apiFetch<NotificationItem[]>("/communication/notifications?limit=100");
       setNotifications(data);
-      window.dispatchEvent(new Event("erp_notifications_updated"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load notifications.");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void loadNotifications();
+  }, [loadNotifications]);
+
+  useEffect(() => {
+    const refreshSilently = () => void loadNotifications(true);
+    const interval = window.setInterval(refreshSilently, 30000);
+    window.addEventListener("erp_notifications_updated", refreshSilently);
+    window.addEventListener("focus", refreshSilently);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("erp_notifications_updated", refreshSilently);
+      window.removeEventListener("focus", refreshSilently);
+    };
   }, [loadNotifications]);
 
   const counts = useMemo(() => {
@@ -111,12 +122,12 @@ export default function NotificationsPage() {
 
   async function markRead(id: number) {
     await apiFetch(`/communication/notifications/${id}/read`, { method: "POST" });
-    await loadNotifications();
+    await loadNotifications(true);
   }
 
   async function markAllRead() {
     await apiFetch("/communication/notifications/read-all", { method: "POST" });
-    await loadNotifications();
+    await loadNotifications(true);
   }
 
   return (

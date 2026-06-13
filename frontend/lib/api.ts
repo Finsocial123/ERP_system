@@ -1,7 +1,7 @@
 import type { AuthResponse } from "@/types";
 import { clearCachedBranding } from "@/lib/branding";
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 const TOKEN_KEY = "erp_access_token";
 const AUTH_KEY = "erp_auth";
 const ACADEMIC_SESSION_KEY = "erp_selected_academic_session_id";
@@ -216,6 +216,11 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
     throw new Error(Array.isArray(message) ? message.map((m) => m.msg).join(", ") : message);
   }
 
+  const method = (options.method || "GET").toUpperCase();
+  if (typeof window !== "undefined" && method !== "GET") {
+    window.dispatchEvent(new Event("erp_notifications_updated"));
+  }
+
   return data as T;
 }
 
@@ -230,6 +235,11 @@ export async function apiUpload<T>(path: string, formData: FormData, options: Re
   if (!res.ok) {
     const message = typeof data === "object" && data?.detail ? data.detail : "Request failed";
     throw new Error(Array.isArray(message) ? message.map((m) => m.msg).join(", ") : message);
+  }
+
+  const method = (options.method || "POST").toUpperCase();
+  if (typeof window !== "undefined" && method !== "GET") {
+    window.dispatchEvent(new Event("erp_notifications_updated"));
   }
 
   return data as T;

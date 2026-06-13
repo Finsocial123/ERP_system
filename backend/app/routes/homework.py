@@ -18,6 +18,12 @@ from app.schemas.common import MessageResponse
 from app.schemas.homework import HomeworkAssignmentRead, HomeworkCheckPayload, HomeworkMetaItem, HomeworkMetaResponse, HomeworkSubmissionRead, HomeworkStats, ParentHomeworkRead, StudentHomeworkRead
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
+from app.services.notification_service import (
+    format_date,
+    notify_student_record,
+    notify_student_scope,
+    notify_teacher_record,
+)
 router = APIRouter(prefix='/homework', tags=['Phase 5 - Homework and Assignment'], dependencies=[Depends(require_writable_academic_session)])
 ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
 MANAGER_ROLES = [UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN, UserRole.TEACHER]
@@ -330,6 +336,21 @@ async def create_assignment(request: Request, title: str=Form(..., min_length=2,
     attachment_url, attachment_filename = await _save_upload(attachment, 'assignments')
     assignment = HomeworkAssignment(school_id=school_id, teacher_id=assigned_teacher_id, class_id=class_id, section_id=section_id, subject_id=subject_id, academic_session_id=session.id if session else None, title=title.strip(), description=description.strip() if description else None, due_date=parsed_due_date, attachment_url=attachment_url, attachment_filename=attachment_filename)
     db.add(assignment)
+    await db.flush()
+    await notify_student_scope(
+        db,
+        school_id=school_id,
+        class_id=assignment.class_id,
+        section_id=assignment.section_id,
+        academic_session_id=assignment.academic_session_id,
+        title='New homework assigned',
+        message=f"{assignment.title} is due on {format_date(assignment.due_date)}.",
+        category='HOMEWORK',
+        priority='NORMAL',
+        created_by=current_user.id,
+        student_link='/student-homework',
+        parent_link='/parent-homework',
+    )
     await db.commit()
     await db.refresh(assignment)
     return await _assignment_payload(db, assignment)
@@ -351,6 +372,20 @@ async def update_assignment(assignment_id: int, title: str=Form(..., min_length=
     if attachment_url:
         assignment.attachment_url = attachment_url
         assignment.attachment_filename = attachment_filename
+    await notify_student_scope(
+        db,
+        school_id=school_id,
+        class_id=assignment.class_id,
+        section_id=assignment.section_id,
+        academic_session_id=assignment.academic_session_id,
+        title='Homework updated',
+        message=f"{assignment.title} was updated. Due date: {format_date(assignment.due_date)}.",
+        category='HOMEWORK',
+        priority='NORMAL',
+        created_by=current_user.id,
+        student_link='/student-homework',
+        parent_link='/parent-homework',
+    )
     await db.commit()
     await db.refresh(assignment)
     return await _assignment_payload(db, assignment)
@@ -426,10 +461,22 @@ async def submit_homework(assignment_id: int, request: Request, answer_text: str
         submission.attachment_url = attachment_url
         submission.attachment_filename = attachment_filename
     try:
-        await db.commit()
+        await db.flush()
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail='Homework already submitted. Refresh and try again')
+    await notify_teacher_record(
+        db,
+        school_id=school_id,
+        teacher_id=assignment.teacher_id,
+        title='Homework submitted',
+        message=f"{_full_student_name(student)} submitted {assignment.title}.",
+        category='HOMEWORK',
+        priority='NORMAL',
+        created_by=current_user.id,
+        link='/teacher-homework',
+    )
+    await db.commit()
     await db.refresh(assignment)
     return await _student_homework_payload(db, assignment, student)
 
@@ -446,17 +493,29 @@ async def check_submission(submission_id: int, payload: HomeworkCheckPayload, sc
         await assert_item_session_is_writable(db, school_id, assignment)
     if not assignment or not await _can_manage_assignment(db, school_id, current_user, assignment):
         raise HTTPException(status_code=403, detail='You can check submissions only for your own homework')
-    submission.status = 'CHECKED'
-    submission.teacher_feedback = payload.teacher_feedback
-    submission.checked_at = datetime.utcnow()
-    await db.commit()
-    await db.refresh(submission)
     student = await async_query(db, Student).filter(
         Student.school_id == school_id,
         Student.id == submission.student_id,
     ).first()
     if not student:
         raise HTTPException(status_code=404, detail='Student not found for this submission')
+    submission.status = 'CHECKED'
+    submission.teacher_feedback = payload.teacher_feedback
+    submission.checked_at = datetime.utcnow()
+    await notify_student_record(
+        db,
+        school_id=school_id,
+        student=student,
+        title='Homework checked',
+        message=f"Your submission for {assignment.title} has been checked.",
+        category='HOMEWORK',
+        priority='NORMAL',
+        created_by=current_user.id,
+        student_link='/student-homework',
+        parent_link='/parent-homework',
+    )
+    await db.commit()
+    await db.refresh(submission)
     return HomeworkSubmissionRead(id=submission.id, homework_id=submission.homework_id, student_id=submission.student_id, student_name=_full_student_name(student), admission_no=student.admission_no, roll_number=student.roll_number, status=submission.status, answer_text=submission.answer_text, attachment_url=submission.attachment_url, attachment_filename=submission.attachment_filename, teacher_feedback=submission.teacher_feedback, submitted_at=submission.created_at, checked_at=submission.checked_at)
 
 @router.get('/parent/assignments', response_model=list[ParentHomeworkRead])

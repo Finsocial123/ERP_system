@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
-from sqlalchemy import or_
+from sqlalchemy import inspect, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 from app.core.database import get_async_db
@@ -125,7 +125,79 @@ async def _assignment_stats(db: AsyncSession, assignment: HomeworkAssignment) ->
     return HomeworkStats(total_students=total_students, pending=pending, submitted=submitted, checked=checked)
 
 async def _assignment_payload(db: AsyncSession, assignment: HomeworkAssignment) -> HomeworkAssignmentRead:
-    return HomeworkAssignmentRead(id=assignment.id, title=assignment.title, description=assignment.description, due_date=assignment.due_date, class_id=assignment.class_id, section_id=assignment.section_id, subject_id=assignment.subject_id, teacher_id=assignment.teacher_id, academic_session_id=assignment.academic_session_id, class_name=assignment.school_class.name if assignment.school_class else None, section_name=assignment.section.name if assignment.section else None, subject_name=assignment.subject.name if assignment.subject else None, teacher_name=assignment.teacher.full_name if assignment.teacher else None, attachment_url=assignment.attachment_url, attachment_filename=assignment.attachment_filename, is_active=assignment.is_active, created_at=assignment.created_at, updated_at=assignment.updated_at, stats=await _assignment_stats(db, assignment))
+    """Build the API payload without triggering async lazy-loads.
+
+    AsyncSession cannot run relationship lazy-loading from normal attribute access
+    (for example assignment.school_class.name). If the relationship was eagerly
+    loaded, reuse it. Otherwise fetch the display names explicitly with awaited
+    queries. This prevents sqlalchemy.exc.MissingGreenlet after create/update/submit.
+    """
+    unloaded = inspect(assignment).unloaded
+
+    class_name = None
+    if 'school_class' not in unloaded:
+        class_name = assignment.school_class.name if assignment.school_class else None
+    else:
+        school_class = await async_query(db, SchoolClass).filter(
+            SchoolClass.id == assignment.class_id,
+            SchoolClass.school_id == assignment.school_id,
+        ).first()
+        class_name = school_class.name if school_class else None
+
+    section_name = None
+    if assignment.section_id is not None:
+        if 'section' not in unloaded:
+            section_name = assignment.section.name if assignment.section else None
+        else:
+            section = await async_query(db, Section).filter(
+                Section.id == assignment.section_id,
+                Section.school_id == assignment.school_id,
+            ).first()
+            section_name = section.name if section else None
+
+    subject_name = None
+    if assignment.subject_id is not None:
+        if 'subject' not in unloaded:
+            subject_name = assignment.subject.name if assignment.subject else None
+        else:
+            subject = await async_query(db, Subject).filter(
+                Subject.id == assignment.subject_id,
+                Subject.school_id == assignment.school_id,
+            ).first()
+            subject_name = subject.name if subject else None
+
+    teacher_name = None
+    if assignment.teacher_id is not None:
+        if 'teacher' not in unloaded:
+            teacher_name = assignment.teacher.full_name if assignment.teacher else None
+        else:
+            teacher = await async_query(db, Teacher).filter(
+                Teacher.id == assignment.teacher_id,
+                Teacher.school_id == assignment.school_id,
+            ).first()
+            teacher_name = teacher.full_name if teacher else None
+
+    return HomeworkAssignmentRead(
+        id=assignment.id,
+        title=assignment.title,
+        description=assignment.description,
+        due_date=assignment.due_date,
+        class_id=assignment.class_id,
+        section_id=assignment.section_id,
+        subject_id=assignment.subject_id,
+        teacher_id=assignment.teacher_id,
+        academic_session_id=assignment.academic_session_id,
+        class_name=class_name,
+        section_name=section_name,
+        subject_name=subject_name,
+        teacher_name=teacher_name,
+        attachment_url=assignment.attachment_url,
+        attachment_filename=assignment.attachment_filename,
+        is_active=assignment.is_active,
+        created_at=assignment.created_at,
+        updated_at=assignment.updated_at,
+        stats=await _assignment_stats(db, assignment),
+    )
 
 async def _student_homework_payload(db: AsyncSession, assignment: HomeworkAssignment, student: Student) -> StudentHomeworkRead:
     submission = await async_query(db, HomeworkSubmission).filter(HomeworkSubmission.school_id == assignment.school_id, HomeworkSubmission.homework_id == assignment.id, HomeworkSubmission.student_id == student.id).first()

@@ -20,6 +20,7 @@ from app.services.lms_access import ALL_LMS_ROLES, ADMIN_ROLES, MANAGER_ROLES, c
 from app.utils.cloudinary import upload_file
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
+from app.services.notification_service import notify_student_scope
 router = APIRouter(prefix='/courses', tags=['LMS Courses'])
 COURSE_STATUSES = {'DRAFT', 'PUBLISHED', 'ARCHIVED'}
 
@@ -285,6 +286,22 @@ async def create_course(title: str=Form(..., min_length=2, max_length=255), desc
         thumbnail_url = result['url']
     course = Course(school_id=school_id, class_id=class_id, section_id=section_id, subject_id=subject_id, academic_session_id=None, title=title.strip(), description=description.strip() if description else None, thumbnail_url=thumbnail_url, teacher_id=assigned_teacher_user_id, status=_safe_status(status_value), is_active=True)
     db.add(course)
+    await db.flush()
+    if course.status == 'PUBLISHED':
+        await notify_student_scope(
+            db,
+            school_id=school_id,
+            class_id=course.class_id,
+            section_id=course.section_id,
+            academic_session_id=None,
+            title='New course available',
+            message=f"{course.title} is now available in LMS courses.",
+            category='COURSE',
+            priority='NORMAL',
+            created_by=current_user.id,
+            student_link='/student-courses',
+            parent_link='/parent-courses',
+        )
     await db.commit()
     await db.refresh(course)
     return await _course_payload(db, course)
@@ -327,11 +344,27 @@ async def update_course(course_id: int, title: Optional[str]=Form(None), descrip
     course.class_id = next_class_id
     course.section_id = next_section_id
     course.subject_id = next_subject_id
+    previous_status = course.status
     if status_value is not None:
         course.status = _safe_status(status_value)
     if thumbnail and thumbnail.filename:
         result = upload_file(thumbnail.file, folder='lms/thumbnails', resource_type='image')
         course.thumbnail_url = result['url']
+    if course.status == 'PUBLISHED':
+        await notify_student_scope(
+            db,
+            school_id=school_id,
+            class_id=course.class_id,
+            section_id=course.section_id,
+            academic_session_id=None,
+            title='Course updated' if previous_status == 'PUBLISHED' else 'New course available',
+            message=f"{course.title} has been updated in LMS courses.",
+            category='COURSE',
+            priority='NORMAL',
+            created_by=current_user.id,
+            student_link='/student-courses',
+            parent_link='/parent-courses',
+        )
     await db.commit()
     await db.refresh(course)
     return await _course_payload(db, course)

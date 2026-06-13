@@ -11,6 +11,7 @@ from app.models.people import Teacher, TeacherSubject, Student
 from app.models.meeting import Meeting, MeetingStatus, MeetingType
 from app.services import meeting_service
 from app.schemas.meetings import MeetingListOut, TeacherClassOut, TeacherMeetingCreate, AdminMeetingCreate, MeetingCreateOut, TeacherMeetingSchedule, AdminMeetingSchedule, MeetingListItemOut
+from app.services.notification_service import notify_roles, notify_student_scope
 router = APIRouter(prefix='/meetings', tags=['Meetings'])
 
 @router.get('/stats')
@@ -49,6 +50,21 @@ async def teacher_create_class_meeting(
         raise HTTPException(403, str(e))
     except Exception as e:
         raise HTTPException(503, f'BBB service error: {str(e)}')
+    await notify_student_scope(
+        db,
+        school_id=current_user.school_id,
+        class_id=meeting.class_id,
+        section_id=meeting.section_id,
+        academic_session_id=None,
+        title='Class meeting is live',
+        message=f"{meeting.title} has started.",
+        category='MEETING',
+        priority='HIGH',
+        created_by=current_user.id,
+        student_link='/students/meetings',
+        parent_link='/students/meetings',
+    )
+    await db.commit()
     join_url = await meeting_service.get_meeting_join_url(db=db, meeting_id=meeting.id, user_id=current_user.id, full_name=teacher.full_name, is_moderator=True,     user_role=current_user.role)
     return {'meeting_id': meeting.id, 'join_url': join_url}
 
@@ -62,6 +78,18 @@ async def admin_create_teachers_meeting(
         meeting = await meeting_service.create_admin_teachers_meeting(db=db, school_id=current_user.school_id, title=payload.title, created_by_user_id=current_user.id)
     except Exception as e:
         raise HTTPException(503, f'BBB service error: {str(e)}')
+    notify_roles(
+        db,
+        school_id=current_user.school_id,
+        roles=[UserRole.TEACHER],
+        title='Staff meeting is live',
+        message=f"{meeting.title} has started.",
+        category='MEETING',
+        priority='HIGH',
+        created_by=current_user.id,
+        link='/teachers/meetings',
+    )
+    await db.commit()
     join_url = await meeting_service.get_meeting_join_url(db=db, meeting_id=meeting.id, user_id=current_user.id, full_name=current_user.full_name, is_moderator=True, user_role=current_user.role)
     return {'meeting_id': meeting.id, 'join_url': join_url}
 
@@ -152,6 +180,21 @@ async def schedule_teacher_class_meeting(
         )
     except PermissionError as e:
         raise HTTPException(403, str(e))
+    await notify_student_scope(
+        db,
+        school_id=current_user.school_id,
+        class_id=meeting.class_id,
+        section_id=meeting.section_id,
+        academic_session_id=None,
+        title='Class meeting scheduled',
+        message=f"{meeting.title} has been scheduled.",
+        category='MEETING',
+        priority='NORMAL',
+        created_by=current_user.id,
+        student_link='/students/meetings',
+        parent_link='/students/meetings',
+    )
+    await db.commit()
     return meeting
 
 
@@ -165,6 +208,18 @@ async def schedule_admin_teachers_meeting(
         db=db, school_id=current_user.school_id, title=payload.title,
         scheduled_at=payload.scheduled_at, created_by_user_id=current_user.id,
     )
+    notify_roles(
+        db,
+        school_id=current_user.school_id,
+        roles=[UserRole.TEACHER],
+        title='Staff meeting scheduled',
+        message=f"{meeting.title} has been scheduled.",
+        category='MEETING',
+        priority='NORMAL',
+        created_by=current_user.id,
+        link='/teachers/meetings',
+    )
+    await db.commit()
     return meeting
 
 
@@ -182,6 +237,35 @@ async def start_scheduled_meeting(
         raise HTTPException(403, str(e))
     except Exception as e:
         raise HTTPException(503, f"BBB service error: {str(e)}")
+
+    if meeting.meeting_type == MeetingType.ADMIN_TEACHERS:
+        notify_roles(
+            db,
+            school_id=current_user.school_id,
+            roles=[UserRole.TEACHER],
+            title='Staff meeting is live',
+            message=f"{meeting.title} has started.",
+            category='MEETING',
+            priority='HIGH',
+            created_by=current_user.id,
+            link='/teachers/meetings',
+        )
+    else:
+        await notify_student_scope(
+            db,
+            school_id=current_user.school_id,
+            class_id=meeting.class_id,
+            section_id=meeting.section_id,
+            academic_session_id=None,
+            title='Class meeting is live',
+            message=f"{meeting.title} has started.",
+            category='MEETING',
+            priority='HIGH',
+            created_by=current_user.id,
+            student_link='/students/meetings',
+            parent_link='/students/meetings',
+        )
+    await db.commit()
 
     full_name = current_user.full_name
     result = await db.execute(select(Teacher).where(
@@ -206,11 +290,39 @@ async def cancel_scheduled_meeting(
     current_user: User = Depends(require_roles(UserRole.TEACHER, UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN)),
 ):
     try:
-        await meeting_service.cancel_scheduled_meeting(
+        meeting = await meeting_service.cancel_scheduled_meeting(
             db=db, meeting_id=meeting_id, current_user=current_user
         )
     except (ValueError, PermissionError) as e:
         raise HTTPException(403, str(e))
+    if meeting.meeting_type == MeetingType.ADMIN_TEACHERS:
+        notify_roles(
+            db,
+            school_id=current_user.school_id,
+            roles=[UserRole.TEACHER],
+            title='Staff meeting cancelled',
+            message=f"{meeting.title} was cancelled.",
+            category='MEETING',
+            priority='NORMAL',
+            created_by=current_user.id,
+            link='/teachers/meetings',
+        )
+    else:
+        await notify_student_scope(
+            db,
+            school_id=current_user.school_id,
+            class_id=meeting.class_id,
+            section_id=meeting.section_id,
+            academic_session_id=None,
+            title='Class meeting cancelled',
+            message=f"{meeting.title} was cancelled.",
+            category='MEETING',
+            priority='NORMAL',
+            created_by=current_user.id,
+            student_link='/students/meetings',
+            parent_link='/students/meetings',
+        )
+    await db.commit()
     return {"message": "Meeting cancelled"}
 
 

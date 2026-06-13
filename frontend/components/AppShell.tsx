@@ -260,6 +260,17 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("erp_notifications_updated", refreshUnreadNotifications);
   }, [refreshUnreadNotifications]);
 
+  useEffect(() => {
+    if (!auth?.user.school_id) return;
+    const onFocus = () => refreshUnreadNotifications();
+    const interval = window.setInterval(refreshUnreadNotifications, 30000);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [auth?.user.school_id, refreshUnreadNotifications]);
+
   // Re-read auth from localStorage when profile photo (or other user fields) are updated
   useEffect(() => {
     const onAuthProfileUpdated = (event: Event) => {

@@ -50,3 +50,46 @@ textarea {
 .custom-scrollbar::-webkit-scrollbar-track {
   background: transparent;
 }
+
+.prose-notice h1,
+.prose-notice h2,
+.prose-notice h3 {
+  font-weight: 600;
+  margin: 8px 0 4px;
+}
+.prose-notice h1 {
+  font-size: 1.1rem;
+}
+.prose-notice h2 {
+  font-size: 1rem;
+}
+.prose-notice h3 {
+  font-size: 0.9rem;
+}
+.prose-notice p {
+  margin: 0 0 6px;
+}
+.prose-notice p:last-child {
+  margin-bottom: 0;
+}
+.prose-notice ul,
+.prose-notice ol {
+  padding-left: 16px;
+  margin: 4px 0 6px;
+}
+.prose-notice li {
+  margin-bottom: 2px;
+}
+.prose-notice strong {
+  font-weight: 700;
+}
+.prose-notice em {
+  font-style: italic;
+}
+.prose-notice code {
+  background: #f1f5f9;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.85em;
+  font-family: monospace;
+}

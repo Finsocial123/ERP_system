@@ -4,6 +4,7 @@ import AppShell from "@/components/AppShell";
 import { useState, useEffect, useCallback } from "react";
 import { getSavedAuth } from "@/lib/api";
 import { apiFetch } from "@/lib/api";
+import ReactMarkdown from "react-markdown";
 
 type NoticePriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
 type NoticeStatus = "DRAFT" | "PUBLISHED" | "ARCHIVED";
@@ -262,7 +263,12 @@ function AIPanel({
       {error && <p className="text-xs text-red-600">{error}</p>}
       {result && (
         <div className="bg-white border border-violet-200 rounded-lg p-3 space-y-2">
-          <p className="text-xs text-slate-600 whitespace-pre-wrap">{result}</p>
+          <div
+            className="text-slate-600 prose-notice"
+            style={{ fontSize: "0.78rem" }}
+          >
+            <ReactMarkdown>{result}</ReactMarkdown>
+          </div>
           <button
             onClick={() => onInsert(result)}
             className="text-xs px-3 py-1 bg-violet-600 text-white rounded-md hover:bg-violet-700 transition-colors"
@@ -750,9 +756,14 @@ function ReceivedCard({
             {pm.label}
           </span>
         </div>
-        <p className="text-sm text-slate-600 line-clamp-2 mb-4 leading-relaxed">
+        {/* <p className="text-sm text-slate-600 line-clamp-2 mb-4 leading-relaxed">
           {notice.content}
-        </p>
+        </p> */}
+
+        <div className="text-sm text-slate-600 line-clamp-2 mb-4 leading-relaxed prose-notice">
+          <ReactMarkdown>{notice.content}</ReactMarkdown>
+        </div>
+
         <div className="flex items-center justify-between text-xs">
           {notice.expires_at ? (
             <span className="text-slate-400">
@@ -814,9 +825,12 @@ function MyNoticeCard({
           </div>
         </div>
 
-        <p className="text-sm text-slate-500 line-clamp-2 mb-4">
+        {/* <p className="text-sm text-slate-500 line-clamp-2 mb-4">
           {notice.content}
-        </p>
+        </p> */}
+        <div className="text-sm text-slate-500 line-clamp-2 mb-4 prose-notice">
+          <ReactMarkdown>{notice.content}</ReactMarkdown>
+        </div>
 
         <div className="flex items-center justify-between">
           <div className="flex gap-1 flex-wrap">
@@ -920,10 +934,8 @@ function ReceivedViewModal({
           )}
         </div>
 
-        <div className="bg-slate-50 rounded-xl p-6 border border-slate-200">
-          <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
-            {notice.content}
-          </p>
+        <div className="bg-slate-50 rounded-xl p-6 border border-slate-200 prose-notice">
+          <ReactMarkdown>{notice.content}</ReactMarkdown>
         </div>
 
         <div className="text-right text-xs text-slate-400 pt-3 border-t border-slate-100">
@@ -1000,10 +1012,8 @@ function MyNoticeViewModal({
           </div>
         )}
 
-        <div className="bg-slate-50 rounded-xl p-4">
-          <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
-            {notice.content}
-          </p>
+        <div className="bg-slate-50 rounded-xl p-4 prose-notice">
+          <ReactMarkdown>{notice.content}</ReactMarkdown>
         </div>
       </div>
     </Modal>

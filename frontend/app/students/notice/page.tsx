@@ -3,6 +3,7 @@
 import AppShell from "@/components/AppShell";
 import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "@/lib/api";
+import ReactMarkdown from "react-markdown";
 
 type NoticePriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
 
@@ -171,9 +172,12 @@ function NoticeCard({
           </span>
         </div>
 
-        <p className="text-sm text-slate-600 line-clamp-2 mb-4 leading-relaxed">
+        {/* <p className="text-sm text-slate-600 line-clamp-2 mb-4 leading-relaxed">
           {notice.content}
-        </p>
+        </p> */}
+        <div className="text-sm text-slate-600 line-clamp-2 mb-4 leading-relaxed prose-notice">
+          <ReactMarkdown>{notice.content}</ReactMarkdown>
+        </div>
 
         <div className="flex items-center justify-end text-xs">
           <span className="flex items-center gap-1 text-blue-600 font-medium group-hover:text-blue-700">
@@ -251,10 +255,8 @@ function NoticeViewModal({
           )}
         </div>
 
-        <div className="bg-slate-50 rounded-xl p-6 border border-slate-200">
-          <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
-            {notice.content}
-          </p>
+        <div className="bg-slate-50 rounded-xl p-6 border border-slate-200 prose-notice">
+          <ReactMarkdown>{notice.content}</ReactMarkdown>
         </div>
 
         <div className="text-right text-xs text-slate-400 pt-3 border-t border-slate-100">

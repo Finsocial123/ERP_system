@@ -13,6 +13,9 @@ import {
   Send,
   Trash2,
   X,
+  Globe,
+  Sparkles,
+  SlidersHorizontal,
 } from "lucide-react";
 import {
   createChatSession,
@@ -22,6 +25,7 @@ import {
 } from "@/lib/chatApi";
 import { apiFetch } from "@/lib/api";
 import type { ChatMessage, ChatSession, LMSLesson } from "@/types";
+import ReactMarkdown from "react-markdown";
 
 /* ─── Types ─── */
 type LocalMessage = {
@@ -29,6 +33,7 @@ type LocalMessage = {
   role: "user" | "assistant";
   content: string;
   created_at?: string | null;
+  isEnhanced?: boolean;
 };
 
 type Props = {
@@ -51,6 +56,7 @@ function normalizeMessages(rows: ChatMessage[]): LocalMessage[] {
         role: r.role === "assistant" ? "assistant" : "user",
         content: r.content || "",
         created_at: r.created_at ?? null,
+        isEnhanced: r.is_enhanced ?? false,
       }),
     )
     .filter((r) => r.content.trim().length > 0);
@@ -99,6 +105,9 @@ export default function CourseLessonChat({
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+
+  const [webSearch, setWebSearch] = useState(false);
+  const [enhancePrompt, setEnhancePrompt] = useState(false);
 
   /* Session history state */
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -230,17 +239,23 @@ export default function CourseLessonChat({
     setSending(true);
     setError("");
     setQuestion("");
+
+    const userId = `user-${Date.now()}`;
+
     const userMsg: LocalMessage = {
-      id: `user-${Date.now()}`,
+      id: userId,
       role: "user",
       content: clean,
     };
+
     const assistantId = `assistant-${Date.now()}`;
+
     const assistantMsg: LocalMessage = {
       id: assistantId,
       role: "assistant",
       content: "",
     };
+
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     try {
       const sid = await ensureSession();
@@ -251,10 +266,19 @@ export default function CourseLessonChat({
         content: clean,
         lessonId: lesson.id,
         language: lesson.language || "en",
-        webSearch: false,
-        enhancePrompt: false,
+        webSearch: webSearch,
+        enhancePrompt: enhancePrompt,
         signal: abortControllerRef.current.signal,
         callbacks: {
+          onEnhancedPrompt: (enhanced) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === userId
+                  ? { ...m, content: enhanced, isEnhanced: true }
+                  : m,
+              ),
+            );
+          },
           onToken: (token) => {
             answer += token;
             setMessages((prev) =>
@@ -312,6 +336,10 @@ export default function CourseLessonChat({
       bottomRef={bottomRef}
       embedded={embedded}
       cancelStream={cancelStream}
+      webSearch={webSearch}
+      setWebSearch={setWebSearch}
+      enhancePrompt={enhancePrompt}
+      setEnhancePrompt={setEnhancePrompt}
     />
   );
 
@@ -405,6 +433,10 @@ type InnerProps = {
   courseTitle?: string;
   bottomRef: React.RefObject<HTMLDivElement | null>;
   embedded: boolean;
+  webSearch: boolean;
+  setWebSearch: (v: boolean) => void;
+  enhancePrompt: boolean;
+  setEnhancePrompt: (v: boolean) => void;
 };
 
 function ChatInner({
@@ -431,7 +463,13 @@ function ChatInner({
   bottomRef,
   embedded,
   cancelStream,
+  webSearch,
+  setWebSearch,
+  enhancePrompt,
+  setEnhancePrompt,
 }: InnerProps) {
+  const [optsOpen, setOptsOpen] = useState(false);
+
   return (
     <>
       <style>{`
@@ -511,7 +549,7 @@ function ChatInner({
         .clc-input-bar {
           display: flex; gap: 6px; padding: 8px 10px; flex-shrink: 0;
           border-top: 1px solid #e2e8f0; background: #fafafa;
-          align-items: flex-end;
+          align-items: flex-end; position: relative;
         }
         .clc-textarea {
           flex: 1; resize: none; border: 1px solid #e2e8f0; border-radius: 10px;
@@ -526,6 +564,56 @@ function ChatInner({
           transition: background 0.13s; cursor: pointer;
         }
         .clc-send-btn:disabled { cursor: not-allowed; }
+
+        /* ── Options dropdown ── */
+        .clc-opts-btn {
+          width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+          border: 1px solid #e2e8f0; background: white; cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+          color: #64748b; transition: all 0.12s; position: relative;
+        }
+        .clc-opts-btn:hover { background: #f1f5f9; color: #0f172a; }
+        .clc-opts-btn.open { background: #ede9fe; border-color: #c4b5fd; color: #7c3aed; }
+        .clc-dropdown {
+          position: absolute; bottom: calc(100% + 6px); right: 10px;
+          background: white; border: 1px solid #e2e8f0; border-radius: 12px;
+          padding: 6px; display: flex; flex-direction: column; gap: 2px;
+          box-shadow: 0 4px 16px rgba(0,0,0,0.08); z-index: 50; min-width: 160px;
+        }
+        .clc-dropdown-item {
+          display: flex; align-items: center; justify-content: space-between;
+          gap: 8px; padding: 7px 10px; border-radius: 8px;
+          border: none; background: none; cursor: pointer;
+          font-size: 0.75rem; font-weight: 600; color: #374151;
+          transition: background 0.1s;
+          width: 100%; text-align: left;
+        }
+        .clc-dropdown-item:hover { background: #f8fafc; }
+        .clc-dropdown-item.active { color: #7c3aed; }
+        .clc-toggle-pill {
+          width: 28px; height: 16px; border-radius: 99px; flex-shrink: 0;
+          transition: background 0.15s; position: relative;
+          background: #e2e8f0;
+        }
+        .clc-toggle-pill.on { background: #7c3aed; }
+        .clc-toggle-pill::after {
+          content: ''; position: absolute; top: 2px; left: 2px;
+          width: 12px; height: 12px; border-radius: 50%; background: white;
+          transition: transform 0.15s;
+        }
+        .clc-toggle-pill.on::after { transform: translateX(12px); }
+        .clc-dropdown-label {
+          display: flex; align-items: center; gap: 6px;
+        }
+
+        .clc-enhanced-badge {
+          display: inline-flex; align-items: center; gap: 3px;
+          font-size: 0.6rem; font-weight: 700; letter-spacing: 0.04em;
+          color: #a855f7; background: #faf5ff;
+          border: 1px solid #e9d5ff; border-radius: 6px;
+          padding: 3px 6px; margin-bottom: 5px;
+          text-transform: uppercase;
+        }
 
         /* ── History panel ── */
         .clc-history {
@@ -587,6 +675,40 @@ function ChatInner({
         /* spin util */
         .clc-spin { animation: clcSpin 0.7s linear infinite; }
         @keyframes clcSpin { to { transform: rotate(360deg); } }
+
+
+        /* markdown */
+        .clc-md { font-size: 0.78rem; line-height: 1.6; color: #1e293b; }
+        .clc-md p { margin: 0 0 6px; }
+        .clc-md p:last-child { margin-bottom: 0; }
+        .clc-md strong { font-weight: 700; }
+        .clc-md em { font-style: italic; }
+        .clc-md ul, .clc-md ol { margin: 4px 0 6px; padding-left: 16px; }
+        .clc-md li { margin-bottom: 2px; }
+        .clc-md code {
+          background: #f1f5f9; border: 1px solid #e2e8f0;
+          border-radius: 4px; padding: 1px 5px;
+          font-size: 0.73rem; font-family: monospace;
+        }
+        .clc-md pre {
+          background: #0f172a; border-radius: 8px;
+          padding: 10px 12px; overflow-x: auto; margin: 6px 0;
+        }
+        .clc-md pre code {
+          background: none; border: none; padding: 0;
+          color: #e2e8f0; font-size: 0.72rem;
+        }
+        .clc-md h1, .clc-md h2, .clc-md h3 {
+          font-weight: 700; margin: 8px 0 4px; color: #0f172a;
+        }
+        .clc-md h1 { font-size: 0.9rem; }
+        .clc-md h2 { font-size: 0.85rem; }
+        .clc-md h3 { font-size: 0.8rem; }
+        .clc-md a { color: #7c3aed; text-decoration: underline; }
+        .clc-md blockquote {
+          border-left: 3px solid #c4b5fd; margin: 6px 0;
+          padding: 2px 10px; color: #64748b;
+        }
       `}</style>
 
       <div className="clc-root">
@@ -735,19 +857,82 @@ function ChatInner({
                         <Bot size={10} /> AI Tutor
                       </div>
                     )}
-                    {msg.content ||
-                      (msg.role === "assistant" && sending ? (
-                        <div className="clc-typing">
-                          <div className="clc-dot" />
-                          <div className="clc-dot" />
-                          <div className="clc-dot" />
+
+                    {/* Enhanced prompt badge */}
+                    {msg.isEnhanced && (
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "flex-start",
+                        }}
+                      >
+                        <div className="clc-enhanced-badge">
+                          <Sparkles size={9} />
+                          Enhanced
                         </div>
-                      ) : null)}
+                      </div>
+                    )}
+
+                    {msg.content ? (
+                      msg.role === "assistant" ? (
+                        <div className="clc-md">
+                          <ReactMarkdown>{msg.content}</ReactMarkdown>
+                        </div>
+                      ) : (
+                        msg.content
+                      )
+                    ) : msg.role === "assistant" && sending ? (
+                      <div className="clc-typing">
+                        <div className="clc-dot" />
+                        <div className="clc-dot" />
+                        <div className="clc-dot" />
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ))}
               <div ref={bottomRef} />
             </div>
+
+            {/* <div className="clc-input-bar">
+              <textarea
+                className="clc-textarea"
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="Ask your doubt…"
+                rows={1}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    submitQuestion();
+                  }
+                }}
+              />
+              {sending ? (
+                <button
+                  type="button"
+                  className="clc-send-btn"
+                  onClick={cancelStream}
+                  style={{ background: "#fee2e2", color: "#dc2626" }}
+                >
+                  <X size={15} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="clc-send-btn"
+                  onClick={submitQuestion}
+                  disabled={!question.trim()}
+                  style={{
+                    background: !question.trim() ? "#f1f5f9" : "#7c3aed",
+                    color: !question.trim() ? "#94a3b8" : "white",
+                  }}
+                >
+                  <Send size={15} />
+                </button>
+              )}
+            </div> */}
 
             <div className="clc-input-bar">
               <textarea
@@ -763,6 +948,48 @@ function ChatInner({
                   }
                 }}
               />
+
+              {/* Options button + dropdown */}
+              <div style={{ position: "relative", flexShrink: 0 }}>
+                <button
+                  type="button"
+                  className={`clc-opts-btn${optsOpen ? " open" : ""}`}
+                  onClick={() => setOptsOpen((v) => !v)}
+                  title="Options"
+                >
+                  <SlidersHorizontal size={14} />
+                </button>
+
+                {optsOpen && (
+                  <div className="clc-dropdown">
+                    <button
+                      type="button"
+                      className={`clc-dropdown-item${webSearch ? " active" : ""}`}
+                      onClick={() => setWebSearch(!webSearch)}
+                    >
+                      <span className="clc-dropdown-label">
+                        <Globe size={13} /> Web search
+                      </span>
+                      <span
+                        className={`clc-toggle-pill${webSearch ? " on" : ""}`}
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      className={`clc-dropdown-item${enhancePrompt ? " active" : ""}`}
+                      onClick={() => setEnhancePrompt(!enhancePrompt)}
+                    >
+                      <span className="clc-dropdown-label">
+                        <Sparkles size={13} /> Enhance prompt
+                      </span>
+                      <span
+                        className={`clc-toggle-pill${enhancePrompt ? " on" : ""}`}
+                      />
+                    </button>
+                  </div>
+                )}
+              </div>
+
               {sending ? (
                 <button
                   type="button"

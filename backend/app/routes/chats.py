@@ -329,7 +329,7 @@ async def send_message_stream(
         history=raw_history,
         system_prompt=system_prompt,
         rag_context=context,
-        max_tokens=50000,
+        max_tokens=8000,
     )
     messages = [{'role': 'system', 'content': system_prompt}] + trimmed_history
     logger.debug('MESSAGES: %s', json.dumps(messages, indent=2))
@@ -351,6 +351,7 @@ async def send_message_stream(
                     stream = await client.chat.completions.create(
                         model=settings.MODEL,
                         messages=messages,
+                        max_tokens=600,
                         **({'tools': active_tools, 'tool_choice': 'auto'} if active_tools else {}),
                         stream=True,
                     )
@@ -415,6 +416,7 @@ async def send_message_stream(
                         ]
                         final_stream = await client.chat.completions.create(
                             model=settings.MODEL,
+                            max_tokens=600,
                             messages=messages_with_result,
                             stream=True,
                         )

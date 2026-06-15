@@ -3,6 +3,8 @@
 import AppShell from "@/components/AppShell";
 import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "@/lib/api";
+import ReactMarkdown from "react-markdown";
+import "@/app/globals.css";
 
 type NoticePriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
 type NoticeStatus = "DRAFT" | "PUBLISHED" | "ARCHIVED";
@@ -259,7 +261,12 @@ function AIPanel({
 
       {result && (
         <div className="bg-white border border-violet-200 rounded-lg p-3 space-y-2">
-          <p className="text-xs text-slate-600 whitespace-pre-wrap">{result}</p>
+          <div
+            className="text-slate-600 prose-notice"
+            style={{ fontSize: "0.78rem" }}
+          >
+            <ReactMarkdown>{result}</ReactMarkdown>
+          </div>
           <button
             onClick={() => onInsert(result)}
             className="text-xs px-3 py-1 bg-violet-600 text-white rounded-md hover:bg-violet-700 transition-colors"
@@ -597,9 +604,9 @@ function NoticeCard({
           </div>
         </div>
 
-        <p className="text-sm text-slate-500 line-clamp-2 mb-4">
-          {notice.content}
-        </p>
+        <div className="text-sm text-slate-500 line-clamp-2 mb-4 prose-notice max-w-none">
+          <ReactMarkdown>{notice.content}</ReactMarkdown>
+        </div>
 
         <div className="flex items-center justify-between">
           {/* Audience tags */}
@@ -732,11 +739,8 @@ function NoticeViewModal({
             </div>
           </div>
         )}
-
-        <div className="bg-slate-50 rounded-xl p-4">
-          <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
-            {notice.content}
-          </p>
+        <div className="bg-slate-50 rounded-xl p-4 prose-notice">
+          <ReactMarkdown>{notice.content}</ReactMarkdown>
         </div>
       </div>
     </Modal>

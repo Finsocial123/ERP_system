@@ -36,6 +36,7 @@ from app.schemas.exam import (
     StudentReportCard,
 )
 from app.utils.parent_scope import children_for_parent
+from app.services.notification_service import format_date, notify_student_scope, notify_teacher_record
 
 
 router = APIRouter(prefix="/exams", tags=["Phase 8 - Exam and Result Management"], dependencies=[Depends(require_writable_academic_session)])
@@ -397,6 +398,60 @@ async def _ensure_teacher_not_double_booked(
 def _clean_optional_text(value: str | None) -> str | None:
     return (value or "").strip() or None
 
+
+def _exam_date_window(exam: Exam) -> str:
+    if exam.start_date and exam.end_date and exam.start_date != exam.end_date:
+        return f"{format_date(exam.start_date)} to {format_date(exam.end_date)}"
+    if exam.start_date:
+        return format_date(exam.start_date)
+    return "dates will be announced soon"
+
+
+async def _notify_exam_scope(
+    db: AsyncSession,
+    *,
+    exam: Exam,
+    title: str,
+    message: str,
+    created_by: int | None,
+    priority: str = "NORMAL",
+) -> int:
+    return await notify_student_scope(
+        db,
+        school_id=exam.school_id,
+        class_id=exam.class_id,
+        section_id=exam.section_id,
+        academic_session_id=exam.academic_session_id,
+        title=title,
+        message=message,
+        category="EXAM_REPORT",
+        priority=priority,
+        created_by=created_by,
+        student_link="/student-exams",
+        parent_link="/parent-exams",
+    )
+
+
+async def _notify_exam_subject_teacher(
+    db: AsyncSession,
+    *,
+    exam_subject: ExamSubject,
+    title: str,
+    message: str,
+    created_by: int | None,
+    priority: str = "NORMAL",
+) -> int:
+    return await notify_teacher_record(
+        db,
+        school_id=exam_subject.school_id,
+        teacher_id=exam_subject.teacher_id,
+        title=title,
+        message=message,
+        category="EXAM_REPORT",
+        priority=priority,
+        created_by=created_by,
+        link="/teacher-exams",
+    )
 
 async def _exam_or_404(db: AsyncSession, school_id: int, exam_id: int) -> Exam:
     exam = await async_query(db, Exam).options(
@@ -1052,6 +1107,15 @@ async def create_exam(
     )
 
     db.add(exam)
+    await db.flush()
+    await _notify_exam_scope(
+        db,
+        exam=exam,
+        title='New exam scheduled',
+        message=f"{exam.name} is scheduled for {_exam_date_window(exam)}.",
+        created_by=current_user.id,
+        priority='NORMAL',
+    )
     await db.commit()
     await db.refresh(exam)
 
@@ -1104,6 +1168,14 @@ async def update_exam(
     if "is_active" in data:
         exam.is_active = bool(data["is_active"])
 
+    await _notify_exam_scope(
+        db,
+        exam=exam,
+        title='Exam updated',
+        message=f"{exam.name} details were updated. Schedule: {_exam_date_window(exam)}.",
+        created_by=current_user.id,
+        priority='NORMAL',
+    )
     await db.commit()
     await db.refresh(exam)
 
@@ -1152,6 +1224,14 @@ async def publish_exam(
 
     exam.result_status = "PUBLISHED"
     exam.published_at = datetime.utcnow()
+    await _notify_exam_scope(
+        db,
+        exam=exam,
+        title='Exam result published',
+        message=f"{exam.name} result has been published. Open Exam Reports to view the report card.",
+        created_by=current_user.id,
+        priority='HIGH',
+    )
     await db.commit()
     await db.refresh(exam)
 
@@ -1279,6 +1359,14 @@ async def auto_schedule_exam_timetable(
         if room_value and (override_existing or not subject.room):
             subject.room = room_value
 
+    await _notify_exam_scope(
+        db,
+        exam=exam,
+        title='Exam timetable updated',
+        message=f"Timetable for {exam.name} has been updated.",
+        created_by=current_user.id,
+        priority='NORMAL',
+    )
     await db.commit()
 
     subjects = await async_query(db, ExamSubject).options(
@@ -1341,13 +1429,31 @@ async def create_exam_subject(
     db.add(item)
 
     try:
-        await db.commit()
+        await db.flush()
     except IntegrityError:
         await db.rollback()
         raise HTTPException(
             status_code=400,
             detail="This subject is already added to the selected exam",
         )
+
+    await _notify_exam_scope(
+        db,
+        exam=exam,
+        title='Exam subject added',
+        message=f"A subject was added to {exam.name}. Check the timetable for details.",
+        created_by=current_user.id,
+        priority='NORMAL',
+    )
+    await _notify_exam_subject_teacher(
+        db,
+        exam_subject=item,
+        title='Exam duty assigned',
+        message=f"You have been assigned to {exam.name}.",
+        created_by=current_user.id,
+        priority='NORMAL',
+    )
+    await db.commit()
 
     await db.refresh(item)
     item = await _exam_subject_or_404(db, school_id, item.id, exam.id)
@@ -1416,6 +1522,22 @@ async def update_exam_subject(
     if "timetable_note" in data:
         item.timetable_note = _clean_optional_text(data["timetable_note"])
 
+    await _notify_exam_scope(
+        db,
+        exam=exam,
+        title='Exam subject updated',
+        message=f"Subject/timetable details for {exam.name} were updated.",
+        created_by=current_user.id,
+        priority='NORMAL',
+    )
+    await _notify_exam_subject_teacher(
+        db,
+        exam_subject=item,
+        title='Exam duty updated',
+        message=f"Your exam duty for {exam.name} was updated.",
+        created_by=current_user.id,
+        priority='NORMAL',
+    )
     await db.commit()
     await db.refresh(item)
 
@@ -1435,6 +1557,14 @@ async def delete_exam_subject(
     await assert_item_session_is_writable(db, school_id, exam)
     item = await _exam_subject_or_404(db, school_id, exam_subject_id, exam_id)
     item.is_active = False
+    await _notify_exam_scope(
+        db,
+        exam=exam,
+        title='Exam timetable updated',
+        message=f"A subject was removed from {exam.name}.",
+        created_by=current_user.id,
+        priority='NORMAL',
+    )
     await db.commit()
     return MessageResponse(message="Exam subject removed successfully")
 
@@ -1533,6 +1663,16 @@ async def save_bulk_marks(
         mark.grade = _grade_from_marks(mark.marks_obtained, exam_subject.max_marks, mark.is_absent)
         mark.pass_status = _pass_status(mark.marks_obtained, exam_subject.pass_marks, mark.is_absent)
         saved.append(mark)
+
+    if saved and exam.result_status == "PUBLISHED":
+        await _notify_exam_scope(
+            db,
+            exam=exam,
+            title='Exam marks updated',
+            message=f"Marks for {exam.name} were updated. Open Exam Reports to view the latest report card.",
+            created_by=current_user.id,
+            priority='HIGH',
+        )
 
     await db.commit()
 

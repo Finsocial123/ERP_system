@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CalendarDays, CheckCircle2, Clock, Edit2, Eye, MapPin, Plus, RefreshCcw, Save, Search, Trash2 } from "lucide-react";
+import { CalendarDays, CheckCircle2, Clock, Edit2, Eye, Loader2, MapPin, Plus, RefreshCcw, Save, Search, Trash2 } from "lucide-react";
 
 import { AppSection } from "@/components/CrudManager";
 import { Button, Card, Input, Label, Textarea } from "@/components/ui";
@@ -96,6 +96,28 @@ function numberOrNull(value: string) {
   return Number(value);
 }
 
+function LoadingTableRow({ colSpan, text }: { colSpan: number; text: string }) {
+  return (
+    <tr>
+      <td colSpan={colSpan} className="px-4 py-3">
+        <span className="mx-auto flex w-fit items-center gap-2 rounded-full bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-600">
+          <Loader2 size={16} className="animate-spin" />
+          {text}
+        </span>
+      </td>
+    </tr>
+  );
+}
+
+function InlineLoader({ text }: { text: string }) {
+  return (
+    <span className="inline-flex items-center gap-2 rounded-full bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-600">
+      <Loader2 size={16} className="animate-spin" />
+      {text}
+    </span>
+  );
+}
+
 export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teacher" }) {
   const [tab, setTab] = useState<"exams" | "subjects" | "timetable" | "marks" | "reports">("exams");
   const [meta, setMeta] = useState<ExamMeta | null>(null);
@@ -119,6 +141,11 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
   const [autoRoom, setAutoRoom] = useState("");
   const [autoOverride, setAutoOverride] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [examListLoading, setExamListLoading] = useState(false);
+  const [subjectListLoading, setSubjectListLoading] = useState(false);
+  const [timetableLoading, setTimetableLoading] = useState(false);
+  const [marksLoading, setMarksLoading] = useState(false);
+  const [reportsLoading, setReportsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -139,8 +166,13 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
     return meta.subjects.filter((item) => item.extra === examClass);
   }, [examForm.class_id, meta, selectedExam?.class_id]);
 
-  const loadData = async () => {
-    setLoading(true);
+  const loadData = async (showPageLoader = false) => {
+    const shouldShowPageLoader = showPageLoader || !meta;
+    if (shouldShowPageLoader) {
+      setLoading(true);
+    } else {
+      setExamListLoading(true);
+    }
     setError("");
     try {
       const params = new URLSearchParams();
@@ -157,7 +189,11 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load exams");
     } finally {
-      setLoading(false);
+      if (shouldShowPageLoader) {
+        setLoading(false);
+      } else {
+        setExamListLoading(false);
+      }
     }
   };
 
@@ -168,12 +204,15 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
       setSelectedSubjectId("");
       return;
     }
+    setSubjectListLoading(true);
     try {
       const data = await apiFetch<ExamSubject[]>(`/exams/${examId}/subjects`);
       setExamSubjects(data);
       setSelectedSubjectId((prev) => (prev && data.some((item) => String(item.id) === prev) ? prev : data.length ? String(data[0].id) : ""));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load exam subjects");
+    } finally {
+      setSubjectListLoading(false);
     }
   };
 
@@ -182,11 +221,14 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
       setExamTimetable([]);
       return;
     }
+    setTimetableLoading(true);
     try {
       const data = await apiFetch<ExamTimetableItem[]>(`/exams/${selectedExamId}/timetable`);
       setExamTimetable(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load exam timetable");
+    } finally {
+      setTimetableLoading(false);
     }
   };
 
@@ -196,6 +238,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
       setMarkDrafts({});
       return;
     }
+    setMarksLoading(true);
     try {
       const data = await apiFetch<ExamMark[]>(`/exams/${selectedExamId}/marks?exam_subject_id=${selectedSubjectId}`);
       setMarks(data);
@@ -211,6 +254,8 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
       setMarkDrafts(drafts);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load marks");
+    } finally {
+      setMarksLoading(false);
     }
   };
 
@@ -220,6 +265,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
       setSubjectResult(null);
       return;
     }
+    setReportsLoading(true);
     try {
       const classData = await apiFetch<ClassResult>(`/exams/${selectedExamId}/class-result`);
       setClassResult(classData);
@@ -231,11 +277,13 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load reports");
+    } finally {
+      setReportsLoading(false);
     }
   };
 
   useEffect(() => {
-    loadData();
+    loadData(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -472,6 +520,22 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
     await loadData();
   };
 
+  const refreshCurrentTab = async () => {
+    if (tab === "exams") {
+      await loadData();
+      return;
+    }
+
+    const tasks: Promise<void>[] = [loadData()];
+    if (tab === "subjects") tasks.push(loadSubjects(selectedExamId));
+    if (tab === "timetable") tasks.push(loadTimetable());
+    if (tab === "marks") tasks.push(loadMarks());
+    if (tab === "reports") tasks.push(loadReports());
+    await Promise.all(tasks);
+  };
+
+  const moduleReady = Boolean(meta);
+  const isRefreshing = examListLoading || subjectListLoading || timetableLoading || marksLoading || reportsLoading;
   const selectedExamLabel = selectedExam ? `${selectedExam.name} · ${selectedExam.class_name || "Class"}${selectedExam.section_name ? ` - ${selectedExam.section_name}` : ""}` : "Select an exam";
 
   return (
@@ -481,8 +545,8 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
           <h1 className="text-2xl font-bold text-slate-900">Exam and Result Management</h1>
           <p className="text-sm text-slate-500">Create exams, prepare exam timetable, enter marks, publish results and view reports.</p>
         </div>
-        <Button onClick={loadData} disabled={loading} className="flex items-center gap-2">
-          <RefreshCcw size={16} /> Refresh
+        <Button onClick={refreshCurrentTab} disabled={loading || isRefreshing} className="flex items-center gap-2">
+          <RefreshCcw size={16} className={isRefreshing ? "animate-spin" : ""} /> {isRefreshing ? "Refreshing..." : "Refresh"}
         </Button>
       </div>
 
@@ -508,9 +572,9 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
         ))}
       </div>
 
-      {loading && <Card>Loading exam module...</Card>}
+      {loading && !moduleReady && <Card><InlineLoader text="Loading exam module..." /></Card>}
 
-      {!loading && tab === "exams" && (
+      {moduleReady && tab === "exams" && (
         <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
           <AppSection title={editingExam ? "Edit exam" : "Create exam"} description="Choose class, optional section, exam date range and academic session.">
             <form onSubmit={saveExam} className="space-y-4">
@@ -594,6 +658,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
+                  {examListLoading && <LoadingTableRow colSpan={5} text="Refreshing exam list..." />}
                   {exams.map((exam) => (
                     <tr key={exam.id} className={selectedExamId === String(exam.id) ? "bg-slate-50" : "bg-white"}>
                       <td className="px-4 py-3">
@@ -613,7 +678,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                       </td>
                     </tr>
                   ))}
-                  {exams.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-500">No exams found.</td></tr>}
+                  {!examListLoading && exams.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-500">No exams found.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -621,7 +686,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
         </div>
       )}
 
-      {!loading && tab === "subjects" && (
+      {moduleReady && tab === "subjects" && (
         <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
           <AppSection title={editingSubject ? "Edit exam subject" : "Add exam subject"} description="Adding a subject also creates its timetable row. You can set date/time now or auto-generate later.">
             <div className="mb-4">
@@ -698,6 +763,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
+                  {subjectListLoading && <LoadingTableRow colSpan={5} text="Refreshing exam subjects..." />}
                   {examSubjects.map((subject) => (
                     <tr key={subject.id} className={selectedSubjectId === String(subject.id) ? "bg-slate-50" : "bg-white"}>
                       <td className="px-4 py-3"><button type="button" onClick={() => setSelectedSubjectId(String(subject.id))} className="font-semibold text-slate-900 hover:underline">{subject.subject_name}</button><p className="text-xs text-slate-500">{subject.marks_entered_count} marks entered</p></td>
@@ -712,7 +778,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                       </td>
                     </tr>
                   ))}
-                  {examSubjects.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-500">No subjects added for this exam.</td></tr>}
+                  {!subjectListLoading && examSubjects.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-500">No subjects added for this exam.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -720,7 +786,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
         </div>
       )}
 
-      {!loading && tab === "timetable" && (
+      {moduleReady && tab === "timetable" && (
         <div className="space-y-6">
           <AppSection title="Build exam timetable" description="Students can see this timetable from their Exam page even before results are published.">
             <div className="grid gap-3 md:grid-cols-[1fr_auto]">
@@ -732,7 +798,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                 </SelectBox>
               </div>
               <div className="flex items-end gap-2">
-                <Button type="button" onClick={loadTimetable} disabled={!selectedExamId} className="flex items-center gap-2"><Eye size={16} /> View</Button>
+                <Button type="button" onClick={loadTimetable} disabled={!selectedExamId || timetableLoading} className="flex items-center gap-2">{timetableLoading ? <Loader2 size={16} className="animate-spin" /> : <Eye size={16} />} {timetableLoading ? "Loading..." : "View"}</Button>
                 <button type="button" onClick={() => setTab("subjects")} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700">Add / Edit Subjects</button>
               </div>
             </div>
@@ -781,6 +847,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
+                  {timetableLoading && <LoadingTableRow colSpan={7} text="Refreshing timetable..." />}
                   {examTimetable.map((item) => (
                     <tr key={item.exam_subject_id}>
                       <td className="px-4 py-3 font-semibold text-slate-900">{displayDate(item.exam_date)}</td>
@@ -792,7 +859,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                       <td className="px-4 py-3"><button type="button" onClick={() => { const subject = examSubjects.find((row) => row.id === item.exam_subject_id); if (subject) editSubject(subject); else setTab("subjects"); }} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700">Edit</button></td>
                     </tr>
                   ))}
-                  {examTimetable.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-500">No timetable rows yet. Add subjects or use auto schedule.</td></tr>}
+                  {!timetableLoading && examTimetable.length === 0 && <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-500">No timetable rows yet. Add subjects or use auto schedule.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -800,7 +867,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
         </div>
       )}
 
-      {!loading && tab === "marks" && (
+      {moduleReady && tab === "marks" && (
         <AppSection title="Marks entry" description="Enter marks for one exam subject. Grade and pass/fail status are calculated by backend.">
           <div className="mb-4 grid gap-3 md:grid-cols-2">
             <div>
@@ -834,6 +901,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
+                {marksLoading && <LoadingTableRow colSpan={6} text="Refreshing marks..." />}
                 {marks.map((mark) => {
                   const draft = markDrafts[mark.student_id] || { student_id: mark.student_id, marks_obtained: "", is_absent: false, remarks: "" };
                   return (
@@ -847,18 +915,18 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                     </tr>
                   );
                 })}
-                {marks.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-500">Select an exam subject to enter marks.</td></tr>}
+                {!marksLoading && marks.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-500">Select an exam subject to enter marks.</td></tr>}
               </tbody>
             </table>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             <Button type="button" onClick={saveMarks} disabled={saving || !marks.length} className="flex items-center gap-2"><Save size={16} /> Save Marks</Button>
-            <button type="button" onClick={loadMarks} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700">Reload Marks</button>
+            <button type="button" onClick={loadMarks} disabled={marksLoading} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60">{marksLoading && <Loader2 size={16} className="animate-spin" />} {marksLoading ? "Reloading..." : "Reload Marks"}</button>
           </div>
         </AppSection>
       )}
 
-      {!loading && tab === "reports" && (
+      {moduleReady && tab === "reports" && (
         <div className="space-y-6">
           <AppSection title="Result reports" description="View class-wise and subject-wise result before or after publishing.">
             <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
@@ -876,9 +944,11 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
                   {examSubjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.subject_name}</option>)}
                 </SelectBox>
               </div>
-              <div className="flex items-end"><Button onClick={loadReports} type="button" className="flex items-center gap-2"><Eye size={16} /> View</Button></div>
+              <div className="flex items-end"><Button onClick={loadReports} type="button" disabled={reportsLoading} className="flex items-center gap-2">{reportsLoading ? <Loader2 size={16} className="animate-spin" /> : <Eye size={16} />} {reportsLoading ? "Loading..." : "View"}</Button></div>
             </div>
           </AppSection>
+
+          {reportsLoading && <Card><InlineLoader text="Refreshing result reports..." /></Card>}
 
           {classResult && (
             <AppSection title="Class-wise result" description={`${classResult.exam.name} · ${classResult.exam.class_name}${classResult.exam.section_name ? ` - ${classResult.exam.section_name}` : ""}`}>

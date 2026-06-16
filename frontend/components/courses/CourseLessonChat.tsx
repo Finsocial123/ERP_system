@@ -16,6 +16,7 @@ import {
   Globe,
   Sparkles,
   SlidersHorizontal,
+  Languages,
 } from "lucide-react";
 import {
   createChatSession,
@@ -26,6 +27,28 @@ import {
 import { apiFetch } from "@/lib/api";
 import type { ChatMessage, ChatSession, LMSLesson } from "@/types";
 import ReactMarkdown from "react-markdown";
+
+// Language support
+const SUPPORTED_LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "hi", label: "Hindi" },
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "ar", label: "Arabic" },
+  { code: "zh", label: "Chinese" },
+  { code: "ja", label: "Japanese" },
+  { code: "pt", label: "Portuguese" },
+  { code: "ur", label: "Urdu" },
+  { code: "bn", label: "Bengali" },
+  { code: "te", label: "Telugu" },
+  { code: "mr", label: "Marathi" },
+  { code: "ta", label: "Tamil" },
+  { code: "gu", label: "Gujarati" },
+  { code: "kn", label: "Kannada" },
+  { code: "ml", label: "Malayalam" },
+  { code: "pa", label: "Punjabi" },
+] as const;
 
 /* ─── Types ─── */
 type LocalMessage = {
@@ -108,6 +131,8 @@ export default function CourseLessonChat({
 
   const [webSearch, setWebSearch] = useState(false);
   const [enhancePrompt, setEnhancePrompt] = useState(false);
+
+  const [language, setLanguage] = useState(lesson.language || "en");
 
   /* Session history state */
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -265,7 +290,7 @@ export default function CourseLessonChat({
         sessionId: sid,
         content: clean,
         lessonId: lesson.id,
-        language: lesson.language || "en",
+        language: language,
         webSearch: webSearch,
         enhancePrompt: enhancePrompt,
         signal: abortControllerRef.current.signal,
@@ -340,6 +365,8 @@ export default function CourseLessonChat({
       setWebSearch={setWebSearch}
       enhancePrompt={enhancePrompt}
       setEnhancePrompt={setEnhancePrompt}
+      language={language}
+      setLanguage={setLanguage}
     />
   );
 
@@ -437,6 +464,8 @@ type InnerProps = {
   setWebSearch: (v: boolean) => void;
   enhancePrompt: boolean;
   setEnhancePrompt: (v: boolean) => void;
+  language: string;
+  setLanguage: (v: string) => void;
 };
 
 function ChatInner({
@@ -467,6 +496,8 @@ function ChatInner({
   setWebSearch,
   enhancePrompt,
   setEnhancePrompt,
+  language,
+  setLanguage,
 }: InnerProps) {
   const [optsOpen, setOptsOpen] = useState(false);
 
@@ -986,6 +1017,45 @@ function ChatInner({
                         className={`clc-toggle-pill${enhancePrompt ? " on" : ""}`}
                       />
                     </button>
+                    {/* Divider */}
+                    <div
+                      style={{
+                        height: 1,
+                        background: "#f1f5f9",
+                        margin: "4px 0",
+                      }}
+                    />
+
+                    {/* Language selector */}
+                    <div
+                      className="clc-dropdown-item"
+                      style={{ cursor: "default" }}
+                    >
+                      <span className="clc-dropdown-label">
+                        <Languages size={13} /> Language
+                      </span>
+                      <select
+                        value={language}
+                        onChange={(e) => setLanguage(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          fontSize: "0.7rem",
+                          border: "1px solid #e2e8f0",
+                          borderRadius: 6,
+                          padding: "2px 4px",
+                          background: "white",
+                          color: "#374151",
+                          cursor: "pointer",
+                          outline: "none",
+                        }}
+                      >
+                        {SUPPORTED_LANGUAGES.map((lang) => (
+                          <option key={lang.code} value={lang.code}>
+                            {lang.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                 )}
               </div>

@@ -162,6 +162,74 @@ def _ensure_academic_session_scoping(engine) -> None:
     _drop_postgres_indexes(engine, ["ix_subjects_school_session_name_unique"])
     _create_postgres_unique_indexes(engine)
 
+
+def _ensure_video_watch_progress_table(engine) -> None:
+    """Ensure lesson video watch progress persists on existing VPS databases."""
+    if not _table_exists(engine, "users") or not _table_exists(engine, "lessons"):
+        return
+
+    if not _table_exists(engine, "video_watch_progress"):
+        if engine.dialect.name == "postgresql":
+            _execute_sql(
+                engine,
+                """
+                CREATE TABLE IF NOT EXISTS video_watch_progress (
+                    id SERIAL PRIMARY KEY,
+                    student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    lesson_id INTEGER NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+                    watched_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    video_duration_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    max_position_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    last_position_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    last_watch_ping_at TIMESTAMP WITH TIME ZONE NULL,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT uq_student_lesson_video_watch UNIQUE (student_id, lesson_id)
+                )
+                """,
+            )
+        else:
+            _execute_sql(
+                engine,
+                """
+                CREATE TABLE IF NOT EXISTS video_watch_progress (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    lesson_id INTEGER NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+                    watched_seconds FLOAT NOT NULL DEFAULT 0,
+                    video_duration_seconds FLOAT NOT NULL DEFAULT 0,
+                    max_position_seconds FLOAT NOT NULL DEFAULT 0,
+                    last_position_seconds FLOAT NOT NULL DEFAULT 0,
+                    last_watch_ping_at TIMESTAMP NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT uq_student_lesson_video_watch UNIQUE (student_id, lesson_id)
+                )
+                """,
+            )
+
+    _add_column(engine, "video_watch_progress", "watched_seconds", "watched_seconds FLOAT NOT NULL DEFAULT 0")
+    _add_column(engine, "video_watch_progress", "video_duration_seconds", "video_duration_seconds FLOAT NOT NULL DEFAULT 0")
+    _add_column(engine, "video_watch_progress", "max_position_seconds", "max_position_seconds FLOAT NOT NULL DEFAULT 0")
+    _add_column(engine, "video_watch_progress", "last_position_seconds", "last_position_seconds FLOAT NOT NULL DEFAULT 0")
+    _add_column(engine, "video_watch_progress", "last_watch_ping_at", "last_watch_ping_at TIMESTAMP")
+    _add_column(engine, "video_watch_progress", "created_at", "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+    _add_column(engine, "video_watch_progress", "updated_at", "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
+    if engine.dialect.name == "postgresql":
+        _execute_sql(
+            engine,
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_video_watch_progress_student_lesson_unique ON video_watch_progress (student_id, lesson_id)",
+        )
+        _execute_sql(
+            engine,
+            "CREATE INDEX IF NOT EXISTS ix_video_watch_progress_student_id ON video_watch_progress (student_id)",
+        )
+        _execute_sql(
+            engine,
+            "CREATE INDEX IF NOT EXISTS ix_video_watch_progress_lesson_id ON video_watch_progress (lesson_id)",
+        )
+
 def run_startup_migrations(engine) -> None:
     """Small dev migration layer for the tutorial project.
 
@@ -194,6 +262,7 @@ def run_startup_migrations(engine) -> None:
     _add_column(engine, "exam_subjects", "timetable_note", "timetable_note TEXT")
 
     _ensure_academic_session_scoping(engine)
+    _ensure_video_watch_progress_table(engine)
 
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = SessionLocal()

@@ -47,6 +47,8 @@ type WatchStatus = {
   video_duration_seconds: number;
   required_watch_seconds: number;
   watch_percentage: number;
+  required_watch_percentage?: number;
+  requirement_progress_percentage?: number;
   can_mark_complete: boolean;
 };
 
@@ -54,19 +56,29 @@ type WatchStatusInput = Partial<WatchStatus> | null | undefined;
 
 const VIDEO_REQUIRED_RATIO = 0.75;
 const WATCH_TICK_MS = 1000;
-const WATCH_FLUSH_INTERVAL_MS = 20000;
-const WATCH_MIN_FLUSH_SECONDS = 10;
+const WATCH_FLUSH_INTERVAL_MS = 5000;
+const WATCH_MIN_FLUSH_SECONDS = 3;
 
 function normalizeWatchStatus(status?: WatchStatusInput): WatchStatus {
   const duration = Number(status?.video_duration_seconds || 0);
   const watched = Number(status?.watched_seconds || 0);
   const required = Number(status?.required_watch_seconds || (duration > 0 ? duration * VIDEO_REQUIRED_RATIO : 0));
+  const safeDuration = Math.max(duration, 0);
+  const safeRequired = Math.max(required, 0);
+  const safeWatched = Math.min(Math.max(watched, 0), safeDuration || watched);
   return {
-    watched_seconds: Math.round(Math.min(Math.max(watched, 0), duration || watched) * 100) / 100,
-    video_duration_seconds: Math.round(Math.max(duration, 0) * 100) / 100,
-    required_watch_seconds: Math.round(Math.max(required, 0) * 100) / 100,
-    watch_percentage: required > 0 ? Math.round(Math.min((watched / required) * 100, 100) * 100) / 100 : Number(status?.watch_percentage || 0),
-    can_mark_complete: Boolean(status?.can_mark_complete || (required > 0 && watched >= required)),
+    watched_seconds: Math.round(safeWatched * 100) / 100,
+    video_duration_seconds: Math.round(safeDuration * 100) / 100,
+    required_watch_seconds: Math.round(safeRequired * 100) / 100,
+    // This is the actual percent of the whole video, shown as "Watched X%".
+    watch_percentage: safeDuration > 0
+      ? Math.round(Math.min((safeWatched / safeDuration) * 100, 100) * 100) / 100
+      : Number(status?.watch_percentage || 0),
+    required_watch_percentage: Number(status?.required_watch_percentage || VIDEO_REQUIRED_RATIO * 100),
+    requirement_progress_percentage: safeRequired > 0
+      ? Math.round(Math.min((safeWatched / safeRequired) * 100, 100) * 100) / 100
+      : Number(status?.requirement_progress_percentage || 0),
+    can_mark_complete: Boolean(status?.can_mark_complete || (safeRequired > 0 && safeWatched >= safeRequired)),
   };
 }
 
@@ -78,7 +90,9 @@ function buildLocalWatchStatus(base: WatchStatus, watchedSeconds: number, durati
     watched_seconds: watched,
     video_duration_seconds: duration ? Math.round(duration * 100) / 100 : base.video_duration_seconds,
     required_watch_seconds: required,
-    watch_percentage: required > 0 ? Math.round(Math.min((watched / required) * 100, 100) * 100) / 100 : 0,
+    watch_percentage: duration > 0 ? Math.round(Math.min((watched / duration) * 100, 100) * 100) / 100 : 0,
+    required_watch_percentage: VIDEO_REQUIRED_RATIO * 100,
+    requirement_progress_percentage: required > 0 ? Math.round(Math.min((watched / required) * 100, 100) * 100) / 100 : 0,
     can_mark_complete: required > 0 && watched >= required,
   };
 }
@@ -88,11 +102,13 @@ function OptimizedVideoPlayer({
   mode,
   initialStatus,
   onStatusSynced,
+  onRegisterFlush,
 }: {
   lesson: LMSLesson;
   mode: "student" | "parent";
   initialStatus?: WatchStatusInput;
   onStatusSynced?: (lessonId: number, status: WatchStatus) => void;
+  onRegisterFlush?: (lessonId: number, flushFn?: () => Promise<WatchStatus | null>) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -133,16 +149,31 @@ function OptimizedVideoPlayer({
     onStatusSynced?.(lesson.id, next);
   }, [lesson.id, onStatusSynced]);
 
-  const flushWatchProgress = useCallback(async (video: HTMLVideoElement, force = false) => {
-    if (mode !== "student" || !lesson.video_url) return;
-    if (inFlightRef.current) return;
+  const applySyncedStatus = useCallback((status: WatchStatusInput) => {
+    const normalized = normalizeWatchStatus(status);
+    statusRef.current = normalized;
+    setLocalStatus(normalized);
+    onStatusSynced?.(lesson.id, normalized);
+    return normalized;
+  }, [lesson.id, onStatusSynced]);
+
+  const flushWatchProgress = useCallback(async (video: HTMLVideoElement, force = false): Promise<WatchStatus | null> => {
+    if (mode !== "student" || !lesson.video_url) return null;
+    if (inFlightRef.current) {
+      for (let i = 0; i < 25 && inFlightRef.current; i += 1) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+      }
+      if (inFlightRef.current) return statusRef.current;
+    }
 
     const pending = Math.round(pendingSecondsRef.current * 100) / 100;
-    if (pending <= 0) return;
-    if (!force && pending < WATCH_MIN_FLUSH_SECONDS) return;
-
     const duration = Number.isFinite(video.duration) ? video.duration : 0;
     const position = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+
+    if (pending <= 0 || (!force && pending < WATCH_MIN_FLUSH_SECONDS)) {
+      const status = await apiFetch<WatchStatus>(`/progress/${lesson.id}/watch`);
+      return applySyncedStatus(status);
+    }
 
     pendingSecondsRef.current = 0;
     inFlightRef.current = true;
@@ -156,18 +187,16 @@ function OptimizedVideoPlayer({
           current_position_seconds: position,
         }),
       });
-      const normalized = normalizeWatchStatus(status);
-      statusRef.current = normalized;
-      setLocalStatus(normalized);
-      onStatusSynced?.(lesson.id, normalized);
       lastFlushAtRef.current = Date.now();
+      return applySyncedStatus(status);
     } catch {
       // Non-blocking progress save. Put the unsaved seconds back and retry on the next flush.
       pendingSecondsRef.current += pending;
+      return null;
     } finally {
       inFlightRef.current = false;
     }
-  }, [lesson.id, lesson.video_url, mode, onStatusSynced]);
+  }, [applySyncedStatus, lesson.id, lesson.video_url, mode]);
 
   const startTimer = useCallback(() => {
     if (mode !== "student" || !lesson.video_url || timerRef.current !== null) return;
@@ -205,6 +234,22 @@ function OptimizedVideoPlayer({
     stopTimer();
     void flushWatchProgress(video, true);
   }, [flushWatchProgress, stopTimer]);
+
+  useEffect(() => {
+    if (!onRegisterFlush) return undefined;
+
+    onRegisterFlush(lesson.id, async () => {
+      const video = videoRef.current;
+      if (video) {
+        return flushWatchProgress(video, true);
+      }
+
+      const status = await apiFetch<WatchStatus>(`/progress/${lesson.id}/watch`);
+      return applySyncedStatus(status);
+    });
+
+    return () => onRegisterFlush(lesson.id, undefined);
+  }, [applySyncedStatus, flushWatchProgress, lesson.id, onRegisterFlush]);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -276,6 +321,15 @@ export default function CoursePortal({ mode }: Props) {
   const [aiTab, setAiTab] = useState<AITab>("chat");
   // Track aiTab key per lesson so components remount on lesson change
   const [aiKey, setAiKey] = useState(0);
+  const lessonFlushersRef = useRef<Record<number, () => Promise<WatchStatus | null>>>({});
+
+  const registerLessonFlusher = useCallback((lessonId: number, flushFn?: () => Promise<WatchStatus | null>) => {
+    if (flushFn) {
+      lessonFlushersRef.current[lessonId] = flushFn;
+    } else {
+      delete lessonFlushersRef.current[lessonId];
+    }
+  }, []);
 
   const loadCourses = async () => {
     setLoading(true); setError("");
@@ -312,6 +366,22 @@ export default function CoursePortal({ mode }: Props) {
   const markComplete = async (lesson: LMSLesson) => {
     setError(""); setSuccess("");
     try {
+      // Before completing, force-save the latest watched seconds from the video player.
+      // This prevents the UI from showing enough progress while the backend still has older data.
+      const flushBeforeComplete = lessonFlushersRef.current[lesson.id];
+      const syncedStatus = lesson.video_url && flushBeforeComplete ? await flushBeforeComplete() : null;
+
+      if (lesson.video_url && syncedStatus && !syncedStatus.can_mark_complete) {
+        const requiredPercent = Math.round(syncedStatus.required_watch_percentage || VIDEO_REQUIRED_RATIO * 100);
+        const watchedPercent = Math.round(syncedStatus.watch_percentage || 0);
+        const remainingSeconds = Math.max(
+          Math.ceil((syncedStatus.required_watch_seconds || 0) - (syncedStatus.watched_seconds || 0)),
+          0,
+        );
+        setError(`Please watch at least ${requiredPercent}% of this video before marking complete. Current saved watch is ${watchedPercent}%. Watch about ${remainingSeconds} more seconds.`);
+        return;
+      }
+
       await apiFetch(`/progress/${lesson.id}/complete`, { method: "POST" });
       setSuccess("Lesson marked as complete!");
       if (selected) await loadLessons(selected);
@@ -354,6 +424,8 @@ export default function CoursePortal({ mode }: Props) {
               video_duration_seconds: status.video_duration_seconds,
               required_watch_seconds: status.required_watch_seconds,
               watch_percentage: status.watch_percentage,
+              required_watch_percentage: status.required_watch_percentage,
+              requirement_progress_percentage: status.requirement_progress_percentage,
               can_mark_complete: item.completed || status.can_mark_complete,
             }
             : item
@@ -698,6 +770,7 @@ export default function CoursePortal({ mode }: Props) {
                       mode={mode}
                       initialStatus={activeLessonProgress}
                       onStatusSynced={updateLessonWatchStatus}
+                      onRegisterFlush={registerLessonFlusher}
                     />
                   ) : activeLesson.external_video_link ? (
                     <div className="cp-no-video">

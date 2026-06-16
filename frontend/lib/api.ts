@@ -224,9 +224,102 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   return data as T;
 }
 
-export async function apiUpload<T>(path: string, formData: FormData, options: RequestInit = {}): Promise<T> {
+export type UploadProgressInfo = {
+  loaded: number;
+  total: number;
+  percent: number;
+};
+
+type ApiUploadOptions = RequestInit & {
+  onUploadProgress?: (progress: UploadProgressInfo) => void;
+};
+
+function parseXhrBody(xhr: XMLHttpRequest) {
+  const contentType = xhr.getResponseHeader("content-type") || "";
+  if (contentType.includes("application/json")) {
+    try {
+      return xhr.responseText ? JSON.parse(xhr.responseText) : null;
+    } catch {
+      return xhr.responseText;
+    }
+  }
+  return xhr.responseText;
+}
+
+function xhrUpload<T>(path: string, formData: FormData, options: ApiUploadOptions, tokenOverride?: string | null): Promise<T> {
+  const { onUploadProgress, headers: optionHeaders, method = "POST" } = options;
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(String(method).toUpperCase(), buildUrl(path), true);
+    xhr.withCredentials = true;
+
+    const token = tokenOverride ?? getToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+
+    const selectedSessionId = getSelectedAcademicSessionId();
+    if (selectedSessionId) xhr.setRequestHeader("X-Academic-Session-Id", selectedSessionId);
+
+    const headers = new Headers(optionHeaders);
+    headers.forEach((value, key) => {
+      if (key.toLowerCase() !== "content-type") xhr.setRequestHeader(key, value);
+    });
+
+    xhr.upload.onprogress = (event) => {
+      if (!onUploadProgress || !event.lengthComputable) return;
+      const percent = Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      onUploadProgress({ loaded: event.loaded, total: event.total, percent });
+    };
+
+    xhr.onload = async () => {
+      const data = parseXhrBody(xhr);
+
+      if (xhr.status === 401 && shouldAttemptRefresh(path) && !tokenOverride) {
+        const newToken = await refreshAccessToken();
+        if (newToken) {
+          try {
+            resolve(await xhrUpload<T>(path, formData, options, newToken));
+          } catch (err) {
+            reject(err);
+          }
+          return;
+        }
+        clearAuth();
+      }
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const detail = typeof data === "object" && data?.detail ? data.detail : "Request failed";
+        reject(new Error(Array.isArray(detail) ? detail.map((m) => m.msg).join(", ") : detail));
+        return;
+      }
+
+      if (typeof window !== "undefined" && String(method).toUpperCase() !== "GET") {
+        window.dispatchEvent(new Event("erp_notifications_updated"));
+      }
+
+      resolve(data as T);
+    };
+
+    xhr.onerror = () => {
+      reject(new Error("Upload failed. Please check file size, internet connection, and server upload limit."));
+    };
+
+    xhr.onabort = () => reject(new Error("Upload cancelled"));
+    xhr.ontimeout = () => reject(new Error("Upload timed out. Try compressing the video or uploading with a faster connection."));
+
+    xhr.send(formData);
+  });
+}
+
+export async function apiUpload<T>(path: string, formData: FormData, options: ApiUploadOptions = {}): Promise<T> {
+  const { onUploadProgress, ...fetchOptions } = options;
+
+  if (onUploadProgress && typeof window !== "undefined" && typeof XMLHttpRequest !== "undefined") {
+    return xhrUpload<T>(path, formData, options);
+  }
+
   const res = await authFetch(path, {
-    ...options,
+    ...fetchOptions,
     body: formData,
   });
 
@@ -237,7 +330,7 @@ export async function apiUpload<T>(path: string, formData: FormData, options: Re
     throw new Error(Array.isArray(message) ? message.map((m) => m.msg).join(", ") : message);
   }
 
-  const method = (options.method || "POST").toUpperCase();
+  const method = (fetchOptions.method || "POST").toUpperCase();
   if (typeof window !== "undefined" && method !== "GET") {
     window.dispatchEvent(new Event("erp_notifications_updated"));
   }

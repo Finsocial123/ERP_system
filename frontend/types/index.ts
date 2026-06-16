@@ -1,4 +1,4 @@
-  export type User = {
+export type User = {
     id: number;
     full_name: string;
     email?: string | null;
@@ -905,6 +905,8 @@
     video_duration_seconds?: number;
     required_watch_seconds?: number;
     watch_percentage?: number;
+    required_watch_percentage?: number;
+    requirement_progress_percentage?: number;
     can_mark_complete?: boolean;
   };
 
@@ -927,6 +929,8 @@
     watched_seconds?: number;
     video_duration_seconds?: number;
     watch_percentage?: number;
+    required_watch_percentage?: number;
+    requirement_progress_percentage?: number;
   };
 
   export type LMSStudentProgress = {

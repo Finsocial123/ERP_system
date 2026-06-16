@@ -111,6 +111,13 @@ function formatDate(value?: string | null) {
   return date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+function formatFileSize(file?: File | null) {
+  if (!file) return "";
+  const mb = file.size / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
+  return `${mb.toFixed(1)} MB`;
+}
+
 function ProgressBar({ value }: { value: number }) {
   const safeValue = Math.max(0, Math.min(100, Number(value || 0)));
   return (
@@ -137,6 +144,8 @@ export default function CourseManager({ mode }: Props) {
   const [loadingReport, setLoadingReport] = useState(false);
   const [savingCourse, setSavingCourse] = useState(false);
   const [savingLesson, setSavingLesson] = useState(false);
+  const [lessonUploadProgress, setLessonUploadProgress] = useState<number | null>(null);
+  const [lessonUploadStatus, setLessonUploadStatus] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -239,6 +248,8 @@ export default function CourseManager({ mode }: Props) {
   const resetLessonForm = () => {
     setLessonForm({ ...emptyLesson, order: String(lessons.length + 1) });
     setEditingLesson(null);
+    setLessonUploadProgress(null);
+    setLessonUploadStatus("");
   };
 
   const startEdit = (course: LMSCourse) => {
@@ -306,6 +317,8 @@ export default function CourseManager({ mode }: Props) {
     event.preventDefault();
     if (!selected) return;
     setSavingLesson(true);
+    setLessonUploadProgress(lessonForm.video || lessonForm.pdf ? 0 : null);
+    setLessonUploadStatus(lessonForm.video || lessonForm.pdf ? "Preparing upload..." : "Saving lesson...");
     setError("");
     setSuccess("");
     try {
@@ -317,9 +330,19 @@ export default function CourseManager({ mode }: Props) {
       if (lessonForm.external_video_link) data.append("external_video_link", lessonForm.external_video_link.trim());
       if (lessonForm.video) data.append("video", lessonForm.video);
       if (lessonForm.pdf) data.append("pdf", lessonForm.pdf);
-      await apiUpload<LMSLesson>(editingLesson ? `/lessons/${editingLesson.id}` : `/lessons/${selected.id}`, data, { method: editingLesson ? "PUT" : "POST" });
+      const response = await apiUpload<{ message?: string; video_ai_skipped_reason?: string | null }>(
+        editingLesson ? `/lessons/${editingLesson.id}` : `/lessons/${selected.id}`,
+        data,
+        {
+          method: editingLesson ? "PUT" : "POST",
+          onUploadProgress: ({ percent }) => {
+            setLessonUploadProgress(percent);
+            setLessonUploadStatus(percent >= 100 ? "Upload complete. Saving lesson on server..." : `Uploading file... ${percent}%`);
+          },
+        },
+      );
       setLessonForm({ ...emptyLesson, order: String(editingLesson ? lessons.length + 1 : lessons.length + 2) });
-      setSuccess(editingLesson ? "Lesson updated successfully" : "Lesson added successfully");
+      setSuccess(response.video_ai_skipped_reason || (editingLesson ? "Lesson updated successfully" : "Lesson added successfully"));
       setEditingLesson(null);
       await loadLessons(selected);
       await loadData();
@@ -327,6 +350,8 @@ export default function CourseManager({ mode }: Props) {
       setError(err instanceof Error ? err.message : editingLesson ? "Failed to update lesson" : "Failed to save lesson");
     } finally {
       setSavingLesson(false);
+      setLessonUploadStatus("");
+      setLessonUploadProgress(null);
     }
   };
 
@@ -650,14 +675,48 @@ export default function CourseManager({ mode }: Props) {
               </div>
               <div>
                 <Label>Video</Label>
-                <input className="block w-full text-sm text-slate-600" type="file" accept="video/mp4,video/webm,video/quicktime" onChange={(e) => updateLesson("video", e.target.files?.[0] || null)} />
+                <input
+                  className="block w-full text-sm text-slate-600"
+                  type="file"
+                  accept="video/mp4,video/webm,video/quicktime"
+                  onChange={(e) => updateLesson("video", e.target.files?.[0] || null)}
+                />
+                {lessonForm.video && (
+                  <p className="mt-1 text-xs text-slate-500">
+                    Selected: {lessonForm.video.name} · {formatFileSize(lessonForm.video)}
+                  </p>
+                )}
               </div>
               <div>
                 <Label>PDF</Label>
-                <input className="block w-full text-sm text-slate-600" type="file" accept="application/pdf" onChange={(e) => updateLesson("pdf", e.target.files?.[0] || null)} />
+                <input
+                  className="block w-full text-sm text-slate-600"
+                  type="file"
+                  accept="application/pdf"
+                  onChange={(e) => updateLesson("pdf", e.target.files?.[0] || null)}
+                />
+                {lessonForm.pdf && (
+                  <p className="mt-1 text-xs text-slate-500">
+                    Selected: {lessonForm.pdf.name} · {formatFileSize(lessonForm.pdf)}
+                  </p>
+                )}
               </div>
+              {lessonUploadProgress !== null && (
+                <div className="md:col-span-4 rounded-2xl border border-violet-100 bg-violet-50 p-4">
+                  <div className="mb-2 flex items-center justify-between text-sm">
+                    <span className="font-semibold text-violet-800">{lessonUploadStatus || "Uploading..."}</span>
+                    <span className="font-bold text-violet-800">{lessonUploadProgress}%</span>
+                  </div>
+                  <div className="h-3 overflow-hidden rounded-full bg-white">
+                    <div className="h-full rounded-full bg-violet-600 transition-all" style={{ width: `${lessonUploadProgress}%` }} />
+                  </div>
+                  <p className="mt-2 text-xs text-violet-700">
+                    For long videos, keep this tab open until the server confirms the lesson is saved.
+                  </p>
+                </div>
+              )}
               <div className="md:col-span-4">
-                <Button type="submit" disabled={savingLesson || !lessonForm.title}>{savingLesson ? "Saving..." : editingLesson ? "Update Lesson" : "Add Lesson"}</Button>
+                <Button type="submit" disabled={savingLesson || !lessonForm.title}>{savingLesson ? (lessonUploadProgress !== null ? "Uploading..." : "Saving...") : editingLesson ? "Update Lesson" : "Add Lesson"}</Button>
               </div>
             </form>
 

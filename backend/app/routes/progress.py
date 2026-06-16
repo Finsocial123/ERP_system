@@ -33,7 +33,27 @@ def get_watch_status(record: Optional[VideoWatchProgress]) -> dict:
     watched_seconds = round(record.watched_seconds, 2) if record else 0.0
     duration_seconds = round(record.video_duration_seconds, 2) if record else 0.0
     required_seconds = get_required_watch_seconds(duration_seconds)
-    return {'watched_seconds': watched_seconds, 'video_duration_seconds': duration_seconds, 'required_watch_seconds': required_seconds, 'watch_percentage': round(min(watched_seconds / required_seconds * 100, 100), 2) if required_seconds > 0 else 0, 'can_mark_complete': required_seconds > 0 and watched_seconds >= required_seconds}
+    actual_watch_percentage = (
+        round(min(watched_seconds / duration_seconds * 100, 100), 2)
+        if duration_seconds > 0
+        else 0
+    )
+    requirement_progress_percentage = (
+        round(min(watched_seconds / required_seconds * 100, 100), 2)
+        if required_seconds > 0
+        else 0
+    )
+    return {
+        'watched_seconds': watched_seconds,
+        'video_duration_seconds': duration_seconds,
+        'required_watch_seconds': required_seconds,
+        # This value is shown to students as "Watched X%", so it must mean
+        # actual percent of the full video, not percent of the 75% requirement.
+        'watch_percentage': actual_watch_percentage,
+        'required_watch_percentage': round(VIDEO_COMPLETION_RATIO * 100, 2),
+        'requirement_progress_percentage': requirement_progress_percentage,
+        'can_mark_complete': required_seconds > 0 and watched_seconds >= required_seconds,
+    }
 
 async def get_lesson_or_404(lesson_id: int, db: AsyncSession) -> Lesson:
     lesson = await async_query(db, Lesson).filter(Lesson.id == lesson_id).first()

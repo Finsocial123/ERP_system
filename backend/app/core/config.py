@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
 
+    # LMS uploads
+    # 1-hour course videos can be larger than 500MB. The backend now uploads
+    # videos in a streaming-friendly way and only runs AI indexing for smaller
+    # videos to avoid request timeouts / high VPS memory usage.
+    LMS_MAX_VIDEO_UPLOAD_MB: int = 2048
+    LMS_AI_PROCESS_VIDEO_MAX_MB: int = 120
+
     GOOGLE_CLIENT_ID: str = ""
 
     # Runtime / performance

@@ -12,7 +12,6 @@ from app.models.video_watch_progress import VideoWatchProgress
 from app.dependencies.auth import current_school_id, require_roles
 from app.models.user import UserRole
 from app.services.lms_access import ensure_enrollment_for_user_student
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
 router = APIRouter(prefix='/progress', tags=['Progress'])
@@ -34,47 +33,33 @@ def get_watch_status(record: Optional[VideoWatchProgress]) -> dict:
     watched_seconds = round(record.watched_seconds, 2) if record else 0.0
     duration_seconds = round(record.video_duration_seconds, 2) if record else 0.0
     required_seconds = get_required_watch_seconds(duration_seconds)
-    return {'watched_seconds': watched_seconds, 'video_duration_seconds': duration_seconds, 'required_watch_seconds': required_seconds, 'watch_percentage': round(min(watched_seconds / required_seconds * 100, 100), 2) if required_seconds > 0 else 0, 'can_mark_complete': required_seconds > 0 and watched_seconds >= required_seconds}
+    actual_watch_percentage = (
+        round(min(watched_seconds / duration_seconds * 100, 100), 2)
+        if duration_seconds > 0
+        else 0
+    )
+    requirement_progress_percentage = (
+        round(min(watched_seconds / required_seconds * 100, 100), 2)
+        if required_seconds > 0
+        else 0
+    )
+    return {
+        'watched_seconds': watched_seconds,
+        'video_duration_seconds': duration_seconds,
+        'required_watch_seconds': required_seconds,
+        # This value is shown to students as "Watched X%", so it must mean
+        # actual percent of the full video, not percent of the 75% requirement.
+        'watch_percentage': actual_watch_percentage,
+        'required_watch_percentage': round(VIDEO_COMPLETION_RATIO * 100, 2),
+        'requirement_progress_percentage': requirement_progress_percentage,
+        'can_mark_complete': required_seconds > 0 and watched_seconds >= required_seconds,
+    }
 
 async def get_lesson_or_404(lesson_id: int, db: AsyncSession) -> Lesson:
     lesson = await async_query(db, Lesson).filter(Lesson.id == lesson_id).first()
     if not lesson:
         raise HTTPException(status_code=404, detail='Lesson not found')
     return lesson
-
-
-async def get_or_create_watch_record(db: AsyncSession, student_id: int, lesson_id: int) -> VideoWatchProgress:
-    record = await async_query(db, VideoWatchProgress).filter(
-        VideoWatchProgress.student_id == student_id,
-        VideoWatchProgress.lesson_id == lesson_id,
-    ).first()
-    if record:
-        return record
-
-    record = VideoWatchProgress(
-        student_id=student_id,
-        lesson_id=lesson_id,
-        watched_seconds=0,
-        video_duration_seconds=0,
-        max_position_seconds=0,
-        last_position_seconds=0,
-    )
-    db.add(record)
-    try:
-        await db.flush()
-        return record
-    except IntegrityError:
-        # A pause/pagehide/refresh can send two progress pings at almost the same time.
-        # If another request created the row first, reload it instead of failing the save.
-        await db.rollback()
-        existing = await async_query(db, VideoWatchProgress).filter(
-            VideoWatchProgress.student_id == student_id,
-            VideoWatchProgress.lesson_id == lesson_id,
-        ).first()
-        if existing:
-            return existing
-        raise
-
 
 async def ensure_student_enrolled(student_id: int, course_id: int, db: AsyncSession, school_id: int | None=None, current_user: User | None=None) -> Enrollment:
     enrollment = await async_query(db, Enrollment).filter(Enrollment.student_id == student_id, Enrollment.course_id == course_id).first()
@@ -111,7 +96,11 @@ async def track_video_watch_progress(lesson_id: int, payload: VideoWatchPayload,
     await ensure_student_enrolled(current_user.id, lesson.course_id, db, school_id, current_user)
     if not lesson.video_url and (not lesson.external_video_link):
         return {'watched_seconds': 0, 'video_duration_seconds': 0, 'required_watch_seconds': 0, 'watch_percentage': 0, 'can_mark_complete': True}
-    record = await get_or_create_watch_record(db, current_user.id, lesson_id)
+    record = await async_query(db, VideoWatchProgress).filter(VideoWatchProgress.student_id == current_user.id, VideoWatchProgress.lesson_id == lesson_id).first()
+    if not record:
+        record = VideoWatchProgress(student_id=current_user.id, lesson_id=lesson_id, watched_seconds=0, video_duration_seconds=0, max_position_seconds=0, last_position_seconds=0)
+        db.add(record)
+        await db.flush()
     if payload.video_duration_seconds and payload.video_duration_seconds > 0:
         record.video_duration_seconds = max(record.video_duration_seconds or 0, float(payload.video_duration_seconds))
     if payload.current_position_seconds is not None:

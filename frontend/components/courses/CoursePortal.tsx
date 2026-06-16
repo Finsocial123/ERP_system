@@ -20,7 +20,7 @@ import {
 import CourseLessonChat from "@/components/courses/CourseLessonChat";
 import LessonQuizGenerator from "@/components/courses/LessonQuizGenerator";
 import LessonSummaryGenerator from "@/components/courses/LessonSummaryGenerator";
-import { apiFetch, fileUrl } from "@/lib/api";
+import { apiFetch, fileUrl, getSavedAuth } from "@/lib/api";
 import type { CourseProgress, LMSCourse, LMSLesson } from "@/types";
 
 type Props = { mode: "student" | "parent" };
@@ -54,8 +54,8 @@ type WatchStatusInput = Partial<WatchStatus> | null | undefined;
 
 const VIDEO_REQUIRED_RATIO = 0.75;
 const WATCH_TICK_MS = 1000;
-const WATCH_FLUSH_INTERVAL_MS = 20000;
-const WATCH_MIN_FLUSH_SECONDS = 10;
+const WATCH_FLUSH_INTERVAL_MS = 5000;
+const WATCH_MIN_FLUSH_SECONDS = 1;
 
 function normalizeWatchStatus(status?: WatchStatusInput): WatchStatus {
   const duration = Number(status?.video_duration_seconds || 0);
@@ -83,6 +83,60 @@ function buildLocalWatchStatus(base: WatchStatus, watchedSeconds: number, durati
   };
 }
 
+
+type CachedWatchSnapshot = {
+  status?: WatchStatusInput;
+  updated_at?: number;
+};
+
+function watchCacheKey(lessonId: number) {
+  const userId = getSavedAuth()?.user?.id || "guest";
+  return `erp_lms_watch_progress:${userId}:${lessonId}`;
+}
+
+function readCachedWatchSnapshot(lessonId: number): WatchStatus | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(watchCacheKey(lessonId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedWatchSnapshot;
+    return normalizeWatchStatus(parsed.status);
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedWatchSnapshot(lessonId: number, status: WatchStatus) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(watchCacheKey(lessonId), JSON.stringify({ status, updated_at: Date.now() }));
+  } catch {
+    // Local cache is only a safety backup. Ignore storage quota/private-mode errors.
+  }
+}
+
+function clearCachedWatchSnapshot(lessonId: number) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(watchCacheKey(lessonId));
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function mergeServerAndCachedWatchStatus(serverStatus: WatchStatus, cachedStatus: WatchStatus | null) {
+  if (!cachedStatus || cachedStatus.watched_seconds <= serverStatus.watched_seconds) {
+    return { status: serverStatus, unsyncedSeconds: 0 };
+  }
+
+  const duration = Math.max(serverStatus.video_duration_seconds || 0, cachedStatus.video_duration_seconds || 0);
+  const merged = buildLocalWatchStatus(serverStatus, cachedStatus.watched_seconds, duration);
+  return {
+    status: merged,
+    unsyncedSeconds: Math.max(0, cachedStatus.watched_seconds - serverStatus.watched_seconds),
+  };
+}
+
 function OptimizedVideoPlayer({
   lesson,
   mode,
@@ -104,13 +158,21 @@ function OptimizedVideoPlayer({
   const [localStatus, setLocalStatus] = useState<WatchStatus>(() => statusRef.current);
 
   useEffect(() => {
-    const nextStatus = normalizeWatchStatus(initialStatus);
-    pendingSecondsRef.current = 0;
+    const serverStatus = normalizeWatchStatus(initialStatus);
+    const cachedStatus = mode === "student" ? readCachedWatchSnapshot(lesson.id) : null;
+    const { status: nextStatus, unsyncedSeconds } = mergeServerAndCachedWatchStatus(serverStatus, cachedStatus);
+
+    pendingSecondsRef.current = unsyncedSeconds;
     lastTickAtRef.current = null;
     lastFlushAtRef.current = Date.now();
     inFlightRef.current = false;
     statusRef.current = nextStatus;
     setLocalStatus(nextStatus);
+    onStatusSynced?.(lesson.id, nextStatus);
+
+    if (mode === "student" && unsyncedSeconds > 0) {
+      saveCachedWatchSnapshot(lesson.id, nextStatus);
+    }
     // Reset only when the lesson changes. Parent progress updates every second for UI,
     // but those updates should not reset the unsaved local watch accumulator.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -131,17 +193,18 @@ function OptimizedVideoPlayer({
     statusRef.current = next;
     setLocalStatus(next);
     onStatusSynced?.(lesson.id, next);
+    saveCachedWatchSnapshot(lesson.id, next);
   }, [lesson.id, onStatusSynced]);
 
-  const flushWatchProgress = useCallback(async (video: HTMLVideoElement, force = false) => {
+  const flushWatchProgress = useCallback(async (video: HTMLVideoElement, force = false, keepalive = false) => {
     if (mode !== "student" || !lesson.video_url) return;
-    if (inFlightRef.current) return;
+    if (inFlightRef.current && !keepalive) return;
 
     const pending = Math.round(pendingSecondsRef.current * 100) / 100;
     if (pending <= 0) return;
     if (!force && pending < WATCH_MIN_FLUSH_SECONDS) return;
 
-    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    const duration = Number.isFinite(video.duration) ? video.duration : statusRef.current.video_duration_seconds || 0;
     const position = Number.isFinite(video.currentTime) ? video.currentTime : 0;
 
     pendingSecondsRef.current = 0;
@@ -150,6 +213,7 @@ function OptimizedVideoPlayer({
     try {
       const status = await apiFetch<WatchStatus>(`/progress/${lesson.id}/watch`, {
         method: "POST",
+        keepalive,
         body: JSON.stringify({
           watched_seconds_delta: pending,
           video_duration_seconds: duration,
@@ -157,13 +221,24 @@ function OptimizedVideoPlayer({
         }),
       });
       const normalized = normalizeWatchStatus(status);
-      statusRef.current = normalized;
-      setLocalStatus(normalized);
-      onStatusSynced?.(lesson.id, normalized);
+      const remainingPending = Math.round(pendingSecondsRef.current * 100) / 100;
+      const displayStatus = remainingPending > 0
+        ? buildLocalWatchStatus(normalized, normalized.watched_seconds + remainingPending, duration)
+        : normalized;
+
+      statusRef.current = displayStatus;
+      setLocalStatus(displayStatus);
+      onStatusSynced?.(lesson.id, displayStatus);
       lastFlushAtRef.current = Date.now();
+      if (remainingPending <= 0) {
+        clearCachedWatchSnapshot(lesson.id);
+      } else {
+        saveCachedWatchSnapshot(lesson.id, displayStatus);
+      }
     } catch {
       // Non-blocking progress save. Put the unsaved seconds back and retry on the next flush.
       pendingSecondsRef.current += pending;
+      saveCachedWatchSnapshot(lesson.id, statusRef.current);
     } finally {
       inFlightRef.current = false;
     }
@@ -201,29 +276,44 @@ function OptimizedVideoPlayer({
     }, WATCH_TICK_MS);
   }, [flushWatchProgress, lesson.video_url, mergeLocalStatus, mode]);
 
-  const flushAndStop = useCallback((video: HTMLVideoElement) => {
+  const flushAndStop = useCallback((video: HTMLVideoElement, keepalive = false) => {
     stopTimer();
-    void flushWatchProgress(video, true);
+    void flushWatchProgress(video, true, keepalive);
   }, [flushWatchProgress, stopTimer]);
 
   useEffect(() => {
-    const handleVisibilityChange = () => {
+    const flushBeforeLeaving = () => {
       const video = videoRef.current;
-      if (document.visibilityState === "hidden" && video) {
-        flushAndStop(video);
+      if (video) {
+        flushAndStop(video, true);
       }
     };
 
+    const handleVisibilityChange = () => {
+      const video = videoRef.current;
+      if (!video) return;
+
+      if (document.visibilityState === "hidden") {
+        flushAndStop(video, true);
+      } else if (!video.paused && !video.ended) {
+        startTimer();
+      }
+    };
+
+    window.addEventListener("pagehide", flushBeforeLeaving);
+    window.addEventListener("beforeunload", flushBeforeLeaving);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
+      window.removeEventListener("pagehide", flushBeforeLeaving);
+      window.removeEventListener("beforeunload", flushBeforeLeaving);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       const video = videoRef.current;
       stopTimer();
       if (video) {
-        void flushWatchProgress(video, true);
+        void flushWatchProgress(video, true, true);
       }
     };
-  }, [flushAndStop, flushWatchProgress, stopTimer]);
+  }, [flushAndStop, flushWatchProgress, startTimer, stopTimer]);
 
   const showWatchProgress = mode === "student" && Boolean(lesson.video_url);
 
@@ -243,6 +333,9 @@ function OptimizedVideoPlayer({
             statusRef.current = next;
             setLocalStatus(next);
             onStatusSynced?.(lesson.id, next);
+            if (pendingSecondsRef.current > 0) {
+              void flushWatchProgress(video, true);
+            }
           }}
           onPlay={startTimer}
           onPause={(event) => flushAndStop(event.currentTarget)}

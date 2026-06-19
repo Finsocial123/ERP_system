@@ -9,4 +9,12 @@ LANGUAGE_NAMES = {
     "ja": ("Japanese", "Japanese"),
     "pt": ("Portuguese", "Latin"),
     "ur": ("Urdu", "Nastaliq/Urdu"),
+    "bn": ("Bengali", "Bengali"),
+    "te": ("Telugu", "Telugu"),
+    "mr": ("Marathi", "Devanagari"),
+    "ta": ("Tamil", "Tamil"),
+    "gu": ("Gujarati", "Gujarati"),
+    "kn": ("Kannada", "Kannada"),
+    "ml": ("Malayalam", "Malayalam"),
+    "pa": ("Punjabi", "Gurmukhi"),
 }

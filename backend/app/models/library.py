@@ -83,6 +83,6 @@ class BookIssue(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    book = relationship("Book", back_populates="issues")
-    student = relationship("Student")
-    teacher = relationship("Teacher")
+    book = relationship("Book", back_populates="issues",  lazy="selectin")
+    student = relationship("Student",  lazy="selectin")
+    teacher = relationship("Teacher",  lazy="selectin")

@@ -1,4 +1,5 @@
 from email.mime.text import MIMEText
+from html import escape
 import smtplib
 
 from app.core.config import settings
@@ -83,6 +84,48 @@ def send_otp_email(to_email: str, otp: str, purpose: str) -> None:
       <p>Your OTP is:</p>
       <p style="font-size: 28px; font-weight: 700; letter-spacing: 4px;">{otp}</p>
       <p>This OTP will expire soon. Do not share it with anyone.</p>
+    </div>
+    """
+    _send_html_email(to_email, subject, body)
+
+
+
+def send_ai_response_email(
+    to_email: str,
+    subject: str,
+    answer: str,
+    *,
+    lesson_title: str | None = None,
+    course_title: str | None = None,
+    sent_by: str | None = None,
+) -> None:
+    """Send an AI tutor answer to a student/teacher email address."""
+    safe_answer = escape(answer).replace("\n", "<br>")
+    meta_lines = []
+    if course_title:
+        meta_lines.append(f"<strong>Course:</strong> {escape(course_title)}")
+    if lesson_title:
+        meta_lines.append(f"<strong>Lesson:</strong> {escape(lesson_title)}")
+    if sent_by:
+        meta_lines.append(f"<strong>Sent by:</strong> {escape(sent_by)}")
+
+    meta_html = ""
+    if meta_lines:
+        meta_html = (
+            '<div style="margin: 12px 0 18px; padding: 10px 12px; background: #f8fafc; '
+            'border: 1px solid #e2e8f0; border-radius: 10px; font-size: 13px; color: #475569;">'
+            + "<br>".join(meta_lines)
+            + "</div>"
+        )
+
+    body = f"""
+    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
+      <h2 style="margin: 0 0 8px;">AI Tutor Response</h2>
+      <p style="margin: 0; color: #64748b;">Shared from School ERP LMS chat.</p>
+      {meta_html}
+      <div style="padding: 14px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+        {safe_answer}
+      </div>
     </div>
     """
     _send_html_email(to_email, subject, body)

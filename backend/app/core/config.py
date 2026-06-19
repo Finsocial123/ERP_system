@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     SMTP_FROM_NAME: str = "School ERP"
     SMTP_USE_TLS: bool = True
 
+    # AI answer sharing tools
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_DEFAULT_CHAT_ID: str = ""
+
     # Razorpay
     RAZORPAY_KEY_ID: str = ""
     RAZORPAY_KEY_SECRET: str = ""

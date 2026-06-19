@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.async_query import async_query
 from app.core.database import get_async_db
 from app.dependencies.academic_session import selected_academic_session_id, writable_selected_academic_session_id, assert_item_session_is_writable
 from app.dependencies.auth import current_school_id, get_current_user, require_school_admin
 from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject
-from app.models.people import ClassTeacherAssignment, Teacher, TeacherSubject
+from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.user import User
 from app.schemas.academic import (
     AcademicSessionCreate,
@@ -99,6 +100,87 @@ async def _validate_class(db: AsyncSession, class_id: int | None, school_id: int
     if not item:
         raise HTTPException(status_code=404, detail="Class not found for selected academic session")
     return item
+
+
+
+
+async def _replicate_previous_active_students(
+    db: AsyncSession,
+    school_id: int,
+    source_session_id: int | None,
+    target_session_id: int,
+    class_map: dict[int, int],
+    section_map: dict[int, int],
+) -> None:
+    """Copy active student rows into the new academic session.
+
+    The new session gets its own Student rows, so edits like class/section change
+    stay isolated from the previous session. Guardian rows are also copied so
+    guardian edits in the new session do not mutate older-session records. Login
+    users are intentionally reused, so students/parents keep the same credentials.
+    """
+    if not source_session_id or source_session_id == target_session_id:
+        return
+
+    existing_admission_numbers = {
+        row.admission_no
+        for row in await async_query(db, Student).filter(
+            Student.school_id == school_id,
+            Student.academic_session_id == target_session_id,
+        ).all()
+    }
+
+    students = await async_query(db, Student).options(selectinload(Student.guardian)).filter(
+        Student.school_id == school_id,
+        Student.academic_session_id == source_session_id,
+        Student.is_active.is_(True),
+    ).order_by(Student.id.asc()).all()
+
+    for old in students:
+        if old.admission_no in existing_admission_numbers:
+            continue
+
+        new_guardian_id = None
+        if old.guardian:
+            guardian = ParentGuardian(
+                school_id=school_id,
+                user_id=old.guardian.user_id,
+                full_name=old.guardian.full_name,
+                relation=old.guardian.relation,
+                email=old.guardian.email,
+                phone=old.guardian.phone,
+                alternate_phone=old.guardian.alternate_phone,
+                occupation=old.guardian.occupation,
+                address=old.guardian.address,
+                is_active=old.guardian.is_active,
+            )
+            db.add(guardian)
+            await db.flush()
+            new_guardian_id = guardian.id
+
+        db.add(Student(
+            school_id=school_id,
+            academic_session_id=target_session_id,
+            user_id=old.user_id,
+            guardian_id=new_guardian_id,
+            class_id=class_map.get(old.class_id) if old.class_id else None,
+            section_id=section_map.get(old.section_id) if old.section_id else None,
+            admission_no=old.admission_no,
+            roll_number=old.roll_number,
+            first_name=old.first_name,
+            last_name=old.last_name,
+            email=old.email,
+            phone=old.phone,
+            gender=old.gender,
+            date_of_birth=old.date_of_birth,
+            blood_group=old.blood_group,
+            photo_url=old.photo_url,
+            address=old.address,
+            admission_date=old.admission_date,
+            status=old.status,
+            is_active=old.is_active,
+        ))
+        existing_admission_numbers.add(old.admission_no)
 
 
 async def _replicate_previous_active_setup(
@@ -256,6 +338,15 @@ async def _replicate_previous_active_setup(
             class_id=class_id,
             section_id=section_map.get(old.section_id) if old.section_id else None,
         ))
+
+    await _replicate_previous_active_students(
+        db=db,
+        school_id=school_id,
+        source_session_id=source_session_id,
+        target_session_id=target_session_id,
+        class_map=class_map,
+        section_map=section_map,
+    )
 
 
 @router.get("/academic-sessions", response_model=list[AcademicSessionRead])

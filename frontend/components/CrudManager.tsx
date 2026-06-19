@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Edit2, Plus, Trash2, X } from "lucide-react";
 
-import { apiFetch } from "@/lib/api";
+import { apiFetch, setSelectedAcademicSessionId } from "@/lib/api";
 import type { FieldConfig } from "@/types";
 import { Button, Card, Input, Label, Textarea } from "@/components/ui";
 
@@ -33,6 +33,15 @@ function formatCellValue(value: string | number | boolean | null | undefined) {
   }
 
   return String(value);
+}
+
+function isAcademicSessionEndpoint(endpoint: string) {
+  return endpoint.replace(/\/+$/, "") === "/academic-sessions";
+}
+
+function hardReloadAfterSessionChange(sessionId: number | string) {
+  setSelectedAcademicSessionId(sessionId);
+  window.setTimeout(() => window.location.reload(), 80);
 }
 
 export default function CrudManager({
@@ -109,19 +118,27 @@ export default function CrudManager({
     try {
       const payload = preparePayload();
 
+      let savedItem: Item | null = null;
+
       if (editing) {
-        await apiFetch(`${endpoint}/${editing.id}`, {
+        savedItem = await apiFetch<Item>(`${endpoint}/${editing.id}`, {
           method: "PUT",
           body: JSON.stringify(payload),
         });
       } else {
-        await apiFetch(endpoint, {
+        savedItem = await apiFetch<Item>(endpoint, {
           method: "POST",
           body: JSON.stringify(payload),
         });
       }
 
       reset();
+
+      if (isAcademicSessionEndpoint(endpoint) && savedItem?.id) {
+        hardReloadAfterSessionChange(savedItem.id);
+        return;
+      }
+
       await loadItems();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");

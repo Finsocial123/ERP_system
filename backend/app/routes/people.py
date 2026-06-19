@@ -18,6 +18,7 @@ from app.models.user import User, UserRole
 from app.schemas.common import MessageResponse
 from app.schemas.people import ClassTeacherCreate, ClassTeacherRead, ParentLoginCreate, StudentCreate, StudentRead, StudentUpdate, TeacherCreate, TeacherRead, TeacherSubjectCreate, TeacherSubjectRead, TeacherUpdate
 router = APIRouter(tags=['Phase 2 - Student and Teacher Management'], dependencies=[Depends(require_writable_academic_session)])
+ADMIN_ROLE_VALUES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
 
 def _with_read_relationships(query, model):
     # Pydantic response serialization runs outside SQLAlchemy's async IO context.
@@ -126,9 +127,12 @@ async def _ensure_parent_login(db: AsyncSession, school_id: int, guardian: Paren
     return (user, temporary_password)
 
 @router.get('/students', response_model=list[StudentRead])
-async def list_students(request: Request, search: str | None=Query(default=None), class_id: int | None=Query(default=None), section_id: int | None=Query(default=None), status_value: str | None=Query(default=None, alias='status'), school_id: int=Depends(current_school_id), current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
+async def list_students(request: Request, search: str | None=Query(default=None), class_id: int | None=Query(default=None), section_id: int | None=Query(default=None), status_value: str | None=Query(default=None, alias='status'), include_inactive: bool=Query(default=False), school_id: int=Depends(current_school_id), current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
     session_id = await selected_academic_session_id(db, school_id, request=request, current_user=current_user)
-    query = async_query(db, Student).options(selectinload(Student.guardian)).filter(Student.school_id == school_id, Student.is_active.is_(True))
+    query = async_query(db, Student).options(selectinload(Student.guardian)).filter(Student.school_id == school_id)
+    can_view_inactive = current_user.role in ADMIN_ROLE_VALUES
+    if not include_inactive or not can_view_inactive:
+        query = query.filter(Student.is_active.is_(True))
     if session_id is not None:
         query = query.filter(Student.academic_session_id == session_id)
     if search:

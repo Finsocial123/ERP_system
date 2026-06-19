@@ -224,7 +224,6 @@ export default function CommunicationCenter() {
       setEvents(eventData);
       setComplaints(complaintData);
       setNotifications(notificationData);
-      window.dispatchEvent(new Event("erp_notifications_updated"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load communication data.");
     } finally {

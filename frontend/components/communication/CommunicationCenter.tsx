@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch, getSavedAuth } from "@/lib/api";
 
 type UserRole = "SCHOOL_OWNER" | "SCHOOL_ADMIN" | "TEACHER" | "STUDENT" | "PARENT";
@@ -181,7 +181,8 @@ export default function CommunicationCenter() {
   const role = auth?.user.role || "";
   const isAdmin = ["SUPER_ADMIN", "SCHOOL_OWNER", "SCHOOL_ADMIN"].includes(role);
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
-  const [loading, setLoading] = useState(true);
+  const [loadingTab, setLoadingTab] = useState<TabKey | "">("");
+  const loadedTabsRef = useRef<Partial<Record<TabKey, boolean>>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -208,34 +209,44 @@ export default function CommunicationCenter() {
     [],
   );
 
-  const loadAll = useCallback(async () => {
-    setLoading(true);
+  const loadTab = useCallback(async (tab: TabKey, force = false) => {
+    if (!force && loadedTabsRef.current[tab]) return;
+    setLoadingTab(tab);
     setError("");
     try {
-      const [overviewData, announcementData, eventData, complaintData, notificationData] = await Promise.all([
-        apiFetch<Overview>("/communication/overview"),
-        apiFetch<Announcement[]>("/communication/announcements"),
-        apiFetch<SchoolEvent[]>("/communication/events"),
-        apiFetch<Complaint[]>("/communication/complaints"),
-        apiFetch<NotificationItem[]>("/communication/notifications"),
-      ]);
-      setOverview(overviewData);
-      setAnnouncements(announcementData);
-      setEvents(eventData);
-      setComplaints(complaintData);
-      setNotifications(notificationData);
+      if (tab === "overview") {
+        setOverview(await apiFetch<Overview>("/communication/overview"));
+      } else if (tab === "announcements") {
+        setAnnouncements(await apiFetch<Announcement[]>("/communication/announcements"));
+      } else if (tab === "events") {
+        setEvents(await apiFetch<SchoolEvent[]>("/communication/events"));
+      } else if (tab === "complaints") {
+        setComplaints(await apiFetch<Complaint[]>("/communication/complaints"));
+      } else if (tab === "notifications") {
+        setNotifications(await apiFetch<NotificationItem[]>("/communication/notifications"));
+      }
+      loadedTabsRef.current[tab] = true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load communication data.");
     } finally {
-      setLoading(false);
+      setLoadingTab((current) => (current === tab ? "" : current));
     }
   }, []);
 
   useEffect(() => {
-    void loadAll();
-  }, [loadAll]);
+    void loadTab(activeTab);
+  }, [activeTab, loadTab]);
 
-  async function submitForm(path: string, payload: unknown, reset: () => void) {
+  async function refreshAfterWrite(tab: TabKey) {
+    loadedTabsRef.current[tab] = false;
+    loadedTabsRef.current.overview = false;
+    await loadTab(tab, true);
+    if (tab !== "overview") {
+      void loadTab("overview", true);
+    }
+  }
+
+  async function submitForm(path: string, payload: unknown, reset: () => void, refreshTab: TabKey = activeTab) {
     setSaving(true);
     setError("");
     setSuccess("");
@@ -243,7 +254,7 @@ export default function CommunicationCenter() {
       await apiFetch(path, { method: "POST", body: JSON.stringify(payload) });
       reset();
       setSuccess("Saved successfully.");
-      await loadAll();
+      await refreshAfterWrite(refreshTab);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed.");
     } finally {
@@ -251,12 +262,12 @@ export default function CommunicationCenter() {
     }
   }
 
-  async function patchItem(path: string, payload: unknown) {
+  async function patchItem(path: string, payload: unknown, refreshTab: TabKey = activeTab) {
     setSaving(true);
     setError("");
     try {
       await apiFetch(path, { method: "PATCH", body: JSON.stringify(payload) });
-      await loadAll();
+      await refreshAfterWrite(refreshTab);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Update failed.");
     } finally {
@@ -266,12 +277,12 @@ export default function CommunicationCenter() {
 
   async function markRead(id: number) {
     await apiFetch(`/communication/notifications/${id}/read`, { method: "POST" });
-    await loadAll();
+    await refreshAfterWrite("notifications");
   }
 
   async function markAllRead() {
     await apiFetch("/communication/notifications/read-all", { method: "POST" });
-    await loadAll();
+    await refreshAfterWrite("notifications");
   }
 
   const statCards = [
@@ -305,7 +316,7 @@ export default function CommunicationCenter() {
 
       {error && <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
       {success && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">{success}</div>}
-      {loading ? (
+      {loadingTab === activeTab ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-8 text-sm text-slate-500">Loading...</div>
       ) : (
         <>

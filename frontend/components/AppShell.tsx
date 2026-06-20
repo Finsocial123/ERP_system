@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen,
   Building2,
@@ -178,6 +178,7 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
     return getCachedBranding();
   });
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const unreadRefreshInFlightRef = useRef(false);
   const [academicSessions, setAcademicSessions] = useState<AcademicSession[]>([]);
   const [selectedAcademicSessionId, setSelectedAcademicSessionState] = useState<string>("");
 
@@ -245,10 +246,16 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
 
 
   const refreshUnreadNotifications = useCallback(() => {
-    if (!auth?.user.school_id) return;
-    apiFetch<Array<{ id: number }>>("/communication/notifications?unread_only=true&limit=100")
-      .then((data) => setUnreadNotifications(data.length))
-      .catch(() => setUnreadNotifications(0));
+    if (!auth?.user.school_id || unreadRefreshInFlightRef.current) return;
+    unreadRefreshInFlightRef.current = true;
+    apiFetch<{ count: number }>("/communication/notifications/unread-count")
+      .then((data) => setUnreadNotifications(Number(data.count || 0)))
+      .catch(() => {
+        // Keep the last known count instead of repeatedly clearing it during short network/API failures.
+      })
+      .finally(() => {
+        unreadRefreshInFlightRef.current = false;
+      });
   }, [auth?.user.school_id]);
 
   useEffect(() => {
@@ -263,10 +270,8 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!auth?.user.school_id) return;
     const onFocus = () => refreshUnreadNotifications();
-    const interval = window.setInterval(refreshUnreadNotifications, 30000);
     window.addEventListener("focus", onFocus);
     return () => {
-      window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
   }, [auth?.user.school_id, refreshUnreadNotifications]);

@@ -19,7 +19,7 @@ class MeetingListItemOut(BaseModel):
     class_id: int | None
     section_id: int | None
     teacher_id: int | None
-    created_by_user_id: int
+    created_by_user_id: int | None = None
     created_by: CreatedByOut | None 
     created_at: datetime
     started_at: datetime | None

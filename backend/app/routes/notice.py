@@ -6,16 +6,53 @@ from app.models.notice import NoticeStatus
 from app.models.user import User, UserRole
 from app.schemas.notice import NoticeCreate, NoticeListOut, NoticeOut, NoticePinUpdate, NoticeUpdate, NoticeEnhanceRequest, NoticeEnhanceOut, NoticeGenerateRequest, NoticeGenerateOut, NoticePriority
 from app.services import notice_service
+
+
+from app.dependencies.subscription_dep import require_notice_quota, QuotaContext
+from app.models.subscription import FeatureKey
+from app.services.subscription_service import consume
+
 router = APIRouter(prefix='/notices', tags=['Notice Board'])
 
+AI_ROLES = (
+    UserRole.SUPER_ADMIN,
+    UserRole.SCHOOL_OWNER,
+    UserRole.SCHOOL_ADMIN,
+    UserRole.TEACHER,
+)
+
 @router.post('/enhance', response_model=NoticeEnhanceOut)
-async def enhance_notice(payload: NoticeEnhanceRequest, db: AsyncSession=Depends(get_async_db), current_user: User=Depends(require_roles(UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN, UserRole.TEACHER))):
-    enhanced = await notice_service.enhance_notice_content(payload.content, current_user, db)
+async def enhance_notice(
+    payload: NoticeEnhanceRequest, 
+    db: AsyncSession = Depends(get_async_db), 
+    current_user : User = Depends(require_roles(*AI_ROLES)),
+    quota: QuotaContext = Depends(require_notice_quota),
+):
+    enhanced, tokens_used = await notice_service.enhance_notice_content(
+        payload.content, current_user, db
+    )
+
+    if tokens_used > 0:
+        await consume(db, current_user.id, quota.subscription, FeatureKey.notice_post, tokens_used)
     return {'original': payload.content, 'enhanced': enhanced}
 
 @router.post('/generate', response_model=NoticeGenerateOut)
-async def generate_notice_from_description(payload: NoticeGenerateRequest,db: AsyncSession=Depends(get_async_db), current_user: User=Depends(require_roles(UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN, UserRole.TEACHER))):
-    generated = await notice_service.generate_notice_content(payload.description, current_user, db)
+async def generate_notice_from_description(
+    payload: NoticeGenerateRequest,
+    db: AsyncSession=Depends(get_async_db), 
+    current_user : User         = Depends(require_roles(*AI_ROLES)),
+    quota : QuotaContext = Depends(require_notice_quota),
+):
+    generated, tokens_used = await notice_service.generate_notice_content(payload.description, current_user, db)
+    
+    if tokens_used > 0:
+        await consume(
+            db,
+            current_user.id,
+            quota.subscription,
+            FeatureKey.notice_post, 
+            tokens_used
+        )
     return {'description': payload.description, 'generated': generated}
 
 @router.post('/', response_model=NoticeOut, status_code=201)

@@ -1,14 +1,3 @@
-"""
-curriculum.py — patched to pass school_id into generate_curriculum for
-tenant-safe AI response caching.
-
-Changes vs original
---------------------
-* `generate_curriculum` endpoint now extracts `school_id` and passes it
-  to `curriculum_service.generate_curriculum`.
-* No other logic changes.
-"""
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_async_db
@@ -17,6 +6,13 @@ from app.models.user import User
 from app.schemas.curriculum import CurriculumApproveRequest, CurriculumPlan, CurriculumRequest
 from app.services import curriculum_service
 from app.models.user import UserRole
+
+from app.dependencies.subscription_dep import require_curriculum_quota, QuotaContext
+from app.models.subscription import FeatureKey
+
+import asyncio
+from app.core.config import settings
+from app.services.subscription_service import consume, refund, log_ai_call
 
 ACCESS_ROLES = (
     UserRole.SUPER_ADMIN.value,
@@ -33,8 +29,36 @@ async def generate_curriculum(
     request: CurriculumRequest,
     school_id: int = Depends(current_school_id),        
     current_user: User = Depends(require_roles(*ACCESS_ROLES)),
+    quota: QuotaContext = Depends(require_curriculum_quota),
+    db: AsyncSession = Depends(get_async_db)
 ):
-    return await curriculum_service.generate_curriculum(request, school_id=school_id)  
+    # deduct 1 generation upfront
+    await consume(db, current_user.id, quota.subscription, FeatureKey.ai_curriculum, amount=1)
+
+    try: 
+        plan, tokens_used = await curriculum_service.generate_curriculum(
+            request, school_id=school_id
+        )
+    except Exception:
+        # LLM failed - give the generation back
+        await refund(db, current_user.id, quota.subscription, FeatureKey.ai_curriculum, amount=1)
+        raise
+
+    asyncio.create_task(log_ai_call(
+        db=db,
+        user_id=current_user.id,
+        school_id=school_id,
+        feature_key=FeatureKey.ai_curriculum,
+        prompt_tokens=0,          # or track separately in service
+        completion_tokens=0,      # or track separately in service
+        total_tokens=tokens_used,
+        model=settings.MODEL,
+        cache_hit=(tokens_used == 0),
+    ))
+
+    return plan
+
+
 
 
 @router.post('/approve')

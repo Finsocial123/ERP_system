@@ -16,13 +16,17 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
-from models.school import School
+from app.models.school import School
 
 class SubscriptionStatus(str, enum.Enum):
     active = "active"
     expired = "expired"
     cancelled = "cancelled"
 
+class RoleKey(str, enum.Enum):
+    student = "student"
+    teacher = "teacher"
+    admin   = "admin"
 
 class UserRole(str, enum.Enum):
     student = "student"
@@ -46,7 +50,7 @@ class Subscription(Base):
     plan_name : Mapped[str] = mapped_column(String(100), nullable=False)
     status : Mapped[SubscriptionStatus] = mapped_column(Enum(SubscriptionStatus), nullable=False, default=SubscriptionStatus.active)
     started_at : Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    expires_at : Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at : Mapped[datetime] = mapped_column(DateTime, default=False)
     updated_at : Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     school : Mapped["School"] = relationship("School")
@@ -71,18 +75,18 @@ class FeatureAllocation(Base):
     )
 
     id : Mapped[int] = mapped_column(primary_key=True, index=True)
-    Subscription_id : Mapped[int] = mapped_column(
+    subscription_id : Mapped[int] = mapped_column(
         Integer, ForeignKey("subscription.id", ondelete="CASCADE"),
         nullable=False, index=True
     )
-    role : Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False)
+    role : Mapped[RoleKey] = mapped_column(Enum(RoleKey), nullable=False)
     feature_key : Mapped[FeatureKey] = mapped_column(Enum(FeatureKey), nullable=False)
 
     limit_value : Mapped[int] = mapped_column(BigInteger, nullable=False)
     is_unlimited : Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     created_at : Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    subscription: Mapped["Subscription"] = relationship(back_populates="allocation")
+    subscription: Mapped["Subscription"] = relationship(back_populates="allocations")
 
 
 class UserFeatureUsage(Base):
@@ -101,7 +105,7 @@ class UserFeatureUsage(Base):
     )
 
     subscription_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("subscriptions.id", ondelete="CASCADE")
+        Integer, ForeignKey("subscription.id", ondelete="CASCADE")
     )
     feature_key: Mapped[FeatureKey] = mapped_column(Enum(FeatureKey), nullable=False)
 
@@ -118,25 +122,35 @@ class UserFeatureUsage(Base):
 
 
 
+class AICallLog(Base):
+    __tablename__ = "ai_call_logs"
+    id               : Mapped[int]      = mapped_column(primary_key=True)
+    user_id          : Mapped[int]      = mapped_column(ForeignKey("users.id"))
+    school_id        : Mapped[int]      = mapped_column(ForeignKey("schools.id"))
+    feature_key      : Mapped[FeatureKey] = mapped_column(Enum(FeatureKey))
+    prompt_tokens    : Mapped[int]      = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int]      = mapped_column(Integer, default=0)
+    total_tokens     : Mapped[int]      = mapped_column(Integer, default=0)
+    model            : Mapped[str]      = mapped_column(String(100))
+    cache_hit        : Mapped[bool]     = mapped_column(Boolean, default=False)
+    created_at       : Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    
 
 DEFAULT_ALLOCATIONS: list[dict] = [
-    # Students: 20 000 tokens for chatbot
-    {"role": UserRole.student, "feature_key": FeatureKey.chatbot_query, "limit_value": 20_000},
- 
-    # Teachers: 10 notices · 10 curricula · 7 200 s (120 min) video upload
-    {"role": UserRole.teacher, "feature_key": FeatureKey.notice_post,   "limit_value": 10},
-    {"role": UserRole.teacher, "feature_key": FeatureKey.ai_curriculum, "limit_value": 10},
-    {"role": UserRole.teacher, "feature_key": FeatureKey.video_upload,  "limit_value": 7_200},
- 
-    # Admins: 10 notices · 10 curricula (no video cap by default)
-    {"role": UserRole.admin, "feature_key": FeatureKey.notice_post,   "limit_value": 10},
-    {"role": UserRole.admin, "feature_key": FeatureKey.ai_curriculum, "limit_value": 10},
+    {"role": RoleKey.student, "feature_key": FeatureKey.chatbot_query, "limit_value": 20_000},
+
+    {"role": RoleKey.teacher, "feature_key": FeatureKey.notice_post,   "limit_value": 50_000},
+    {"role": RoleKey.teacher, "feature_key": FeatureKey.ai_curriculum, "limit_value": 100_000},
+    {"role": RoleKey.teacher, "feature_key": FeatureKey.video_upload,  "limit_value": 7_200},
+
+    {"role": RoleKey.admin,   "feature_key": FeatureKey.notice_post,   "limit_value": 50_000},
+    {"role": RoleKey.admin,   "feature_key": FeatureKey.ai_curriculum, "limit_value": 100_000},
+    {"role": RoleKey.admin, "feature_key": FeatureKey.video_upload,  "limit_value": 7_200},
 ]
 
 
-
-
-def build_allocation(subscription: Subscription) -> list[FeatureAllocation]:
+def build_allocations(subscription: Subscription) -> list[FeatureAllocation]:
 
     return [
         FeatureAllocation(

@@ -361,23 +361,48 @@ class AICacheService:
     # ------------------------------------------------------------------
 
     async def get_curriculum(
-        self, school_id: int, topic: str, audience: str,
-        weeks: int, num_lessons: int, language: str
-    ) -> dict | None:
+        self,
+        school_id: int, 
+        topic: str, 
+        audience: str,
+        weeks: int, 
+        num_lessons: int, 
+        language: str
+    ) -> tuple[dict, int] | tuple[None, int]:
+        """
+        Returns (curriculum_data, tokens_used) or (None, 0) on cache miss.
+    
+        tokens_used on a cache hit is the original LLM cost stored at set time.
+        The caller charges this amount via consume() — same cost as the real call.
+        """
         key = AIKeys.curriculum(school_id, topic, audience, weeks, num_lessons, language)
         result = await _get(key)
-        if result is not None:
+
+        if result is None:
             logger.info("[AI_CACHE HIT] key=%s", key)
-        else:
-            logger.info("[AI_CACHE MISS] key=%s", key)
-        return result
+            return None, 0
+        
+        logger.info("[AI_CACHE HIT] key=%s", key)
+
+        tokens_used = result.pop("_tokens", 0)
+
+        return result, tokens_used
+
+
 
     async def set_curriculum(
         self, school_id: int, topic: str, audience: str,
-        weeks: int, num_lessons: int, language: str, data: dict
+        weeks: int, num_lessons: int, language: str, data: dict, tokens_used: int = 0,
     ) -> None:
+        """
+        Store curriculum data with the original token cost embedded.
+        The _tokens field is invisible to CurriculumPlan(**data) because
+        Pydantic ignores extra fields by default.
+        """
         key = AIKeys.curriculum(school_id, topic, audience, weeks, num_lessons, language)
-        await _set(key, data, TTL_CURRICULUM)
+        # Embed tokens without mutating the caller's dict
+        payload = {**data, "_tokens": tokens_used}
+        await _set(key, payload, TTL_CURRICULUM)
 
     def _curriculum_spec_hash(self, topic: str, audience: str, weeks: int, num_lessons: int, language: str) -> str:
         spec = f"{topic}|{audience}|{weeks}|{num_lessons}|{language}"
@@ -393,10 +418,21 @@ class AICacheService:
     async def wait_for_curriculum(
         self, school_id: int, topic: str, audience: str,
         weeks: int, num_lessons: int, language: str
-    ) -> dict | None:
+    ) -> tuple[dict, int] | tuple[None, int]:
+        """
+        Returns (curriculum_data, tokens_used) or (None, 0) on timeout.
+        Pops _tokens from the result so the caller gets clean data.
+        """
+    
         cache_key = AIKeys.curriculum(school_id, topic, audience, weeks, num_lessons, language)
         lock_key = self.get_curriculum_lock_key(school_id, topic, audience, weeks, num_lessons, language)
-        return await _wait_for_result(cache_key, lock_key)
+        result = await _wait_for_result(cache_key, lock_key)
+
+        if result is None:
+            return None, 0
+        
+        tokens_used = result.pop("_tokens", 0)
+        return result, tokens_used
 
     # ------------------------------------------------------------------
     # Chat Response Cache

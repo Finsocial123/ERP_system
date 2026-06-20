@@ -42,17 +42,13 @@ async def generate_curriculum(
     school_id: int = 0,    # ← NEW: required for tenant-safe cache keys
 ) -> CurriculumPlan:
     """
-    Generate (or return cached) curriculum plan.
-
-    Cache strategy
-    --------------
-    Key: ai:curriculum:{school_id}:{sha256(topic|audience|weeks|lessons|lang)}
-    TTL: 1 day
-    Coalescing: only 1 LLM call for concurrent identical specs
+    Returns (CurriculumPlan, prompt_tokens, completion_tokens).
+    Cache hit → both token values are 0 (count already deducted upfront).
+    LLM hit   → actual token counts from response.usage.
     """
 
     # 1. Cache hit?                                                       #
-    cached = await ai_cache.get_curriculum(
+    cached, cached_tokens = await ai_cache.get_curriculum(
         school_id,
         request.topic,
         request.target_audience,
@@ -61,7 +57,7 @@ async def generate_curriculum(
         request.language,
     )
     if cached is not None:
-        return CurriculumPlan(**cached)
+        return CurriculumPlan(**cached), cached_tokens
 
     # 2. Request coalescing via distributed lock                         #
     lock_key = ai_cache.get_curriculum_lock_key(
@@ -76,7 +72,7 @@ async def generate_curriculum(
     async with _lock(lock_key) as acquired:
         if not acquired:
             # Another worker is computing — wait for it
-            result = await ai_cache.wait_for_curriculum(
+            result, result_tokens = await ai_cache.wait_for_curriculum(
                 school_id,
                 request.topic,
                 request.target_audience,
@@ -85,14 +81,14 @@ async def generate_curriculum(
                 request.language,
             )
             if result is not None:
-                return CurriculumPlan(**result)
+                return CurriculumPlan(**result), result_tokens
             logger.warning(
                 "[AI_CACHE] Lock wait timed out for curriculum school=%d, computing independently",
                 school_id,
             )
 
         # Double-check after acquiring lock
-        cached = await ai_cache.get_curriculum(
+        cached, cached_tokens = await ai_cache.get_curriculum(
             school_id,
             request.topic,
             request.target_audience,
@@ -101,7 +97,7 @@ async def generate_curriculum(
             request.language,
         )
         if cached is not None:
-            return CurriculumPlan(**cached)
+            return CurriculumPlan(**cached), cached_tokens
 
         # 3. Call LLM                                                         #
         response = await client.chat.completions.create(
@@ -142,6 +138,13 @@ Return this exact JSON structure:
             stream=False,
         )
 
+        tokens_used = 0
+        if response.usage:
+            prompt_tokens = response.usage.prompt_tokens
+            completion_tokens = response.usage.completion_tokens
+
+            tokens_used = prompt_tokens + completion_tokens
+
         raw = response.choices[0].message.content.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -151,7 +154,7 @@ Return this exact JSON structure:
         data = json.loads(raw)
         plan = CurriculumPlan(**data)
 
-        # 4. Store in cache                                                   #
+        # 4. Store in cache with token cost                                          #
         await ai_cache.set_curriculum(
             school_id,
             request.topic,
@@ -160,9 +163,10 @@ Return this exact JSON structure:
             request.num_lessons,
             request.language,
             data,
+            tokens_used=tokens_used,
         )
 
-        return plan
+        return plan, prompt_tokens, completion_tokens
 
 
 async def save_curriculum(

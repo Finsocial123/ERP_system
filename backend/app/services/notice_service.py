@@ -198,42 +198,15 @@ def _load_options():
     ]
 
 
-# async def create_notice(
-#     db: AsyncSession, payload: NoticeCreate, current_user: User
-# ) -> Notice:
-#     if not _can_manage(current_user):
-#         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
-
-#     content = payload.content
-#     if getattr(payload, "enhance", False):
-#         content = await enhance_notice_content(content, current_user, db)
-
-#     notice = Notice(
-#         school_id=current_user.school_id,
-#         created_by=current_user.id,
-#         title=payload.title,
-#         content=content,
-#         priority=payload.priority.value,
-#         status=payload.status.value,
-#         publish_at=payload.publish_at,
-#         expires_at=payload.expires_at,
-#     )
-#     db.add(notice)
-#     await db.flush() 
-
-#     for role in payload.audience_roles:
-#         db.add(NoticeAudience(notice_id=notice.id, role=role.value))
-
-#     await db.commit()
-#     result = await db.execute(
-#         select(Notice).options(*_load_options()).where(Notice.id == notice.id)
-#     )
-#     return result.scalar_one()
 
 
 async def create_notice(
-    db: AsyncSession, payload: NoticeCreate, current_user: User
+    db: AsyncSession, 
+    payload: NoticeCreate, 
+    current_user: User,
+    tokens_used_collector: list[int] | None=None,
 ) -> Notice:
+    
     if not _can_manage(current_user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
 
@@ -259,7 +232,9 @@ async def create_notice(
 
     content = payload.content
     if getattr(payload, "enhance", False):
-        content = await enhance_notice_content(content, current_user, db)
+        content, enhance_tokens = await enhance_notice_content(content, current_user, db)
+        if tokens_used_collector is not None:
+            tokens_used_collector.append(enhance_tokens)
 
     notice = Notice(
         school_id=current_user.school_id,
@@ -674,7 +649,11 @@ async def enhance_notice_content(
     current_user: User,
     db: AsyncSession,
 ) -> str:
-    """Rewrite an existing notice to be more professional"""
+    """
+    Rewrite an existing notice to be more professional
+    Returns (enhanced_content, tokens_used)
+    """
+
     if not _can_manage(current_user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
     
@@ -708,7 +687,13 @@ async def enhance_notice_content(
         ],
         stream=False
     )
-    return response.choices[0].message.content.strip()
+
+    tokens_used = 0
+    if response.usage:
+        tokens_used = response.usage.prompt_tokens + response.usage.completion_tokens
+
+
+    return response.choices[0].message.content.strip(), tokens_used
 
 
 
@@ -717,7 +702,10 @@ async def generate_notice_content(
         current_user: User,
         db: AsyncSession,
     ) -> str:
-    """Generate a full formal notice from a rough description"""
+    """
+    Generate a full formal notice from a rough description
+    Returns (enhanced_content, tokens_used)
+    """
     if not _can_manage(current_user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
 
@@ -751,4 +739,9 @@ async def generate_notice_content(
         ],
         stream=False
     )
-    return response.choices[0].message.content.strip()
+
+    tokens_used = 0
+    if response.usage: 
+        tokens_used = response.usage.prompt_tokens + response.usage.completion_tokens
+
+    return response.choices[0].message.content.strip(), tokens_used

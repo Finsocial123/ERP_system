@@ -248,8 +248,8 @@ function AppShellRoot({ children }: { children: React.ReactNode }) {
   const refreshUnreadNotifications = useCallback(() => {
     if (!auth?.user.school_id || unreadRefreshInFlightRef.current) return;
     unreadRefreshInFlightRef.current = true;
-    apiFetch<Array<{ id: number }>>("/communication/notifications?unread_only=true&limit=100")
-      .then((data) => setUnreadNotifications(data.length))
+    apiFetch<{ count: number }>("/communication/notifications/unread-count")
+      .then((data) => setUnreadNotifications(Number(data.count || 0)))
       .catch(() => {
         // Keep the last known count instead of repeatedly clearing it during short network/API failures.
       })

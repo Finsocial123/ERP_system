@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
 from app.instructions import get_system_prompt, RAG_PROMPT_TEMPLATE
+from app.utils.languages import LANGUAGE_NAMES
 from app.core.database import get_async_db, get_session_factory
 from app.client import client
 from app.services.rag import get_query_embedding, search_chunks
@@ -76,6 +77,131 @@ def _telegram_share_text(
     lines.append("")
     lines.append(content.strip())
     return "\n".join(lines).strip()
+
+
+def _clean_suggested_question(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    cleaned = value.strip()
+    cleaned = cleaned.strip("`'\" ")
+    cleaned = cleaned.lstrip("-•*0123456789. )(").strip()
+
+    if len(cleaned) < 8:
+        return None
+    if len(cleaned) > 150:
+        cleaned = cleaned[:147].rstrip() + "..."
+    return cleaned
+
+
+def _parse_suggested_questions(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+
+    candidates: list[object] = []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("[")
+        end = text.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            try:
+                parsed = json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                parsed = None
+        else:
+            parsed = None
+
+    if isinstance(parsed, list):
+        candidates = parsed
+    elif isinstance(parsed, dict):
+        for key in ("questions", "suggested_questions", "follow_up_questions", "suggestions"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                candidates = value
+                break
+
+    if not candidates:
+        candidates = [line for line in text.splitlines() if line.strip()]
+
+    questions: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        cleaned = _clean_suggested_question(item)
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        questions.append(cleaned)
+        if len(questions) == 3:
+            break
+    return questions
+
+
+def _fallback_follow_up_questions() -> list[str]:
+    return [
+        "Can you explain this with a simple example?",
+        "What are the most important points I should remember?",
+        "Can you ask me one quick practice question from this topic?",
+    ]
+
+
+async def _generate_follow_up_questions(
+    *,
+    student_question: str,
+    assistant_answer: str,
+    language: str,
+) -> list[str]:
+    """Generate short clickable follow-up questions after an AI Tutor answer.
+
+    This is intentionally separate from the visible answer so the UI can show
+    the suggestions as chips and fill the input box when a student clicks one.
+    """
+    answer = (assistant_answer or "").strip()
+    if len(answer) < 40:
+        return []
+
+    language_name = LANGUAGE_NAMES.get(language or "en", ("English", "Latin"))[0]
+    try:
+        response = await client.chat.completions.create(
+            model=settings.MODEL,
+            messages=[
+                {
+                    'role': 'system',
+                    'content': (
+                        "You generate follow-up question suggestions for a student in an LMS chat. "
+                        "Return ONLY a valid JSON array of exactly 3 short strings. "
+                        "Each string must be a helpful question related to the AI answer. "
+                        "Do not include markdown, numbering, explanations, or answers. "
+                        f"Write the questions in {language_name}."
+                    ),
+                },
+                {
+                    'role': 'user',
+                    'content': (
+                        f"Student question:\n{student_question[:800]}\n\n"
+                        f"AI tutor answer:\n{answer[:2500]}"
+                    ),
+                },
+            ],
+            max_tokens=160,
+            temperature=0.4,
+            stream=False,
+        )
+        content = response.choices[0].message.content if response.choices else ""
+        questions = _parse_suggested_questions(content)
+        return questions[:3] if questions else _fallback_follow_up_questions()
+    except Exception as exc:
+        logger.warning("Follow-up suggestion generation failed: %s", exc)
+        return _fallback_follow_up_questions()
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +460,13 @@ async def send_message_stream(
 
             async def _cached_stream():
                 yield f"data: {json.dumps({'token': cached_response, 'from_cache': True})}\n\n"
+                suggested_questions = await _generate_follow_up_questions(
+                    student_question=request.content,
+                    assistant_answer=cached_response,
+                    language=request.language,
+                )
+                if suggested_questions:
+                    yield f"data: {json.dumps({'suggested_questions': suggested_questions})}\n\n"
                 yield f"data: {json.dumps({'status': 'done'})}\n\n"
             return StreamingResponse(_cached_stream(), media_type='text/event-stream')
 
@@ -359,6 +492,13 @@ async def send_message_stream(
 
                 async def _waited_stream():
                     yield f"data: {json.dumps({'token': waited, 'from_cache': True})}\n\n"
+                    suggested_questions = await _generate_follow_up_questions(
+                        student_question=request.content,
+                        assistant_answer=waited,
+                        language=request.language,
+                    )
+                    if suggested_questions:
+                        yield f"data: {json.dumps({'suggested_questions': suggested_questions})}\n\n"
                     yield f"data: {json.dumps({'status': 'done'})}\n\n"
                 return StreamingResponse(_waited_stream(), media_type='text/event-stream')
             # Lock holder crashed — fall through to compute independently
@@ -531,6 +671,14 @@ async def send_message_stream(
                         gen_db.add(final_assistant_msg)
                         await _update_session_title(gen_db, session_id, enhanced_content)
                         await gen_db.commit()
+                        assembled = ''.join(full_response)
+                        suggested_questions = await _generate_follow_up_questions(
+                            student_question=enhanced_content,
+                            assistant_answer=assembled,
+                            language=request.language,
+                        )
+                        if suggested_questions:
+                            yield f"data: {json.dumps({'suggested_questions': suggested_questions})}\n\n"
                         yield f"data: {json.dumps({'status': 'done'})}\n\n"
 
                     else:
@@ -555,6 +703,14 @@ async def send_message_stream(
                                 question=request.content,
                                 response=assembled,
                             )
+
+                        suggested_questions = await _generate_follow_up_questions(
+                            student_question=enhanced_content,
+                            assistant_answer=assembled,
+                            language=request.language,
+                        )
+                        if suggested_questions:
+                            yield f"data: {json.dumps({'suggested_questions': suggested_questions})}\n\n"
 
                         yield f"data: {json.dumps({'status': 'done'})}\n\n"
 

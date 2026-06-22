@@ -60,6 +60,7 @@ type LocalMessage = {
   content: string;
   created_at?: string | null;
   isEnhanced?: boolean;
+  suggestions?: string[];
 };
 
 type ShareChannel = "email" | "telegram";
@@ -318,6 +319,13 @@ export default function CourseLessonChat({
               ),
             );
           },
+          onSuggestedQuestions: (suggestions) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId ? { ...m, suggestions } : m,
+              ),
+            );
+          },
           onToken: (token) => {
             answer += token;
             setMessages((prev) =>
@@ -341,6 +349,9 @@ export default function CourseLessonChat({
         );
       }
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return;
+      }
       setError(err instanceof Error ? err.message : "Failed to send question");
       setMessages((prev) => prev.filter((m) => m.id !== assistantId));
     } finally {
@@ -518,6 +529,7 @@ function ChatInner({
   const [shareSending, setShareSending] = useState(false);
   const [shareError, setShareError] = useState("");
   const [shareNotice, setShareNotice] = useState("");
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const openShareTool = (channel: ShareChannel, msg: LocalMessage) => {
     const defaultSubject = lesson.title
@@ -544,6 +556,13 @@ function ChatInner({
     [...messages]
       .reverse()
       .find((msg) => msg.role === "assistant" && msg.content.trim());
+
+  const latestAssistantId = findLastAssistantMessage()?.id ?? null;
+
+  const fillInputWithSuggestion = (suggestion: string) => {
+    setQuestion(suggestion);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
 
   const openShareToolFromCommand = (): boolean => {
     const clean = question.trim();
@@ -801,6 +820,25 @@ function ChatInner({
           border: 1px solid #e9d5ff; border-radius: 6px;
           padding: 3px 6px; margin-bottom: 5px;
           text-transform: uppercase;
+        }
+
+        .clc-suggestions {
+          margin-top: 8px; padding-top: 8px; border-top: 1px solid #e2e8f0;
+          display: flex; flex-direction: column; gap: 6px;
+        }
+        .clc-suggestions-title {
+          display: flex; align-items: center; gap: 5px;
+          color: #7c3aed; font-size: 0.66rem; font-weight: 800;
+          text-transform: uppercase; letter-spacing: 0.04em;
+        }
+        .clc-suggestion-btn {
+          width: 100%; text-align: left; border: 1px solid #ddd6fe;
+          background: #ffffff; color: #334155; border-radius: 10px;
+          padding: 7px 9px; font-size: 0.72rem; line-height: 1.35;
+          cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s;
+        }
+        .clc-suggestion-btn:hover {
+          background: #f5f3ff; border-color: #a78bfa; color: #5b21b6;
         }
 
         /* ── History panel ── */
@@ -1098,6 +1136,28 @@ function ChatInner({
                         </button>
                       </div>
                     )}
+
+                    {msg.role === "assistant" &&
+                      msg.id === latestAssistantId &&
+                      !sending &&
+                      msg.suggestions &&
+                      msg.suggestions.length > 0 && (
+                        <div className="clc-suggestions">
+                          <div className="clc-suggestions-title">
+                            <Sparkles size={10} /> Suggested questions
+                          </div>
+                          {msg.suggestions.map((suggestion) => (
+                            <button
+                              key={suggestion}
+                              type="button"
+                              className="clc-suggestion-btn"
+                              onClick={() => fillInputWithSuggestion(suggestion)}
+                            >
+                              {suggestion}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                   </div>
                 </div>
               ))}
@@ -1175,6 +1235,7 @@ function ChatInner({
 
             {/* <div className="clc-input-bar">
               <textarea
+                ref={inputRef}
                 className="clc-textarea"
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
@@ -1214,6 +1275,7 @@ function ChatInner({
 
             <div className="clc-input-bar">
               <textarea
+                ref={inputRef}
                 className="clc-textarea"
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}

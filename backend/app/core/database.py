@@ -88,7 +88,11 @@ if not SYNC_DATABASE_URL.startswith("sqlite"):
 
 
 # Sync engine: used by create_all and startup migrations
-engine = create_engine(SYNC_DATABASE_URL, **sync_engine_kwargs)
+engine = create_engine(
+    SYNC_DATABASE_URL,
+    connect_args={"prepare_threshold": 0},
+    **sync_engine_kwargs,
+)
 
 
 SessionLocal = sessionmaker(
@@ -126,6 +130,9 @@ if not ASYNC_DATABASE_URL.startswith("sqlite"):
 
 async_engine = create_async_engine(
     ASYNC_DATABASE_URL,
+    connect_args={
+        "statement_cache_size": 0
+    },
     **async_engine_kwargs,
 )
 

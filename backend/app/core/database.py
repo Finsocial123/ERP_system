@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import NullPool, create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -90,8 +90,8 @@ if not SYNC_DATABASE_URL.startswith("sqlite"):
 # Sync engine: used by create_all and startup migrations
 engine = create_engine(
     SYNC_DATABASE_URL,
-    connect_args={"prepare_threshold": 0},
     **sync_engine_kwargs,
+    poolclass=NullPool,
 )
 
 
@@ -130,10 +130,8 @@ if not ASYNC_DATABASE_URL.startswith("sqlite"):
 
 async_engine = create_async_engine(
     ASYNC_DATABASE_URL,
-    connect_args={
-        "statement_cache_size": 0
-    },
     **async_engine_kwargs,
+    poolclass=NullPool,
 )
 
 

@@ -39,8 +39,6 @@ services:
       # unchanged from the env_file above.
       
       REDIS_URL: redis://redis:6379/0
-      BACKEND_CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
-      FRONTEND_BASE_URL: "http://localhost:3000"
     depends_on:
       
       redis:

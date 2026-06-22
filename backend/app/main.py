@@ -59,6 +59,15 @@ if settings.RUN_STARTUP_MIGRATIONS:
 
 app = FastAPI(title="School ERP Phase 9 API", version="9.0.0")
 
+@app.get("/health", tags=["Health"])
+async def health():
+    """
+    Liveness check for Docker HEALTHCHECK and the AWS ALB target group.
+    Intentionally does NOT touch the database or Redis — a slow/degraded
+    DB shouldn't cause the ALB to kill and restart a otherwise-healthy
+    container. Keep this fast and dependency-free.
+    """
+    return {"status": "ok"}
 
 @app.middleware("http")
 async def log_request_time(request: Request, call_next):

@@ -34,6 +34,7 @@ type AttReport = {
 };
 
 type StudentRow = {
+  photo_url: any;
   student_id: number; admission_no: string; roll_number?: string | null;
   full_name: string; gender?: string | null; class_name?: string | null;
   section_name?: string | null; guardian_name?: string | null;

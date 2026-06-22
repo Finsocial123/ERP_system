@@ -960,7 +960,7 @@ export default function CoursePortal({ mode }: Props) {
                     <LessonSummaryGenerator
                       key={`summary-${activeLesson.id}-${aiKey}`}
                       lesson={activeLesson}
-                      courseTitle={selected?.title}
+                      // courseTitle={selected?.title}
                       embedded
                     />
                   )}

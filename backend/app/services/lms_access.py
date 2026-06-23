@@ -89,19 +89,78 @@ async def validate_course_scope(db: AsyncSession, school_id: int, class_id: int,
         raise HTTPException(status_code=400, detail='Selected subject is not assigned to the selected class')
     return (school_class, section, subject)
 
-async def teacher_has_scope(db: AsyncSession, school_id: int, teacher: Teacher, class_id: int, section_id: int | None, subject_id: int | None) -> bool:
-    subject_query = async_query(db, TeacherSubject).filter(TeacherSubject.school_id == school_id, TeacherSubject.teacher_id == teacher.id)
-    assignment_count = await subject_query.count() + await async_query(db, ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id).count()
+# async def teacher_has_scope(db: AsyncSession, school_id: int, teacher: Teacher, class_id: int, section_id: int | None, subject_id: int | None) -> bool:
+#     subject_query = async_query(db, TeacherSubject).filter(TeacherSubject.school_id == school_id, TeacherSubject.teacher_id == teacher.id)
+#     assignment_count = await subject_query.count() + await async_query(db, ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id).count()
+#     if assignment_count == 0:
+#         return True
+#     subject_match_query = subject_query.filter(or_(TeacherSubject.class_id == class_id, TeacherSubject.class_id.is_(None)), or_(TeacherSubject.section_id == section_id, TeacherSubject.section_id.is_(None)))
+#     if subject_id is not None:
+#         subject_match_query = subject_match_query.filter(TeacherSubject.subject_id == subject_id)
+#     subject_match = await subject_match_query.first()
+#     if subject_match:
+#         return True
+#     class_teacher_match = await async_query(db, ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id, ClassTeacherAssignment.class_id == class_id, or_(ClassTeacherAssignment.section_id == section_id, ClassTeacherAssignment.section_id.is_(None))).first()
+#     return bool(class_teacher_match)
+
+
+async def teacher_has_scope(
+    db: AsyncSession,
+    school_id: int,
+    teacher: Teacher,
+    class_id: int,
+    section_id: int | None,
+    subject_id: int | None,
+) -> bool:
+    subject_query = async_query(db, TeacherSubject).filter(
+        TeacherSubject.school_id == school_id,
+        TeacherSubject.teacher_id == teacher.id,
+    )
+    
+    assignment_count = (
+        await subject_query.count()
+        + await async_query(db, ClassTeacherAssignment).filter(
+            ClassTeacherAssignment.school_id == school_id,
+            ClassTeacherAssignment.teacher_id == teacher.id,
+        ).count()
+    )
     if assignment_count == 0:
         return True
-    subject_match_query = subject_query.filter(or_(TeacherSubject.class_id == class_id, TeacherSubject.class_id.is_(None)), or_(TeacherSubject.section_id == section_id, TeacherSubject.section_id.is_(None)))
+
+    section_condition = (
+        or_(TeacherSubject.section_id == section_id, TeacherSubject.section_id.is_(None))
+        if section_id is not None
+        else TeacherSubject.section_id.is_(None)
+    )
+
+    subject_match_query = subject_query.filter(
+        or_(TeacherSubject.class_id == class_id, TeacherSubject.class_id.is_(None)),
+        section_condition,
+    )
     if subject_id is not None:
-        subject_match_query = subject_match_query.filter(TeacherSubject.subject_id == subject_id)
+        subject_match_query = subject_match_query.filter(
+            TeacherSubject.subject_id == subject_id
+        )
+
     subject_match = await subject_match_query.first()
     if subject_match:
         return True
-    class_teacher_match = await async_query(db, ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id, ClassTeacherAssignment.class_id == class_id, or_(ClassTeacherAssignment.section_id == section_id, ClassTeacherAssignment.section_id.is_(None))).first()
+
+    cta_section_condition = (
+        or_(ClassTeacherAssignment.section_id == section_id, ClassTeacherAssignment.section_id.is_(None))
+        if section_id is not None
+        else ClassTeacherAssignment.section_id.is_(None)
+    )
+
+    class_teacher_match = await async_query(db, ClassTeacherAssignment).filter(
+        ClassTeacherAssignment.school_id == school_id,
+        ClassTeacherAssignment.teacher_id == teacher.id,
+        ClassTeacherAssignment.class_id == class_id,
+        cta_section_condition,
+    ).first()
     return bool(class_teacher_match)
+
+
 
 def course_matches_student(course: Course, student: Student) -> bool:
     """Match LMS courses across academic sessions.

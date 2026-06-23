@@ -333,13 +333,30 @@ async def create_teacher(payload: TeacherCreate, request: Request, current_user:
         await db.flush()
         user_id = user.id
     data = payload.model_dump(exclude={'create_login', 'password'})
-    data['academic_session_id'] = session_id
-    teacher = Teacher(school_id=school_id, user_id=user_id, **data)
+    data['academic_session_id'] = session_id  # fixed
+
+    existing_teacher = await async_query(db, Teacher).filter(
+        Teacher.school_id == school_id,
+        Teacher.employee_id == payload.employee_id,
+    ).first()
+    if existing_teacher:
+        raise HTTPException(status_code=409, detail='Teacher with this employee ID already exists')
+
+    if user_id:
+        existing_user_teacher = await async_query(db, Teacher).filter(
+            Teacher.school_id == school_id,
+            Teacher.user_id == user_id,
+        ).first()
+        if existing_user_teacher:
+            raise HTTPException(status_code=409, detail='A teacher profile already exists for this user')
+
+    teacher = Teacher(school_id=school_id, user_id=user_id, **data)  # once
     db.add(teacher)
     await _commit_or_duplicate(db, 'Teacher employee ID already exists in this school')
     await db.refresh(teacher)
     teacher.temporary_password = temporary_password
     return teacher
+
 
 @router.get('/teachers/class-teachers', response_model=list[ClassTeacherRead])
 async def list_class_teachers(request: Request, school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):

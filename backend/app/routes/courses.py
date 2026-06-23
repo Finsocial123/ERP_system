@@ -269,6 +269,7 @@ async def get_my_created_courses(school_id: int=Depends(current_school_id), curr
 async def create_course(title: str=Form(..., min_length=2, max_length=255), description: Optional[str]=Form(None), class_id: int=Form(...), section_id: Optional[int]=Form(None), subject_id: Optional[int]=Form(None), teacher_id: Optional[int]=Form(None), status_value: str=Form('PUBLISHED', alias='status'), thumbnail: Optional[UploadFile]=File(None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
     await validate_course_scope(db, school_id, class_id, section_id, subject_id)
     assigned_teacher_user_id = current_user.id
+
     if current_user.role == UserRole.TEACHER.value:
         teacher = await teacher_for_user(db, school_id, current_user)
         if not teacher:
@@ -280,6 +281,7 @@ async def create_course(title: str=Form(..., min_length=2, max_length=255), desc
         if not teacher_user:
             raise HTTPException(status_code=404, detail='Selected teacher user not found for this school')
         assigned_teacher_user_id = teacher_user.id
+
     thumbnail_url = None
     if thumbnail and thumbnail.filename:
         result = upload_file(thumbnail.file, folder='lms/thumbnails', resource_type='image')
@@ -305,6 +307,7 @@ async def create_course(title: str=Form(..., min_length=2, max_length=255), desc
     await db.commit()
     await db.refresh(course)
     return await _course_payload(db, course)
+
 
 @router.get('/{course_id}', response_model=CourseOut)
 async def get_course(course_id: int, school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*ALL_LMS_ROLES)), db: AsyncSession=Depends(get_async_db)):

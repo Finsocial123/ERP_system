@@ -8,7 +8,8 @@ from app.core.database import Base
 
 class ParentGuardian(Base):
     __tablename__ = "parent_guardians"
-
+    __table_args__ = (
+        UniqueConstraint("school_id", "user_id", name="uq_guardian_user_per_school"),)
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -28,9 +29,10 @@ class ParentGuardian(Base):
 
 
 class Student(Base):
-    __tablename__ = "students"
-    __table_args__ = (UniqueConstraint("school_id", "academic_session_id", "admission_no", name="uq_student_school_session_admission_no"),)
-
+    __tablename__ = "students",
+    __table_args__ = (
+    UniqueConstraint("school_id", "academic_session_id", "admission_no", name="uq_student_school_session_admission_no"),
+    UniqueConstraint("school_id", "academic_session_id", "user_id", name="uq_student_user_per_session"),)
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), index=True)
     academic_session_id: Mapped[int | None] = mapped_column(ForeignKey("academic_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -65,7 +67,10 @@ class Student(Base):
 
 class Teacher(Base):
     __tablename__ = "teachers"
-    __table_args__ = (UniqueConstraint("school_id", "academic_session_id", "employee_id", name="uq_teacher_school_session_employee_id"),)
+    __table_args__ = (
+    UniqueConstraint("school_id", "academic_session_id", "employee_id", name="uq_teacher_school_session_employee_id"),
+    UniqueConstraint("school_id", "academic_session_id", "user_id", name="uq_teacher_user_per_session"),
+)
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), index=True)

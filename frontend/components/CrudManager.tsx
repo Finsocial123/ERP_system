@@ -8,6 +8,7 @@ import type { FieldConfig } from "@/types";
 import { Button, Card, Input, Label, Textarea } from "@/components/ui";
 
 type Item = Record<string, string | number | boolean | null> & { id: number };
+type LookupItem = Record<string, string | number | boolean | null> & { id?: number };
 
 type Props = {
   title: string;
@@ -58,6 +59,7 @@ export default function CrudManager({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [lookups, setLookups] = useState<Record<string, LookupItem[]>>({});
 
   // FIX:
   // Earlier code manually added "is_active" at the end.
@@ -66,6 +68,43 @@ export default function CrudManager({
   const visibleColumns = useMemo(() => {
     return Array.from(new Set(["id", ...fields.map((field) => field.name)]));
   }, [fields]);
+
+  const selectFields = useMemo(() => fields.filter((field) => field.type === "select" && field.optionsEndpoint), [fields]);
+
+  const loadLookups = async () => {
+    if (selectFields.length === 0) return;
+
+    const next: Record<string, LookupItem[]> = {};
+
+    await Promise.all(
+      selectFields.map(async (field) => {
+        if (!field.optionsEndpoint) return;
+        try {
+          next[field.name] = await apiFetch<LookupItem[]>(field.optionsEndpoint);
+        } catch {
+          next[field.name] = [];
+        }
+      })
+    );
+
+    setLookups(next);
+  };
+
+  const getSelectOptions = (field: FieldConfig) => {
+    if (field.options?.length) return field.options;
+
+    const valueKey = field.optionValueKey || "id";
+    const labelKey = field.optionLabelKey || "name";
+
+    return (lookups[field.name] || []).map((item) => ({
+      value: item[valueKey] as string | number,
+      label: String(item[labelKey] ?? item[valueKey] ?? ""),
+    }));
+  };
+
+  const isNumberPayloadField = (field: FieldConfig) => {
+    return field.type === "number" || field.valueType === "number" || field.name.endsWith("_id");
+  };
 
   const loadItems = async () => {
     setLoading(true);
@@ -86,6 +125,11 @@ export default function CrudManager({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [endpoint]);
 
+  useEffect(() => {
+    loadLookups();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectFields]);
+
   const reset = () => {
     setForm(defaultForm(fields));
     setEditing(null);
@@ -97,7 +141,7 @@ export default function CrudManager({
     for (const field of fields) {
       const value = form[field.name];
 
-      if (field.type === "number") {
+      if (isNumberPayloadField(field)) {
         payload[field.name] = value === "" ? null : Number(value);
       } else if (field.type === "checkbox") {
         payload[field.name] = Boolean(value);
@@ -194,7 +238,27 @@ export default function CrudManager({
             >
               <Label>{field.label}</Label>
 
-              {field.type === "textarea" ? (
+              {field.type === "select" ? (
+                <select
+                  value={String(form[field.name] ?? "")}
+                  required={field.required}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      [field.name]: e.target.value,
+                    }))
+                  }
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm outline-none transition focus:border-slate-400"
+                  style={{ borderRadius: "var(--erp-border-radius, 16px)" }}
+                >
+                  <option value="">{field.emptyLabel || `Select ${field.label.toLowerCase()}`}</option>
+                  {getSelectOptions(field).map((option) => (
+                    <option key={`${field.name}-${option.value}`} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              ) : field.type === "textarea" ? (
                 <Textarea
                   value={String(form[field.name] ?? "")}
                   placeholder={field.placeholder}

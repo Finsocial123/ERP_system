@@ -481,7 +481,7 @@ function TeacherProfile({ data }: { data: AnyRecord }) {
         {classes.length ? (
           <div className="space-y-3">
             {classes.map((item: AnyRecord) => {
-              const key = `${item.class_id}-${item.section_id || "all"}`;
+              const key = `${item.class_id}-${item.section_name || item.section_id || "all"}`;
               const open = Boolean(openClass[key]);
               return (
                 <div key={key} className="rounded-2xl border border-slate-200">

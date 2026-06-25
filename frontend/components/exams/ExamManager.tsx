@@ -166,6 +166,12 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
     return meta.subjects.filter((item) => item.extra === examClass);
   }, [examForm.class_id, meta, selectedExam?.class_id]);
 
+  const sectionIdForName = (classId?: number | null, sectionName?: string | null) => {
+    if (!meta || !classId || !sectionName) return null;
+    const match = meta.sections.find((item) => item.extra === String(classId) && item.name.trim().toLowerCase() === sectionName.trim().toLowerCase());
+    return match?.id ?? null;
+  };
+
   const loadData = async (showPageLoader = false) => {
     const shouldShowPageLoader = showPageLoader || !meta;
     if (shouldShowPageLoader) {
@@ -347,7 +353,7 @@ export default function ExamManager({ mode = "admin" }: { mode?: "admin" | "teac
       exam_type: exam.exam_type || "",
       description: exam.description || "",
       class_id: String(exam.class_id),
-      section_id: exam.section_id ? String(exam.section_id) : "",
+      section_id: exam.section_name ? String(sectionIdForName(exam.class_id, exam.section_name) ?? "") : exam.section_id ? String(exam.section_id) : "",
       academic_session_id: exam.academic_session_id ? String(exam.academic_session_id) : "",
       start_date: exam.start_date || "",
       end_date: exam.end_date || "",

@@ -115,11 +115,13 @@ async def _student_course_rows(db: AsyncSession, school_id: int, user: User) -> 
     student = await student_for_user(db, school_id, user)
     if not student or not student.class_id:
         return []
+
     courses = [course for course in await _base_course_query(db, school_id).filter(Course.status == 'PUBLISHED').order_by(Course.created_at.desc()).all() if course_matches_student(course, student)]
     rows: list[CourseOut] = []
     for course in courses:
         enrollment = await ensure_enrollment_for_user_student(db, school_id, user, course)
         rows.append(await _course_payload(db, course, progress=float(enrollment.progress or 0), student=student))
+
     return rows
 
 async def _parent_course_rows(db: AsyncSession, school_id: int, user: User) -> list[CourseOut]:

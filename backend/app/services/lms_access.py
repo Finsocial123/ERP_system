@@ -37,10 +37,48 @@ async def teacher_for_user(db: AsyncSession, school_id: int, user: User) -> Teac
         return None
     return await async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True), or_(*conditions)).first()
 
+# async def student_for_user(db: AsyncSession, school_id: int, user: User) -> Student | None:
+#     student = await async_query(db, Student).options(joinedload(Student.school_class), joinedload(Student.section)).filter(Student.school_id == school_id, Student.user_id == user.id).first()
+#     if student:
+#         return student
+#     conditions = []
+#     if user.email:
+#         conditions.append(Student.email == user.email)
+#     if user.phone:
+#         conditions.append(Student.phone == user.phone)
+#     if user.login_id:
+#         conditions.append(Student.admission_no == user.login_id)
+#     if not conditions:
+#         return None
+#     return await async_query(db, Student).options(joinedload(Student.school_class), joinedload(Student.section)).filter(Student.school_id == school_id, Student.is_active.is_(True), or_(*conditions)).first()
+
+
+
 async def student_for_user(db: AsyncSession, school_id: int, user: User) -> Student | None:
-    student = await async_query(db, Student).options(joinedload(Student.school_class)).filter(Student.school_id == school_id, Student.user_id == user.id).first()
+    # Get current active session first
+    active_session = await async_query(db, AcademicSession).filter(
+        AcademicSession.school_id == school_id,
+        AcademicSession.is_active.is_(True)
+    ).first()
+    
+    session_filter = (
+        [Student.academic_session_id == active_session.id] 
+        if active_session else []
+    )
+
+    student = await async_query(db, Student).options(
+        joinedload(Student.school_class), 
+        joinedload(Student.section)
+    ).filter(
+        Student.school_id == school_id, 
+        Student.user_id == user.id,
+        *session_filter
+    ).first()
+    
     if student:
         return student
+
+    # Fallback: match by email/phone/admission_no
     conditions = []
     if user.email:
         conditions.append(Student.email == user.email)
@@ -50,7 +88,17 @@ async def student_for_user(db: AsyncSession, school_id: int, user: User) -> Stud
         conditions.append(Student.admission_no == user.login_id)
     if not conditions:
         return None
-    return await async_query(db, Student).options(joinedload(Student.school_class)).filter(Student.school_id == school_id, Student.is_active.is_(True), or_(*conditions)).first()
+
+    return await async_query(db, Student).options(
+        joinedload(Student.school_class), 
+        joinedload(Student.section)
+    ).filter(
+        Student.school_id == school_id, 
+        Student.is_active.is_(True),
+        *session_filter,
+        or_(*conditions)
+    ).first()
+
 
 async def children_for_parent(db: AsyncSession, school_id: int, user: User) -> list[Student]:
     guardians = []

@@ -45,7 +45,7 @@ async def teacher_create_class_meeting(
     if not teacher:
         raise HTTPException(403, 'No teacher profile found for this user')
     try:
-        meeting = await meeting_service.create_teacher_class_meeting(db=db, school_id=current_user.school_id, teacher_id=teacher.id, class_id=payload.class_id, section_id=payload.section_id, title=payload.title, created_by_user_id=current_user.id)
+        meeting = await meeting_service.create_teacher_class_meeting(db=db, school_id=current_user.school_id, teacher_id=teacher.id, class_id=payload.class_id, section_id=payload.section_id, section_name=payload.section_name, title=payload.title, created_by_user_id=current_user.id)
     except PermissionError as e:
         raise HTTPException(403, str(e))
     except Exception as e:
@@ -174,7 +174,7 @@ async def schedule_teacher_class_meeting(
     try:
         meeting = await meeting_service.schedule_teacher_class_meeting(
             db=db, school_id=current_user.school_id, teacher_id=teacher.id,
-            class_id=payload.class_id, section_id=payload.section_id,
+            class_id=payload.class_id, section_id=payload.section_id, section_name=payload.section_name,
             title=payload.title, scheduled_at=payload.scheduled_at,
             created_by_user_id=current_user.id,
         )

@@ -14,6 +14,7 @@ from app.models.notice import Notice, NoticeAudience, NoticeClassAudience, Notic
 from app.models.academic import AcademicSession
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.school import School
+from app.core.sections import validate_class_section_name
 
 
 # Roles allowed to create/manage notices
@@ -49,8 +50,8 @@ async def _active_session_id(db: AsyncSession, school_id: int | None) -> int | N
 
 async def _student_class_pairs_for_user(
     db: AsyncSession, user_id: int, school_id: int, session_id: int | None = None
-) -> set[tuple[int, int | None]]:
-    stmt = select(Student.class_id, Student.section_id).where(
+) -> set[tuple[int, str | None]]:
+    stmt = select(Student.class_id, Student.section_name).where(
         Student.user_id == user_id,
         Student.school_id == school_id,
         Student.is_active.is_(True),
@@ -60,14 +61,14 @@ async def _student_class_pairs_for_user(
         stmt = stmt.where(Student.academic_session_id == session_id)
 
     result = await db.execute(stmt)
-    return {(row.class_id, row.section_id) for row in result.all()}
+    return {(row.class_id, row.section_name) for row in result.all()}
 
 
 async def _parent_child_class_pairs_for_user(
     db: AsyncSession, user_id: int, school_id: int, session_id: int | None = None
-) -> set[tuple[int, int | None]]:
+) -> set[tuple[int, str | None]]:
     stmt = (
-        select(Student.class_id, Student.section_id)
+        select(Student.class_id, Student.section_name)
         .join(ParentGuardian, ParentGuardian.id == Student.guardian_id)
         .where(
             ParentGuardian.user_id == user_id,
@@ -82,7 +83,7 @@ async def _parent_child_class_pairs_for_user(
         stmt = stmt.where(Student.academic_session_id == session_id)
 
     result = await db.execute(stmt)
-    return {(row.class_id, row.section_id) for row in result.all()}
+    return {(row.class_id, row.section_name) for row in result.all()}
 
 
 async def _teacher_ids_for_user(
@@ -100,7 +101,7 @@ async def _teacher_ids_for_user(
     return list(dict.fromkeys(result.scalars().all()))
 
 
-async def _class_pairs_for_user(db: AsyncSession, user: User) -> set[tuple[int, int | None]]:
+async def _class_pairs_for_user(db: AsyncSession, user: User) -> set[tuple[int, str | None]]:
     if not user.school_id:
         return set()
 
@@ -118,8 +119,8 @@ async def _class_pairs_for_user(db: AsyncSession, user: User) -> set[tuple[int, 
     return set()
 
 
-def _class_audience_condition_for_pairs(pairs: set[tuple[int, int | None]]):
-    valid_pairs = {(class_id, section_id) for class_id, section_id in pairs if class_id is not None}
+def _class_audience_condition_for_pairs(pairs: set[tuple[int, str | None]]):
+    valid_pairs = {(class_id, section_name) for class_id, section_name in pairs if class_id is not None}
     if not valid_pairs:
         return None
 
@@ -128,11 +129,11 @@ def _class_audience_condition_for_pairs(pairs: set[tuple[int, int | None]]):
             (
                 (NoticeClassAudience.class_id == class_id)
                 & (
-                    NoticeClassAudience.section_id.is_(None)
-                    | (NoticeClassAudience.section_id == section_id)
+                    NoticeClassAudience.section_name.is_(None)
+                    | (NoticeClassAudience.section_name == section_name)
                 )
             )
-            for class_id, section_id in valid_pairs
+            for class_id, section_name in valid_pairs
         ]
     )
 
@@ -179,8 +180,8 @@ async def _assert_notice_visible(db: AsyncSession, notice: Notice, user: User) -
 
     user_pairs = await _class_pairs_for_user(db, user)
     for audience in notice.class_audiences:
-        for class_id, section_id in user_pairs:
-            if audience.class_id == class_id and (audience.section_id is None or audience.section_id == section_id):
+        for class_id, section_name in user_pairs:
+            if audience.class_id == class_id and (audience.section_name is None or audience.section_name == section_name):
                 return
 
     raise HTTPException(status.HTTP_403_FORBIDDEN, "Not in this notice's audience")
@@ -244,11 +245,12 @@ async def create_notice(
         if not allowed_pairs:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "No teacher profile found")
 
+        submitted = set()
         section_ids = payload.audience_section_ids or []
-        submitted = {
-            (class_id, section_ids[i] if i < len(section_ids) else None)
-            for i, class_id in enumerate(payload.audience_class_ids)
-        }
+        for i, class_id in enumerate(payload.audience_class_ids):
+            section_id = section_ids[i] if i < len(section_ids) else None
+            section_name = await validate_class_section_name(db, current_user.school_id, class_id, section_id=section_id)
+            submitted.add((class_id, section_name))
 
         forbidden = submitted - allowed_pairs
         if forbidden:
@@ -280,10 +282,12 @@ async def create_notice(
     section_ids = payload.audience_section_ids or []
     for i, class_id in enumerate(payload.audience_class_ids):
         section_id = section_ids[i] if i < len(section_ids) else None
+        section_name = await validate_class_section_name(db, current_user.school_id, class_id, section_id=section_id)
         db.add(NoticeClassAudience(
             notice_id=notice.id,
             class_id=class_id,
-            section_id=section_id,
+            section_id=None,
+            section_name=section_name,
         ))
 
     await db.commit()
@@ -487,11 +491,12 @@ async def update_notice(
             allowed_pairs = await _get_teacher_allowed_pairs(
                 db, current_user.id, current_user.school_id
             )
+            submitted = set()
             section_ids = payload.audience_section_ids or []
-            submitted = {
-                (class_id, section_ids[i] if i < len(section_ids) else None)
-                for i, class_id in enumerate(payload.audience_class_ids)
-            }
+            for i, class_id in enumerate(payload.audience_class_ids):
+                section_id = section_ids[i] if i < len(section_ids) else None
+                section_name = await validate_class_section_name(db, current_user.school_id, class_id, section_id=section_id)
+                submitted.add((class_id, section_name))
             forbidden = submitted - allowed_pairs
             if forbidden:
                 raise HTTPException(
@@ -592,7 +597,7 @@ async def _get_teacher_allowed_pairs(
     user_id: int,
     school_id: int,
     session_id: int | None = None,
-) -> set[tuple[int, int | None]]:
+) -> set[tuple[int, str | None]]:
     """Return all classes/sections assigned to a teacher user.
 
     A teacher user can have one Teacher row per academic session. Do not use
@@ -607,11 +612,11 @@ async def _get_teacher_allowed_pairs(
         return set()
 
     subject_classes = select(
-        TeacherSubject.class_id, TeacherSubject.section_id
+        TeacherSubject.class_id, TeacherSubject.section_name
     ).where(TeacherSubject.teacher_id.in_(teacher_ids))
 
     class_teacher_classes = select(
-        ClassTeacherAssignment.class_id, ClassTeacherAssignment.section_id
+        ClassTeacherAssignment.class_id, ClassTeacherAssignment.section_name
     ).where(ClassTeacherAssignment.teacher_id.in_(teacher_ids))
 
     if session_id is not None:
@@ -623,7 +628,7 @@ async def _get_teacher_allowed_pairs(
     combined = subject_classes.union(class_teacher_classes)
     pairs_result = await db.execute(combined)
     return {
-        (row.class_id, row.section_id)
+        (row.class_id, row.section_name)
         for row in pairs_result.all()
         if row.class_id is not None
     }
@@ -659,10 +664,10 @@ def _check_audience(notice: Notice, user: User) -> None:
             return
 
     if notice.class_audiences:
-        user_section_id = getattr(user, "section_id", None)
+        user_section_name = getattr(user, "section_name", None)
         user_class_id = getattr(user, "class_id", None)
-        allowed_pairs = {(a.class_id, a.section_id) for a in notice.class_audiences}
-        if (user_class_id, user_section_id) not in allowed_pairs:
+        allowed_pairs = {(a.class_id, a.section_name) for a in notice.class_audiences}
+        if (user_class_id, user_section_name) not in allowed_pairs:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Not in this notice's audience")
 
 

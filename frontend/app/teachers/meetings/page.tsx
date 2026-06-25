@@ -104,7 +104,7 @@ function duration(start: string | null, end: string | null): string {
 function deduplicateClasses(raw: ClassOption[]): ClassOption[] {
   const seen = new Set<string>();
   return raw.filter((cls) => {
-    const key = `${cls.class_id}-${cls.section_id ?? "null"}`;
+    const key = `${cls.class_id}-${cls.section_name || cls.section_id || "null"}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -252,7 +252,7 @@ function TeacherMeetingForm({
 
   const selectedClass =
     classes.find(
-      (c) => `${c.class_id}-${c.section_id ?? "null"}` === selectedKey,
+      (c) => `${c.class_id}-${c.section_name || c.section_id || "null"}` === selectedKey,
     ) ?? null;
 
   async function handleCreate() {
@@ -272,6 +272,8 @@ function TeacherMeetingForm({
             method: "POST",
             body: JSON.stringify({
               class_id: selectedClass.class_id,
+              section_id: selectedClass.section_id,
+              section_name: selectedClass.section_name,
               title: title.trim(),
             }),
           },
@@ -282,6 +284,8 @@ function TeacherMeetingForm({
           method: "POST",
           body: JSON.stringify({
             class_id: selectedClass.class_id,
+            section_id: selectedClass.section_id,
+            section_name: selectedClass.section_name,
             title: title.trim(),
             scheduled_at: new Date(scheduledAt).toISOString(),
           }),
@@ -333,7 +337,7 @@ function TeacherMeetingForm({
         ) : (
           <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
             {classes.map((cls) => {
-              const key = `${cls.class_id}-${cls.section_id ?? "null"}`;
+              const key = `${cls.class_id}-${cls.section_name || cls.section_id || "null"}`;
               const isSelected = key === selectedKey;
               return (
                 <button

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
 from app.core.config import settings
 from app.core.database import get_async_db
+from app.core.sections import class_section_options, validate_class_section_name
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
 from app.dependencies.academic_session import (
     apply_academic_session_filter,
@@ -20,7 +21,7 @@ from app.dependencies.academic_session import (
     assert_academic_session_is_writable,
     selected_academic_session_id,
 )
-from app.models.academic import AcademicSession, SchoolClass, Section
+from app.models.academic import AcademicSession, SchoolClass
 from app.models.fee import (
     FeeAssignment,
     FeeCategory,
@@ -110,7 +111,6 @@ def _assignment_load_options():
         joinedload(FeeAssignment.fee_structure),
         joinedload(FeeAssignment.academic_session),
         joinedload(FeeAssignment.school_class),
-        joinedload(FeeAssignment.section),
         joinedload(FeeAssignment.student),
     )
 
@@ -118,7 +118,6 @@ def _assignment_load_options():
 def _record_load_options():
     return (
         joinedload(StudentFeeRecord.student).joinedload(Student.school_class),
-        joinedload(StudentFeeRecord.student).joinedload(Student.section),
         joinedload(StudentFeeRecord.fee_structure).joinedload(FeeStructure.category),
         joinedload(StudentFeeRecord.academic_session),
     )
@@ -130,9 +129,6 @@ def _payment_load_options():
         joinedload(FeePayment.student_fee_record)
         .joinedload(StudentFeeRecord.student)
         .joinedload(Student.school_class),
-        joinedload(FeePayment.student_fee_record)
-        .joinedload(StudentFeeRecord.student)
-        .joinedload(Student.section),
         joinedload(FeePayment.student_fee_record)
         .joinedload(StudentFeeRecord.fee_structure)
         .joinedload(FeeStructure.category),
@@ -329,20 +325,26 @@ async def _validate_class_scope(
     school_id: int,
     class_id: int | None,
     section_id: int | None,
-) -> tuple[SchoolClass | None, Section | None]:
+    section_name: str | None = None,
+    academic_session_id: int | None = None,
+) -> tuple[SchoolClass | None, str | None]:
     school_class = await _get_or_404(db, SchoolClass, class_id, school_id, "Class")
-    section = await _get_or_404(db, Section, section_id, school_id, "Section")
 
     if school_class and not school_class.is_active:
         raise HTTPException(status_code=400, detail="Selected class is inactive")
 
-    if section and section.class_id != class_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Selected section does not belong to selected class",
+    resolved_section_name = None
+    if class_id is not None:
+        resolved_section_name = await validate_class_section_name(
+            db,
+            school_id,
+            class_id,
+            section_name=section_name,
+            section_id=section_id,
+            session_id=academic_session_id,
         )
 
-    return school_class, section
+    return school_class, resolved_section_name
 
 
 def _category_read(category: FeeCategory) -> FeeCategoryRead:
@@ -391,7 +393,6 @@ async def _assignment_read(
     fee_structure = _loaded(assignment, "fee_structure")
     academic_session = _loaded(assignment, "academic_session")
     school_class = _loaded(assignment, "school_class")
-    section = _loaded(assignment, "section")
     student = _loaded(assignment, "student")
 
     return FeeAssignmentRead(
@@ -403,7 +404,7 @@ async def _assignment_read(
         class_id=assignment.class_id,
         class_name=school_class.name if school_class else None,
         section_id=assignment.section_id,
-        section_name=section.name if section else None,
+        section_name=assignment.section_name,
         student_id=assignment.student_id,
         student_name=_full_student_name(student),
         assigned_amount=_money(assignment.assigned_amount) if assignment.assigned_amount is not None else None,
@@ -423,8 +424,6 @@ def _record_read(record: StudentFeeRecord) -> StudentFeeRecordRead:
     fee_category = _loaded(fee_structure, "category")
     academic_session = _loaded(record, "academic_session")
     school_class = _loaded(student, "school_class")
-    section = _loaded(student, "section")
-
     return StudentFeeRecordRead(
         id=record.id,
         student_id=record.student_id,
@@ -432,7 +431,7 @@ def _record_read(record: StudentFeeRecord) -> StudentFeeRecordRead:
         admission_no=student.admission_no if student else None,
         roll_number=student.roll_number if student else None,
         class_name=school_class.name if school_class else None,
-        section_name=section.name if section else None,
+        section_name=student.section_name if student else None,
         fee_structure_id=record.fee_structure_id,
         fee_structure_name=fee_structure.name if fee_structure else None,
         category_id=fee_structure.category_id if fee_structure else None,
@@ -738,7 +737,9 @@ async def _students_for_assignment(
         Student.is_active.is_(True),
     )
 
-    if assignment.section_id:
+    if assignment.section_name:
+        query = query.filter(Student.section_name == assignment.section_name)
+    elif assignment.section_id:
         query = query.filter(Student.section_id == assignment.section_id)
 
     return await query.order_by(
@@ -859,16 +860,6 @@ async def fee_meta(
     )
     classes = await classes_query.order_by(SchoolClass.name.asc()).all()
 
-    sections_query = apply_academic_session_filter(
-        async_query(db, Section).filter(
-            Section.school_id == school_id,
-            Section.is_active.is_(True),
-        ),
-        Section,
-        current_session_id,
-    )
-    sections = await sections_query.order_by(Section.name.asc()).all()
-
     students_query = apply_academic_session_filter(
         async_query(db, Student).filter(
             Student.school_id == school_id,
@@ -892,7 +883,7 @@ async def fee_meta(
             for item in structures
         ],
         classes=[FeeMetaItem(id=item.id, name=item.name, extra=item.code) for item in classes],
-        sections=[FeeMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in sections],
+        sections=[FeeMetaItem(id=item.id, name=item.name, extra=str(item.extra)) for item in await class_section_options(db, school_id, session_id=current_session_id)],
         students=[
             FeeMetaItem(
                 id=item.id,
@@ -1215,12 +1206,14 @@ async def create_assignment(
 ):
     structure = await _validate_structure(db, school_id, payload.fee_structure_id)
     await assert_academic_session_is_writable(db, school_id, payload.academic_session_id)
-    await _validate_class_scope(db, school_id, payload.class_id, payload.section_id)
+    _, resolved_section_name = await _validate_class_scope(db, school_id, payload.class_id, payload.section_id, payload.section_name, payload.academic_session_id)
 
     if payload.student_id:
         await _validate_student_scope(db, school_id, payload.student_id)
 
     data = payload.model_dump(exclude={"generate_records"})
+    data["section_id"] = None
+    data["section_name"] = resolved_section_name
 
     if data.get("academic_session_id") is None:
         data["academic_session_id"] = structure.academic_session_id if structure else None
@@ -1267,7 +1260,16 @@ async def update_assignment(
     assignment = await _get_or_404(db, FeeAssignment, assignment_id, school_id, "Fee assignment")
     await assert_item_session_is_writable(db, school_id, assignment)
 
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    if any(key in data for key in ("class_id", "section_id", "section_name", "academic_session_id")):
+        class_id = data.get("class_id", assignment.class_id)
+        section_id = data.get("section_id", assignment.section_id)
+        section_name = data.get("section_name", assignment.section_name)
+        academic_session_id = data.get("academic_session_id", assignment.academic_session_id)
+        _, resolved_section_name = await _validate_class_scope(db, school_id, class_id, section_id, section_name, academic_session_id)
+        data["section_id"] = None
+        data["section_name"] = resolved_section_name
+    for key, value in data.items():
         setattr(assignment, key, value)
 
     await db.commit()
@@ -1325,7 +1327,10 @@ async def list_records(
     if class_id:
         query = query.filter(Student.class_id == class_id)
 
-    if section_id:
+    if section_id and class_id:
+        section_name = await validate_class_section_name(db, school_id, class_id, section_id=section_id, session_id=session_id)
+        query = query.filter(Student.section_name == section_name)
+    elif section_id:
         query = query.filter(Student.section_id == section_id)
 
     if fee_structure_id:

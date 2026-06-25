@@ -26,7 +26,7 @@ from app.core.async_query import async_query
 from app.core.database import get_async_db
 from app.dependencies.academic_session import selected_academic_session
 from app.dependencies.auth import current_school_id, get_current_user
-from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject
+from app.models.academic import AcademicSession, Department, SchoolClass, Subject
 from app.models.attendance import AttendanceStatus, StudentAttendance
 from app.models.exam import Exam, ExamMark, ExamSubject
 from app.models.fee import FeePayment, StudentFeeRecord
@@ -36,6 +36,7 @@ from app.models.school import School
 from app.models.timetable import TimetableEntry
 from app.models.user import User, UserRole
 from app.services.cache import cache
+from app.core.sections import parse_section_names
 
 router = APIRouter(prefix='/dashboard', tags=['Phase 3 - Dashboard and Quick Analytics'])
 ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
@@ -100,11 +101,20 @@ def _session_filter(query, model, session: AcademicSession | None):
 
 async def _admin_counts(db: AsyncSession, school_id: int, session: AcademicSession | None) -> dict[str, int]:
     session_id = _session_id(session)
+    class_rows_for_sections = await _session_filter(
+        async_query(db, SchoolClass).filter(
+            SchoolClass.school_id == school_id,
+            SchoolClass.is_active.is_(True),
+        ),
+        SchoolClass,
+        session,
+    ).all()
+    sections_count = sum(len(parse_section_names(item.sections)) for item in class_rows_for_sections)
     return {
         "academic_sessions": await _count(db, async_query(db, AcademicSession).filter(AcademicSession.school_id == school_id)),
         "departments": await _count(db, _session_filter(async_query(db, Department).filter(Department.school_id == school_id), Department, session)),
         "classes": await _count(db, _session_filter(async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True)), SchoolClass, session)),
-        "sections": await _count(db, _session_filter(async_query(db, Section).filter(Section.school_id == school_id, Section.is_active.is_(True)), Section, session)),
+        "sections": sections_count,
         "subjects": await _count(db, _session_filter(async_query(db, Subject).filter(Subject.school_id == school_id, Subject.is_active.is_(True)), Subject, session)),
         "students": await _count(db, _session_filter(async_query(db, Student).filter(Student.school_id == school_id, Student.is_active.is_(True)), Student, session)),
         "teachers": await _count(db, _session_filter(async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True)), Teacher, session)),
@@ -286,7 +296,6 @@ async def _teacher_for_user(db: AsyncSession, school_id: int, user: User, sessio
 async def _student_for_user(db: AsyncSession, school_id: int, user: User, session: AcademicSession | None) -> Student | None:
     query = async_query(db, Student).options(
         selectinload(Student.school_class),
-        selectinload(Student.section),
         selectinload(Student.guardian),
     ).filter(Student.school_id == school_id, Student.user_id == user.id)
     query = _session_filter(query, Student, session)
@@ -304,7 +313,6 @@ async def _student_for_user(db: AsyncSession, school_id: int, user: User, sessio
         return None
     query = async_query(db, Student).options(
         selectinload(Student.school_class),
-        selectinload(Student.section),
         selectinload(Student.guardian),
     ).filter(Student.school_id == school_id, Student.is_active.is_(True), or_(*conditions))
     query = _session_filter(query, Student, session)
@@ -345,7 +353,6 @@ async def _children_for_parent(db: AsyncSession, school_id: int, user: User, ses
         return []
     query = async_query(db, Student).options(
         selectinload(Student.school_class),
-        selectinload(Student.section),
         selectinload(Student.guardian),
     ).filter(
         Student.school_id == school_id,
@@ -359,7 +366,7 @@ async def _children_for_parent(db: AsyncSession, school_id: int, user: User, ses
 async def _teacher_student_count(db: AsyncSession, school_id: int, teacher: Teacher | None, session: AcademicSession | None) -> int:
     if not teacher:
         return 0
-    scopes: set[tuple[int | None, int | None]] = set()
+    scopes: set[tuple[int | None, str | None]] = set()
     subject_assignments = _session_filter(async_query(db, TeacherSubject).filter(
         TeacherSubject.school_id == school_id,
         TeacherSubject.teacher_id == teacher.id,
@@ -370,17 +377,17 @@ async def _teacher_student_count(db: AsyncSession, school_id: int, teacher: Teac
     ), ClassTeacherAssignment, session)
     for assignment in await subject_assignments.all():
         if assignment.class_id:
-            scopes.add((assignment.class_id, assignment.section_id))
+            scopes.add((assignment.class_id, assignment.section_name))
     for assignment in await class_assignments.all():
-        scopes.add((assignment.class_id, assignment.section_id))
+        scopes.add((assignment.class_id, assignment.section_name))
     student_ids: set[int] = set()
-    for class_id, section_id in scopes:
+    for class_id, section_name in scopes:
         query = async_query(db, Student.id).filter(Student.school_id == school_id, Student.is_active.is_(True))
         query = _session_filter(query, Student, session)
         if class_id:
             query = query.filter(Student.class_id == class_id)
-        if section_id:
-            query = query.filter(Student.section_id == section_id)
+        if section_name:
+            query = query.filter(Student.section_name == section_name)
         student_ids.update((row[0] for row in await query.all()))
     return len(student_ids)
 
@@ -390,7 +397,7 @@ def _homework_assignments_for_student_query(db: AsyncSession, school_id: int, st
         HomeworkAssignment.school_id == school_id,
         HomeworkAssignment.class_id == student.class_id,
         HomeworkAssignment.is_active.is_(True),
-        or_(HomeworkAssignment.section_id.is_(None), HomeworkAssignment.section_id == student.section_id),
+        or_(HomeworkAssignment.section_name.is_(None), HomeworkAssignment.section_name == student.section_name),
     )
     return _session_filter(query, HomeworkAssignment, session)
 
@@ -455,8 +462,8 @@ async def _student_timetable_slots(db: AsyncSession, school_id: int, student: St
         TimetableEntry.is_active.is_(True),
     )
     query = _session_filter(query, TimetableEntry, session)
-    if student.section_id is not None:
-        query = query.filter(or_(TimetableEntry.section_id.is_(None), TimetableEntry.section_id == student.section_id))
+    if student.section_name:
+        query = query.filter(or_(TimetableEntry.section_name.is_(None), TimetableEntry.section_name == student.section_name))
     return await _count(db, query)
 
 
@@ -507,8 +514,8 @@ async def _published_exams_for_student(db: AsyncSession, school_id: int, student
         Exam.result_status == "PUBLISHED",
     )
     query = _session_filter(query, Exam, session)
-    if student.section_id is not None:
-        query = query.filter(or_(Exam.section_id.is_(None), Exam.section_id == student.section_id))
+    if student.section_name:
+        query = query.filter(or_(Exam.section_name.is_(None), Exam.section_name == student.section_name))
     return await _count(db, query)
 
 
@@ -722,8 +729,8 @@ async def _student_dashboard(db: AsyncSession, school_id: int, user: User, sessi
     class_label = "Not assigned"
     if student and student.school_class:
         class_label = student.school_class.name
-        if student.section:
-            class_label += f" - {student.section.name}"
+        if student.section_name:
+            class_label += f" - {student.section_name}"
     pending_homework = await _pending_homework_for_student(db, school_id, student, session)
     timetable_slots = await _student_timetable_slots(db, school_id, student, session)
     published_results = await _published_exams_for_student(db, school_id, student, session)
@@ -989,8 +996,8 @@ async def quick_search(
         student = await _student_for_user(db, school_id, current_user, session)
         if student and student.class_id:
             exam_query = exam_query.filter(Exam.class_id == student.class_id, Exam.result_status == "PUBLISHED")
-            if student.section_id is not None:
-                exam_query = exam_query.filter(or_(Exam.section_id.is_(None), Exam.section_id == student.section_id))
+            if student.section_name:
+                exam_query = exam_query.filter(or_(Exam.section_name.is_(None), Exam.section_name == student.section_name))
         else:
             exam_query = exam_query.filter(Exam.id == -1)
     elif current_user.role == UserRole.PARENT.value:

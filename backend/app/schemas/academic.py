@@ -58,6 +58,7 @@ class ClassCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     code: str | None = None
     department_id: int | None = None
+    sections: str | None = Field(default=None, max_length=1000)
 
 
 class ClassUpdate(BaseModel):
@@ -65,6 +66,7 @@ class ClassUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     code: str | None = None
     department_id: int | None = None
+    sections: str | None = Field(default=None, max_length=1000)
     is_active: bool | None = None
 
 
@@ -74,6 +76,7 @@ class ClassRead(BaseModel):
     name: str
     code: str | None = None
     department_id: int | None = None
+    sections: str | None = None
     is_active: bool
 
     model_config = {"from_attributes": True}

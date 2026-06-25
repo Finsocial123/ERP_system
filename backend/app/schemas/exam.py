@@ -24,6 +24,7 @@ class ExamCreate(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     class_id: int
     section_id: int | None = None
+    section_name: str | None = None
     academic_session_id: int | None = None
     start_date: date | None = None
     end_date: date | None = None
@@ -41,6 +42,7 @@ class ExamUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     class_id: int | None = None
     section_id: int | None = None
+    section_name: str | None = None
     academic_session_id: int | None = None
     start_date: date | None = None
     end_date: date | None = None
@@ -55,9 +57,9 @@ class ExamRead(BaseModel):
     description: str | None = None
     class_id: int
     section_id: int | None = None
+    section_name: str | None = None
     academic_session_id: int | None = None
     class_name: str | None = None
-    section_name: str | None = None
     academic_session_name: str | None = None
     start_date: date | None = None
     end_date: date | None = None
@@ -136,8 +138,8 @@ class ExamTimetableItem(BaseModel):
     result_status: str
     class_id: int
     section_id: int | None = None
-    class_name: str | None = None
     section_name: str | None = None
+    class_name: str | None = None
     start_date: date | None = None
     end_date: date | None = None
     exam_subject_id: int

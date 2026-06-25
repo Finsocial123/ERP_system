@@ -59,6 +59,7 @@ class TimetableEntry(Base):
     academic_session_id: Mapped[int | None] = mapped_column(ForeignKey("academic_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     class_id: Mapped[int] = mapped_column(ForeignKey("school_classes.id", ondelete="CASCADE"), index=True)
     section_id: Mapped[int | None] = mapped_column(ForeignKey("sections.id", ondelete="SET NULL"), nullable=True, index=True)
+    section_name: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     day_id: Mapped[int] = mapped_column(ForeignKey("timetable_days.id", ondelete="CASCADE"), index=True)
     period_id: Mapped[int] = mapped_column(ForeignKey("timetable_periods.id", ondelete="CASCADE"), index=True)
     subject_id: Mapped[int | None] = mapped_column(ForeignKey("subjects.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -71,7 +72,6 @@ class TimetableEntry(Base):
 
     academic_session = relationship("AcademicSession")
     school_class = relationship("SchoolClass")
-    section = relationship("Section")
     day = relationship("TimetableDay")
     period = relationship("TimetablePeriod")
     subject = relationship("Subject")

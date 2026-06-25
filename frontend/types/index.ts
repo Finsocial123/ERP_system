@@ -66,9 +66,15 @@ export type User = {
   export type FieldConfig = {
     name: string;
     label: string;
-    type?: "text" | "number" | "date" | "checkbox" | "textarea";
+    type?: "text" | "number" | "date" | "checkbox" | "textarea" | "select";
     placeholder?: string;
     required?: boolean;
+    emptyLabel?: string;
+    valueType?: "string" | "number";
+    options?: Array<{ label: string; value: string | number }>;
+    optionsEndpoint?: string;
+    optionLabelKey?: string;
+    optionValueKey?: string;
   };
 
   export type AcademicClass = {
@@ -77,6 +83,7 @@ export type User = {
     name: string;
     code?: string | null;
     department_id?: number | null;
+    sections?: string | null;
     is_active: boolean;
   };
 
@@ -145,6 +152,7 @@ export type User = {
     admission_date?: string | null;
     class_id?: number | null;
     section_id?: number | null;
+    section_name?: string | null;
     guardian?: ParentGuardian | null;
     status: string;
     is_active: boolean;
@@ -180,6 +188,7 @@ export type User = {
     subject_id: number;
     class_id?: number | null;
     section_id?: number | null;
+    section_name?: string | null;
   };
 
   export type ClassTeacherAssignment = {
@@ -187,6 +196,7 @@ export type User = {
     teacher_id: number;
     class_id: number;
     section_id?: number | null;
+    section_name?: string | null;
     academic_session_id?: number | null;
   };
 
@@ -196,6 +206,7 @@ export type User = {
     student_id: number;
     class_id: number;
     section_id?: number | null;
+    section_name?: string | null;
     session_id: number;
     date: string;
     status: string;
@@ -390,9 +401,9 @@ export type User = {
     description?: string | null;
     class_id: number;
     section_id?: number | null;
+    section_name?: string | null;
     academic_session_id?: number | null;
     class_name?: string | null;
-    section_name?: string | null;
     academic_session_name?: string | null;
     start_date?: string | null;
     end_date?: string | null;

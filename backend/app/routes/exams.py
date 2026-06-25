@@ -9,9 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.async_query import async_query
 from app.core.database import get_async_db
+from app.core.sections import class_section_options, validate_class_section_name
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
 from app.dependencies.academic_session import selected_academic_session, require_writable_academic_session, writable_selected_academic_session, assert_item_session_is_writable, assert_academic_session_is_writable
-from app.models.academic import AcademicSession, SchoolClass, Section, Subject
+from app.models.academic import AcademicSession, SchoolClass, Subject
 from app.models.exam import Exam, ExamMark, ExamSubject
 from app.models.people import Student, Teacher
 from app.models.user import User, UserRole
@@ -76,7 +77,6 @@ def _loaded(obj: Any, relation_name: str):
 def _exam_load_options():
     return (
         joinedload(Exam.school_class),
-        joinedload(Exam.section),
         joinedload(Exam.academic_session),
     )
 
@@ -91,7 +91,6 @@ def _exam_subject_load_options():
 def _student_load_options():
     return (
         joinedload(Student.school_class),
-        joinedload(Student.section),
     )
 
 
@@ -303,19 +302,22 @@ async def _validate_exam_scope(
     class_id: int,
     section_id: int | None,
     academic_session_id: int | None,
-) -> None:
+    section_name: str | None = None,
+) -> str | None:
     school_class = await _get_or_404(db, SchoolClass, class_id, school_id, "Class")
-    section = await _get_or_404(db, Section, section_id, school_id, "Section")
     await _get_or_404(db, AcademicSession, academic_session_id, school_id, "Academic session")
 
     if not school_class.is_active:
         raise HTTPException(status_code=400, detail="Selected class is inactive")
 
-    if section and section.class_id != class_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Selected section does not belong to selected class",
-        )
+    return await validate_class_section_name(
+        db,
+        school_id,
+        class_id,
+        section_name=section_name,
+        section_id=section_id,
+        session_id=academic_session_id,
+    )
 
 
 async def _validate_exam_subject_scope(
@@ -505,7 +507,9 @@ def _students_for_exam_query(db: AsyncSession, exam: Exam):
     if exam.academic_session_id is not None:
         query = query.filter(Student.academic_session_id == exam.academic_session_id)
 
-    if exam.section_id is not None:
+    if exam.section_name:
+        query = query.filter(Student.section_name == exam.section_name)
+    elif exam.section_id is not None:
         query = query.filter(Student.section_id == exam.section_id)
 
     return query.order_by(Student.roll_number.asc(), Student.first_name.asc())
@@ -587,7 +591,6 @@ async def _exam_payload(
         marks_entered_count = mark_counts.get(exam.id, 0)
 
     school_class = _loaded(exam, "school_class")
-    section = _loaded(exam, "section")
     academic_session = _loaded(exam, "academic_session")
 
     return ExamRead(
@@ -599,7 +602,7 @@ async def _exam_payload(
         section_id=exam.section_id,
         academic_session_id=exam.academic_session_id,
         class_name=school_class.name if school_class else None,
-        section_name=section.name if section else None,
+        section_name=exam.section_name,
         academic_session_name=academic_session.name if academic_session else None,
         start_date=exam.start_date,
         end_date=exam.end_date,
@@ -715,7 +718,6 @@ def _mark_payload(
 
 def _student_read(student: Student) -> ExamStudentRead:
     school_class = _loaded(student, "school_class")
-    section = _loaded(student, "section")
 
     return ExamStudentRead(
         id=student.id,
@@ -723,7 +725,7 @@ def _student_read(student: Student) -> ExamStudentRead:
         roll_number=student.roll_number,
         student_name=_full_student_name(student),
         class_name=school_class.name if school_class else None,
-        section_name=section.name if section else None,
+        section_name=student.section_name,
     )
 
 
@@ -752,7 +754,6 @@ def _timetable_item(
     )
 
     school_class = _loaded(exam, "school_class")
-    section = _loaded(exam, "section")
     subject = _loaded(exam_subject, "subject")
     teacher = _loaded(exam_subject, "teacher")
 
@@ -764,7 +765,7 @@ def _timetable_item(
         class_id=exam.class_id,
         section_id=exam.section_id,
         class_name=school_class.name if school_class else None,
-        section_name=section.name if section else None,
+        section_name=exam.section_name,
         start_date=exam.start_date,
         end_date=exam.end_date,
         exam_subject_id=exam_subject.id,
@@ -841,7 +842,6 @@ async def _report_cards_for_students(
         marks_map = {(mark.student_id, mark.exam_subject_id): mark for mark in marks}
 
     school_class = _loaded(exam, "school_class")
-    section = _loaded(exam, "section")
 
     cards: list[StudentReportCard] = []
 
@@ -889,7 +889,6 @@ async def _report_cards_for_students(
         overall_status = "PENDING" if has_pending else "FAIL" if has_fail else "PASS"
 
         student_class = _loaded(student, "school_class") or school_class
-        student_section = _loaded(student, "section") or section
 
         cards.append(
             StudentReportCard(
@@ -902,7 +901,7 @@ async def _report_cards_for_students(
                 admission_no=student.admission_no,
                 roll_number=student.roll_number,
                 class_name=student_class.name if student_class else None,
-                section_name=student_section.name if student_section else None,
+                section_name=student.section_name or exam.section_name,
                 subjects=subject_rows,
                 total_marks=round(total_marks, 2),
                 marks_obtained=round(obtained, 2),
@@ -935,7 +934,7 @@ def _exam_query_for_student(db: AsyncSession, school_id: int, student: Student):
         Exam.class_id == student.class_id,
         Exam.is_active.is_(True),
         Exam.result_status == "PUBLISHED",
-        or_(Exam.section_id.is_(None), Exam.section_id == student.section_id),
+        or_(Exam.section_name.is_(None), Exam.section_name == student.section_name),
     )
     if student.academic_session_id is not None:
         query = query.filter(Exam.academic_session_id == student.academic_session_id)
@@ -962,16 +961,6 @@ async def exam_meta(
         classes_query = classes_query.filter(SchoolClass.academic_session_id == session.id)
     classes = await classes_query.order_by(
         SchoolClass.name.asc()
-    ).all()
-
-    sections_query = async_query(db, Section).filter(
-        Section.school_id == school_id,
-        Section.is_active.is_(True),
-    )
-    if session:
-        sections_query = sections_query.filter(Section.academic_session_id == session.id)
-    sections = await sections_query.order_by(
-        Section.name.asc()
     ).all()
 
     subjects_query = async_query(db, Subject).filter(
@@ -1003,8 +992,8 @@ async def exam_meta(
     return ExamMetaResponse(
         classes=[ExamMetaItem(id=item.id, name=item.name) for item in classes],
         sections=[
-            ExamMetaItem(id=item.id, name=item.name, extra=str(item.class_id))
-            for item in sections
+            ExamMetaItem(id=item.id, name=item.name, extra=str(item.extra))
+            for item in await class_section_options(db, school_id, session_id=session.id if session else None)
         ],
         subjects=[
             ExamMetaItem(
@@ -1048,7 +1037,10 @@ async def list_exams(
     if class_id:
         query = query.filter(Exam.class_id == class_id)
 
-    if section_id:
+    if section_id and class_id:
+        section_name = await validate_class_section_name(db, school_id, class_id, section_id=section_id, session_id=session.id if session else None)
+        query = query.filter(Exam.section_name == section_name)
+    elif section_id:
         query = query.filter(Exam.section_id == section_id)
 
     if status_filter:
@@ -1085,12 +1077,13 @@ async def create_exam(
     )
     academic_session_id = session.id if session else None
 
-    await _validate_exam_scope(
+    resolved_section_name = await _validate_exam_scope(
         db,
         school_id,
         payload.class_id,
         payload.section_id,
         academic_session_id,
+        payload.section_name,
     )
 
     exam = Exam(
@@ -1099,7 +1092,8 @@ async def create_exam(
         exam_type=(payload.exam_type or "").strip() or None,
         description=(payload.description or "").strip() or None,
         class_id=payload.class_id,
-        section_id=payload.section_id,
+        section_id=None,
+        section_name=resolved_section_name,
         academic_session_id=academic_session_id,
         start_date=payload.start_date,
         end_date=payload.end_date,
@@ -1137,11 +1131,12 @@ async def update_exam(
 
     class_id = data.get("class_id", exam.class_id)
     section_id = data.get("section_id", exam.section_id)
+    section_name = data.get("section_name", exam.section_name)
     academic_session_id = data.get("academic_session_id", exam.academic_session_id)
     if "academic_session_id" in data:
         await assert_academic_session_is_writable(db, school_id, academic_session_id)
 
-    await _validate_exam_scope(db, school_id, class_id, section_id, academic_session_id)
+    resolved_section_name = await _validate_exam_scope(db, school_id, class_id, section_id, academic_session_id, section_name)
 
     if "name" in data and data["name"] is not None:
         exam.name = data["name"].strip()
@@ -1151,8 +1146,9 @@ async def update_exam(
         exam.description = (data["description"] or "").strip() or None
     if "class_id" in data:
         exam.class_id = data["class_id"]
-    if "section_id" in data:
-        exam.section_id = data["section_id"]
+    if "section_id" in data or "section_name" in data or "class_id" in data:
+        exam.section_id = None
+        exam.section_name = resolved_section_name
     if "academic_session_id" in data:
         exam.academic_session_id = data["academic_session_id"]
     if "start_date" in data:
@@ -1778,7 +1774,7 @@ async def my_exam_timetable(
         Exam.school_id == school_id,
         Exam.class_id == student.class_id,
         Exam.is_active.is_(True),
-        or_(Exam.section_id.is_(None), Exam.section_id == student.section_id),
+        or_(Exam.section_name.is_(None), Exam.section_name == student.section_name),
     )
     if student.academic_session_id is not None:
         exams_query = exams_query.filter(Exam.academic_session_id == student.academic_session_id)
@@ -1834,7 +1830,7 @@ async def my_children_exam_timetable(
             Exam.school_id == school_id,
             Exam.class_id == child.class_id,
             Exam.is_active.is_(True),
-            or_(Exam.section_id.is_(None), Exam.section_id == child.section_id),
+            or_(Exam.section_name.is_(None), Exam.section_name == child.section_name),
         )
         if child.academic_session_id is not None:
             exams_query = exams_query.filter(Exam.academic_session_id == child.academic_session_id)

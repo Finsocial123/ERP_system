@@ -4,7 +4,7 @@ from sqlalchemy.orm import joinedload
 from app.core.database import get_async_db
 from app.dependencies.auth import current_school_id, require_roles
 from app.dependencies.academic_session import selected_academic_session
-from app.models.academic import AcademicSession, Department, SchoolClass, Section
+from app.models.academic import AcademicSession, Department, SchoolClass
 from app.models.attendance import AttendanceStatus, StudentAttendance
 from app.models.exam import Exam
 from app.models.homework import HomeworkAssignment, HomeworkSubmission
@@ -14,6 +14,7 @@ from app.models.user import User, UserRole
 from app.schemas.reports import AttendanceReportResponse, AttendanceReportRow, HomeworkReportResponse, HomeworkReportRow, ReportsOverview, StudentReportResponse, StudentReportRow, TeacherReportResponse, TeacherReportRow
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
+from app.core.sections import validate_class_section_name
 router = APIRouter(prefix='/reports', tags=['Phase 10 - Reports'])
 ADMIN_ROLES = [UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN]
 
@@ -69,15 +70,17 @@ async def student_report(request: Request, class_id: int | None=Query(default=No
         q = q.filter(Student.is_active.is_(True))
     if class_id:
         q = q.filter(Student.class_id == class_id)
-    if section_id:
+    if section_id and class_id:
+        section_name = await validate_class_section_name(db, school_id, class_id, section_id=section_id, session_id=session_id)
+        q = q.filter(Student.section_name == section_name)
+    elif section_id:
         q = q.filter(Student.section_id == section_id)
     students = await q.order_by(Student.first_name).all()
     class_map = {c.id: c.name for c in await async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.academic_session_id == session_id).all()}
-    section_map = {s.id: s.name for s in await async_query(db, Section).filter(Section.school_id == school_id, Section.academic_session_id == session_id).all()}
     rows = []
     for s in students:
         guardian = await async_query(db, ParentGuardian).filter(ParentGuardian.students.contains(s), ParentGuardian.is_active.is_(True)).first()
-        rows.append(StudentReportRow(student_id=s.id, admission_no=s.admission_no, roll_number=s.roll_number, full_name=_student_name(s), gender=s.gender, class_name=class_map.get(s.class_id) if s.class_id else None, section_name=section_map.get(s.section_id) if s.section_id else None, guardian_name=guardian.full_name if guardian else None, guardian_phone=guardian.phone if guardian else None, admission_date=str(s.admission_date) if s.admission_date else None, status=s.status if s.status else 'ACTIVE' if s.is_active else 'INACTIVE'))
+        rows.append(StudentReportRow(student_id=s.id, admission_no=s.admission_no, roll_number=s.roll_number, full_name=_student_name(s), gender=s.gender, class_name=class_map.get(s.class_id) if s.class_id else None, section_name=s.section_name, guardian_name=guardian.full_name if guardian else None, guardian_phone=guardian.phone if guardian else None, admission_date=str(s.admission_date) if s.admission_date else None, status=s.status if s.status else 'ACTIVE' if s.is_active else 'INACTIVE'))
     total = await async_query(db, Student).filter(Student.school_id == school_id, Student.academic_session_id == session_id).count()
     active = await async_query(db, Student).filter(Student.school_id == school_id, Student.academic_session_id == session_id, Student.is_active.is_(True)).count()
     class_counts = {}
@@ -93,17 +96,21 @@ async def attendance_report(request: Request, session_id: int | None=Query(defau
     session_id = session_id or (selected_session.id if selected_session else None)
     session = await async_query(db, AcademicSession).filter(AcademicSession.id == session_id, AcademicSession.school_id == school_id).first()
     class_map = {c.id: c.name for c in await async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.academic_session_id == session_id).all()}
-    section_map = {s.id: s.name for s in await async_query(db, Section).filter(Section.school_id == school_id, Section.academic_session_id == session_id).all()}
     sq = async_query(db, Student).filter(Student.school_id == school_id, Student.academic_session_id == session_id, Student.is_active.is_(True))
     if class_id:
         sq = sq.filter(Student.class_id == class_id)
-    if section_id:
+    if section_id and class_id:
+        section_name = await validate_class_section_name(db, school_id, class_id, section_id=section_id, session_id=session_id)
+        sq = sq.filter(Student.section_name == section_name)
+    elif section_id:
         sq = sq.filter(Student.section_id == section_id)
     students = await sq.order_by(Student.first_name).all()
     aq = async_query(db, StudentAttendance).filter(StudentAttendance.school_id == school_id, StudentAttendance.session_id == session_id)
     if class_id:
         aq = aq.filter(StudentAttendance.class_id == class_id)
-    if section_id:
+    if section_id and class_id:
+        aq = aq.filter(StudentAttendance.section_name == section_name)
+    elif section_id:
         aq = aq.filter(StudentAttendance.section_id == section_id)
     if date_from:
         aq = aq.filter(StudentAttendance.date >= date_from)
@@ -127,7 +134,7 @@ async def attendance_report(request: Request, session_id: int | None=Query(defau
     for s in students:
         d = record_map.get(s.id, {'total': 0, 'present': 0, 'absent': 0, 'leave': 0, 'half': 0})
         pct = _att_pct(d['present'], d['half'], d['total'])
-        rows.append(AttendanceReportRow(student_id=s.id, student_name=_student_name(s), admission_no=s.admission_no, roll_number=s.roll_number, class_name=class_map.get(s.class_id) if s.class_id else None, section_name=section_map.get(s.section_id) if s.section_id else None, total_days=d['total'], present=d['present'], absent=d['absent'], leave=d['leave'], half_day=d['half'], percentage=pct, low_attendance=pct < 75 and d['total'] > 0))
+        rows.append(AttendanceReportRow(student_id=s.id, student_name=_student_name(s), admission_no=s.admission_no, roll_number=s.roll_number, class_name=class_map.get(s.class_id) if s.class_id else None, section_name=s.section_name, total_days=d['total'], present=d['present'], absent=d['absent'], leave=d['leave'], half_day=d['half'], percentage=pct, low_attendance=pct < 75 and d['total'] > 0))
     avg_pct = round(sum((r.percentage for r in rows)) / len(rows), 1) if rows else 0.0
     low_count = sum((1 for r in rows if r.low_attendance))
     return AttendanceReportResponse(session_id=session_id, session_name=session.name if session else str(session_id), class_id=class_id, class_name=class_map.get(class_id) if class_id else None, section_id=section_id, date_from=date_from, date_to=date_to, total_students=len(rows), avg_percentage=avg_pct, low_attendance_count=low_count, rows=rows)
@@ -166,7 +173,6 @@ async def homework_report(request: Request, session_id: int | None=Query(default
     selected_session = await selected_academic_session(db, school_id, request, current_user)
     session_id = session_id or (selected_session.id if selected_session else None)
     class_map = {c.id: c.name for c in await async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.academic_session_id == session_id).all()}
-    section_map = {s.id: s.name for s in await async_query(db, Section).filter(Section.school_id == school_id, Section.academic_session_id == session_id).all()}
     session_name = None
     if session_id:
         s = await async_query(db, AcademicSession).filter(AcademicSession.id == session_id, AcademicSession.school_id == school_id).first()
@@ -179,13 +185,13 @@ async def homework_report(request: Request, session_id: int | None=Query(default
     assignments = await q.order_by(HomeworkAssignment.due_date.desc()).all()
     from sqlalchemy import func as _func2, case as _case2
     from app.models.homework import HomeworkSubmission as _HWSub
-    class_section_pairs = list({(hw.class_id, hw.section_id) for hw in assignments})
+    class_section_pairs = list({(hw.class_id, hw.section_name) for hw in assignments})
     student_count_map = {}
-    for class_id_k, section_id_k in class_section_pairs:
+    for class_id_k, section_name_k in class_section_pairs:
         q = async_query(db, _func2.count(Student.id)).filter(Student.school_id == school_id, Student.academic_session_id == session_id, Student.is_active.is_(True), Student.class_id == class_id_k)
-        if section_id_k:
-            q = q.filter(Student.section_id == section_id_k)
-        student_count_map[class_id_k, section_id_k] = await q.scalar() or 0
+        if section_name_k:
+            q = q.filter(Student.section_name == section_name_k)
+        student_count_map[class_id_k, section_name_k] = await q.scalar() or 0
     hw_ids = [hw.id for hw in assignments]
     sub_counts = {}
     if hw_ids:
@@ -193,7 +199,7 @@ async def homework_report(request: Request, session_id: int | None=Query(default
             sub_counts[row.homework_id] = {'submitted': int(row.submitted or 0), 'checked': int(row.checked or 0)}
     rows = []
     for hw in assignments:
-        total_students = student_count_map.get((hw.class_id, hw.section_id), 0)
+        total_students = student_count_map.get((hw.class_id, hw.section_name), 0)
         sc = sub_counts.get(hw.id, {'submitted': 0, 'checked': 0})
         submitted = sc['submitted']
         checked = sc['checked']
@@ -208,7 +214,7 @@ async def homework_report(request: Request, session_id: int | None=Query(default
             from app.models.academic import Subject
             subj = await async_query(db, Subject).filter(Subject.id == hw.subject_id).first()
             subject_name = subj.name if subj else None
-        rows.append(HomeworkReportRow(assignment_id=hw.id, title=hw.title, subject_name=subject_name, class_name=class_map.get(hw.class_id), section_name=section_map.get(hw.section_id) if hw.section_id else None, due_date=hw.due_date, teacher_name=teacher_name, total_students=total_students, submitted=submitted, checked=checked, pending=pending, submission_rate=rate))
+        rows.append(HomeworkReportRow(assignment_id=hw.id, title=hw.title, subject_name=subject_name, class_name=class_map.get(hw.class_id), section_name=hw.section_name, due_date=hw.due_date, teacher_name=teacher_name, total_students=total_students, submitted=submitted, checked=checked, pending=pending, submission_rate=rate))
     return HomeworkReportResponse(session_id=session_id, session_name=session_name, class_id=class_id, rows=rows)
 
 @router.get('/fees')

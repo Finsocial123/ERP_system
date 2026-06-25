@@ -72,7 +72,6 @@ const navItems: NavItem[] = [
   { href: "/setup/academic-sessions", label: "Academic Sessions", icon: GraduationCap, roles: ADMIN_ROLES, group: "Setup" },
   { href: "/setup/departments", label: "Departments", icon: Building2, roles: ADMIN_ROLES, group: "Setup" },
   { href: "/setup/classes", label: "Classes", icon: Settings, roles: ADMIN_ROLES, group: "Setup" },
-  { href: "/setup/sections", label: "Sections", icon: Settings, roles: ADMIN_ROLES, group: "Setup" },
   { href: "/setup/subjects", label: "Subjects", icon: BookOpen, roles: ADMIN_ROLES, group: "Setup" },
   { href: "/setup/notice", label: "Notices", icon: NotebookIcon, roles: ADMIN_ROLES, group: "Communication" },
   { href: "/setup/meetings", label: "Meetings", icon: Video, roles: ADMIN_ROLES, group: "Communication" },

@@ -7,11 +7,12 @@ from app.schemas.meetings import TeacherClassOut
 from app.core.database import get_async_db
 from app.core.async_query import async_query
 from app.core.security import get_password_hash
+from app.core.sections import validate_class_section_name, virtual_section_id_for_name
 from app.core.utils import generate_temporary_password, normalize_login_id
 from app.dependencies.academic_session import selected_academic_session_id, require_writable_academic_session, writable_selected_academic_session_id, assert_item_session_is_writable
 from app.dependencies.auth import current_school_id, require_school_admin, get_current_user
 from app.schemas.notice import AvailableClassOut
-from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject, SchoolClass
+from app.models.academic import AcademicSession, Department, SchoolClass, Subject, SchoolClass
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.school import School
 from app.models.user import User, UserRole
@@ -44,12 +45,8 @@ async def _validate_same_school(db: AsyncSession, model, item_id: int | None, sc
         raise HTTPException(status_code=404, detail=f'{field_name} not found for this school')
     return item
 
-async def _validate_section_belongs_to_class(db: AsyncSession, section_id: int | None, class_id: int | None, school_id: int):
-    if section_id is None:
-        return
-    section = await _validate_same_school(db, Section, section_id, school_id, 'Section')
-    if class_id is not None and section.class_id != class_id:
-        raise HTTPException(status_code=400, detail='Selected section does not belong to selected class')
+async def _resolve_section_name(db: AsyncSession, school_id: int, class_id: int | None, section_name: str | None, section_id: int | None, session_id: int | None = None) -> str | None:
+    return await validate_class_section_name(db, school_id, class_id, section_name=section_name, section_id=section_id, session_id=session_id)
 
 async def _commit_or_duplicate(db: AsyncSession, duplicate_message: str):
     try:
@@ -140,7 +137,10 @@ async def list_students(request: Request, search: str | None=Query(default=None)
         query = query.filter(or_(Student.first_name.ilike(like), Student.last_name.ilike(like), Student.admission_no.ilike(like), Student.roll_number.ilike(like), Student.email.ilike(like)))
     if class_id is not None:
         query = query.filter(Student.class_id == class_id)
-    if section_id is not None:
+    if section_id is not None and class_id is not None:
+        section_name = await _resolve_section_name(db, school_id, class_id, None, section_id, session_id)
+        query = query.filter(Student.section_name == section_name)
+    elif section_id is not None:
         query = query.filter(Student.section_id == section_id)
     if status_value:
         query = query.filter(Student.status == status_value.upper())
@@ -151,8 +151,7 @@ async def create_student(payload: StudentCreate, request: Request, current_user:
     school_id = current_user.school_id
     session_id = await writable_selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=payload.academic_session_id)
     await _validate_same_school(db, SchoolClass, payload.class_id, school_id, 'Class')
-    await _validate_same_school(db, Section, payload.section_id, school_id, 'Section')
-    await _validate_section_belongs_to_class(db, payload.section_id, payload.class_id, school_id)
+    resolved_section_name = await _resolve_section_name(db, school_id, payload.class_id, payload.section_name, payload.section_id, session_id)
     if payload.create_parent_login and (not payload.guardian):
         raise HTTPException(status_code=400, detail='Add parent/guardian details before creating a parent login')
     guardian = None
@@ -177,6 +176,8 @@ async def create_student(payload: StudentCreate, request: Request, current_user:
         user_id = user.id
     data = payload.model_dump(exclude={'guardian', 'create_login', 'password', 'create_parent_login', 'parent_password'})
     data['academic_session_id'] = session_id
+    data['section_id'] = None
+    data['section_name'] = resolved_section_name
     student = Student(school_id=school_id, guardian_id=guardian.id if guardian else None, user_id=user_id, **data)
     db.add(student)
     await _commit_or_duplicate(db, 'Student admission number already exists in this school')
@@ -218,11 +219,12 @@ async def update_student(student_id: int, payload: StudentUpdate, request: Reque
         values['academic_session_id'] = await writable_selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=values.get('academic_session_id'))
     class_id = values.get('class_id', student.class_id)
     section_id = values.get('section_id', student.section_id)
+    incoming_section_name = values.get('section_name', student.section_name)
     if 'class_id' in values:
         await _validate_same_school(db, SchoolClass, values.get('class_id'), school_id, 'Class')
-    if 'section_id' in values:
-        await _validate_same_school(db, Section, values.get('section_id'), school_id, 'Section')
-    await _validate_section_belongs_to_class(db, section_id, class_id, school_id)
+    if 'section_id' in values or 'section_name' in values or 'class_id' in values:
+        values['section_name'] = await _resolve_section_name(db, school_id, class_id, incoming_section_name, section_id, values.get('academic_session_id', student.academic_session_id))
+        values['section_id'] = None
     if 'admission_no' in values and student.user_id:
         await _ensure_login_id_available(db, school_id, values['admission_no'], exclude_user_id=student.user_id)
     for key, value in values.items():
@@ -333,30 +335,13 @@ async def create_teacher(payload: TeacherCreate, request: Request, current_user:
         await db.flush()
         user_id = user.id
     data = payload.model_dump(exclude={'create_login', 'password'})
-    data['academic_session_id'] = session_id  # fixed
-
-    existing_teacher = await async_query(db, Teacher).filter(
-        Teacher.school_id == school_id,
-        Teacher.employee_id == payload.employee_id,
-    ).first()
-    if existing_teacher:
-        raise HTTPException(status_code=409, detail='Teacher with this employee ID already exists')
-
-    if user_id:
-        existing_user_teacher = await async_query(db, Teacher).filter(
-            Teacher.school_id == school_id,
-            Teacher.user_id == user_id,
-        ).first()
-        if existing_user_teacher:
-            raise HTTPException(status_code=409, detail='A teacher profile already exists for this user')
-
-    teacher = Teacher(school_id=school_id, user_id=user_id, **data)  # once
+    data['academic_session_id'] = session_id
+    teacher = Teacher(school_id=school_id, user_id=user_id, **data)
     db.add(teacher)
     await _commit_or_duplicate(db, 'Teacher employee ID already exists in this school')
     await db.refresh(teacher)
     teacher.temporary_password = temporary_password
     return teacher
-
 
 @router.get('/teachers/class-teachers', response_model=list[ClassTeacherRead])
 async def list_class_teachers(request: Request, school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
@@ -373,11 +358,21 @@ async def assign_class_teacher(payload: ClassTeacherCreate, request: Request, cu
     teacher = await _get_or_404(db, Teacher, payload.teacher_id, school_id)
     await assert_item_session_is_writable(db, school_id, teacher)
     await _validate_same_school(db, SchoolClass, payload.class_id, school_id, 'Class')
-    await _validate_same_school(db, Section, payload.section_id, school_id, 'Section')
     await _validate_same_school(db, AcademicSession, session_id, school_id, 'Academic session')
-    await _validate_section_belongs_to_class(db, payload.section_id, payload.class_id, school_id)
+    resolved_section_name = await _resolve_section_name(db, school_id, payload.class_id, payload.section_name, payload.section_id, session_id)
+    section_filter = ClassTeacherAssignment.section_name.is_(None) if resolved_section_name is None else ClassTeacherAssignment.section_name == resolved_section_name
+    existing = await async_query(db, ClassTeacherAssignment).filter(
+        ClassTeacherAssignment.school_id == school_id,
+        ClassTeacherAssignment.class_id == payload.class_id,
+        ClassTeacherAssignment.academic_session_id == session_id,
+        section_filter,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail='This class already has a class teacher for the selected session')
     data = payload.model_dump()
     data['academic_session_id'] = session_id
+    data['section_id'] = None
+    data['section_name'] = resolved_section_name
     assignment = ClassTeacherAssignment(school_id=school_id, **data)
     db.add(assignment)
     await _commit_or_duplicate(db, 'This class already has a class teacher for the selected session')
@@ -409,11 +404,14 @@ async def get_my_classes(request: Request, current_user: User=Depends(get_curren
     teacher = await teacher_query.first()
     if not teacher:
         raise HTTPException(404, 'No teacher profile found for this user')
-    aq = async_query(db, TeacherSubject).options(joinedload(TeacherSubject.school_class), joinedload(TeacherSubject.section), joinedload(TeacherSubject.subject)).filter(TeacherSubject.teacher_id == teacher.id, TeacherSubject.school_id == school_id)
+    aq = async_query(db, TeacherSubject).options(joinedload(TeacherSubject.school_class), joinedload(TeacherSubject.subject)).filter(TeacherSubject.teacher_id == teacher.id, TeacherSubject.school_id == school_id)
     if session_id is not None:
         aq = aq.filter(TeacherSubject.academic_session_id == session_id)
-    assignments = await aq.order_by(TeacherSubject.class_id, TeacherSubject.section_id).all()
-    return [{'class_id': a.class_id, 'class_name': a.school_class.name if a.school_class else f'Class {a.class_id}', 'section_id': a.section_id, 'section_name': a.section.name if a.section else None, 'subject_id': a.subject_id, 'subject_name': a.subject.name if a.subject else f'Subject {a.subject_id}'} for a in assignments]
+    assignments = await aq.order_by(TeacherSubject.class_id, TeacherSubject.section_name).all()
+    rows = []
+    for a in assignments:
+        rows.append({'class_id': a.class_id, 'class_name': a.school_class.name if a.school_class else f'Class {a.class_id}', 'section_id': await virtual_section_id_for_name(db, school_id, a.class_id, a.section_name, session_id), 'section_name': a.section_name, 'subject_id': a.subject_id, 'subject_name': a.subject.name if a.subject else f'Subject {a.subject_id}'})
+    return rows
 
 @router.get('/teachers/me/available-classes', response_model=list[AvailableClassOut])
 async def get_teacher_available_classes(request: Request, current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
@@ -427,8 +425,8 @@ async def get_teacher_available_classes(request: Request, current_user: User=Dep
     teacher = result.scalar_one_or_none()
     if not teacher:
         return []
-    subject_classes = select(TeacherSubject.class_id, TeacherSubject.section_id).where(TeacherSubject.teacher_id == teacher.id, TeacherSubject.school_id == current_user.school_id)
-    class_teacher_classes = select(ClassTeacherAssignment.class_id, ClassTeacherAssignment.section_id).where(ClassTeacherAssignment.teacher_id == teacher.id, ClassTeacherAssignment.school_id == current_user.school_id)
+    subject_classes = select(TeacherSubject.class_id, TeacherSubject.section_id, TeacherSubject.section_name).where(TeacherSubject.teacher_id == teacher.id, TeacherSubject.school_id == current_user.school_id)
+    class_teacher_classes = select(ClassTeacherAssignment.class_id, ClassTeacherAssignment.section_id, ClassTeacherAssignment.section_name).where(ClassTeacherAssignment.teacher_id == teacher.id, ClassTeacherAssignment.school_id == current_user.school_id)
     if session_id is not None:
         subject_classes = subject_classes.where(TeacherSubject.academic_session_id == session_id)
         class_teacher_classes = class_teacher_classes.where(ClassTeacherAssignment.academic_session_id == session_id)
@@ -438,14 +436,12 @@ async def get_teacher_available_classes(request: Request, current_user: User=Dep
     if not pairs:
         return []
     class_ids = {p.class_id for p in pairs}
-    section_ids = {p.section_id for p in pairs if p.section_id is not None}
     classes_result = await db.execute(select(SchoolClass).where(SchoolClass.id.in_(class_ids)))
     classes_map = {c.id: c.name for c in classes_result.scalars().all()}
-    sections_map = {}
-    if section_ids:
-        sections_result = await db.execute(select(Section).where(Section.id.in_(section_ids)))
-        sections_map = {s.id: s.name for s in sections_result.scalars().all()}
-    return [AvailableClassOut(class_id=p.class_id, class_name=classes_map.get(p.class_id, f'Class {p.class_id}'), section_id=p.section_id, section_name=sections_map.get(p.section_id) if p.section_id else None) for p in sorted(pairs, key=lambda x: (x.class_id, x.section_id or 0))]
+    rows = []
+    for p in sorted(pairs, key=lambda x: (x.class_id, x.section_name or '')):
+        rows.append(AvailableClassOut(class_id=p.class_id, class_name=classes_map.get(p.class_id, f'Class {p.class_id}'), section_id=await virtual_section_id_for_name(db, current_user.school_id, p.class_id, p.section_name, session_id), section_name=p.section_name))
+    return rows
 
 @router.get('/teachers/{teacher_id}', response_model=TeacherRead)
 async def get_teacher(teacher_id: int, school_id: int=Depends(current_school_id), db: AsyncSession=Depends(get_async_db)):
@@ -536,12 +532,24 @@ async def assign_teacher_subject(teacher_id: int, payload: TeacherSubjectCreate,
     await assert_item_session_is_writable(db, school_id, teacher)
     subject = await _validate_same_school(db, Subject, payload.subject_id, school_id, 'Subject')
     await _validate_same_school(db, SchoolClass, payload.class_id, school_id, 'Class')
-    await _validate_same_school(db, Section, payload.section_id, school_id, 'Section')
-    await _validate_section_belongs_to_class(db, payload.section_id, payload.class_id, school_id)
+    resolved_section_name = await _resolve_section_name(db, school_id, payload.class_id, payload.section_name, payload.section_id, session_id)
     if subject and subject.class_id != payload.class_id:
         raise HTTPException(status_code=400, detail='Selected subject does not belong to selected class')
+    section_filter = TeacherSubject.section_name.is_(None) if resolved_section_name is None else TeacherSubject.section_name == resolved_section_name
+    existing = await async_query(db, TeacherSubject).filter(
+        TeacherSubject.school_id == school_id,
+        TeacherSubject.teacher_id == teacher_id,
+        TeacherSubject.subject_id == payload.subject_id,
+        TeacherSubject.class_id == payload.class_id,
+        TeacherSubject.academic_session_id == session_id,
+        section_filter,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail='This teacher-subject assignment already exists')
     data = payload.model_dump()
     data['academic_session_id'] = session_id
+    data['section_id'] = None
+    data['section_name'] = resolved_section_name
     assignment = TeacherSubject(school_id=school_id, teacher_id=teacher_id, **data)
     db.add(assignment)
     await _commit_or_duplicate(db, 'This teacher-subject assignment already exists')

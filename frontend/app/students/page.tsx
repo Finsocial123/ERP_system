@@ -102,6 +102,12 @@ export default function StudentsPage() {
   const classNameById = useMemo(() => new Map(classes.map((item) => [item.id, item.name])), [classes]);
   const sectionNameById = useMemo(() => new Map(sections.map((item) => [item.id, item.name])), [sections]);
   const formSections = useMemo(() => sections.filter((item) => !form.class_id || item.class_id === Number(form.class_id)), [sections, form.class_id]);
+  const sectionIdForName = (classId?: number | null, sectionName?: string | null) => {
+    if (!classId || !sectionName) return null;
+    const match = sections.find((item) => item.class_id === classId && item.name.trim().toLowerCase() === sectionName.trim().toLowerCase());
+    return match?.id ?? null;
+  };
+  const studentSectionLabel = (student: Student) => student.section_name || (student.section_id ? sectionNameById.get(student.section_id) : "") || "";
 
   useEffect(() => {
     if (!toast) return;
@@ -238,7 +244,7 @@ export default function StudentsPage() {
       address: student.address ?? "",
       admission_date: student.admission_date ?? "",
       class_id: student.class_id ? String(student.class_id) : "",
-      section_id: student.section_id ? String(student.section_id) : "",
+      section_id: student.section_name ? String(sectionIdForName(student.class_id, student.section_name) ?? "") : student.section_id ? String(student.section_id) : "",
       guardian_full_name: student.guardian?.full_name ?? "",
       guardian_relation: student.guardian?.relation ?? "",
       guardian_email: student.guardian?.email ?? "",
@@ -397,7 +403,7 @@ export default function StudentsPage() {
                 <tr key={student.id} className="hover:bg-slate-50">
                   <td className="px-4 py-3 font-medium text-slate-900">{student.first_name} {student.last_name}<p className="text-xs font-normal text-slate-500">{student.email || student.phone || "-"}</p></td>
                   <td className="px-4 py-3 text-slate-600">{student.admission_no}{student.roll_number ? ` / Roll ${student.roll_number}` : ""}</td>
-                  <td className="px-4 py-3 text-slate-600">{student.class_id ? classNameById.get(student.class_id) : "-"} {student.section_id ? `- ${sectionNameById.get(student.section_id)}` : ""}</td>
+                  <td className="px-4 py-3 text-slate-600">{student.class_id ? classNameById.get(student.class_id) : "-"} {studentSectionLabel(student) ? `- ${studentSectionLabel(student)}` : ""}</td>
                   <td className="px-4 py-3 text-slate-600">
                     {student.guardian?.full_name || "-"}
                     {student.guardian?.user_id && <p className="text-xs text-green-700">Parent login created</p>}

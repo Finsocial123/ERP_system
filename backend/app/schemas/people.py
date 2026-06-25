@@ -54,6 +54,7 @@ class StudentCreate(BaseModel):
     admission_date: date | None = None
     class_id: int | None = None
     section_id: int | None = None
+    section_name: str | None = Field(default=None, max_length=80)
     guardian: ParentGuardianCreate | None = None
 
 
@@ -75,6 +76,7 @@ class StudentUpdate(BaseModel):
     admission_date: date | None = None
     class_id: int | None = None
     section_id: int | None = None
+    section_name: str | None = Field(default=None, max_length=80)
     status: str | None = Field(default=None, max_length=30)
     is_active: bool | None = None
     guardian: ParentGuardianUpdate | None = None
@@ -97,6 +99,7 @@ class StudentRead(BaseModel):
     admission_date: date | None = None
     class_id: int | None = None
     section_id: int | None = None
+    section_name: str | None = None
     guardian: ParentGuardianRead | None = None
     status: str
     is_active: bool
@@ -169,6 +172,7 @@ class TeacherSubjectCreate(BaseModel):
     subject_id: int
     class_id: int
     section_id: int | None = None
+    section_name: str | None = Field(default=None, max_length=80)
 
 
 class TeacherSubjectRead(BaseModel):
@@ -178,6 +182,7 @@ class TeacherSubjectRead(BaseModel):
     subject_id: int
     class_id: int | None = None
     section_id: int | None = None
+    section_name: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -186,6 +191,7 @@ class ClassTeacherCreate(BaseModel):
     teacher_id: int
     class_id: int
     section_id: int | None = None
+    section_name: str | None = Field(default=None, max_length=80)
     academic_session_id: int | None = None
 
 
@@ -194,6 +200,7 @@ class ClassTeacherRead(BaseModel):
     teacher_id: int
     class_id: int
     section_id: int | None = None
+    section_name: str | None = None
     academic_session_id: int | None = None
 
     model_config = {"from_attributes": True}

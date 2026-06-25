@@ -15,6 +15,7 @@ class Course(Base):
     school_id = Column(Integer, ForeignKey("schools.id", ondelete="CASCADE"), nullable=True, index=True)
     class_id = Column(Integer, ForeignKey("school_classes.id", ondelete="SET NULL"), nullable=True, index=True)
     section_id = Column(Integer, ForeignKey("sections.id", ondelete="SET NULL"), nullable=True, index=True)
+    section_name = Column(String(80), nullable=True, index=True)
     subject_id = Column(Integer, ForeignKey("subjects.id", ondelete="SET NULL"), nullable=True, index=True)
     academic_session_id = Column(Integer, ForeignKey("academic_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
 
@@ -31,7 +32,6 @@ class Course(Base):
 
     school = relationship("School")
     school_class = relationship("SchoolClass")
-    section = relationship("Section")
     subject = relationship("Subject")
     academic_session = relationship("AcademicSession")
     teacher = relationship("User", backref="courses")

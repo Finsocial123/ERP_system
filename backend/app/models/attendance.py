@@ -29,6 +29,7 @@ class StudentAttendance(Base):
     student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), index=True)
     class_id: Mapped[int] = mapped_column(ForeignKey("school_classes.id", ondelete="CASCADE"), index=True)
     section_id: Mapped[int | None] = mapped_column(ForeignKey("sections.id", ondelete="SET NULL"), nullable=True, index=True)
+    section_name: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     marked_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
@@ -40,6 +41,5 @@ class StudentAttendance(Base):
 
     student = relationship("Student")
     school_class = relationship("SchoolClass")
-    section = relationship("Section")
     session = relationship("AcademicSession")
     marker = relationship("User")

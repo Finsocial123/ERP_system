@@ -14,6 +14,7 @@ class Exam(Base):
     academic_session_id: Mapped[int | None] = mapped_column(ForeignKey("academic_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     class_id: Mapped[int] = mapped_column(ForeignKey("school_classes.id", ondelete="CASCADE"), index=True)
     section_id: Mapped[int | None] = mapped_column(ForeignKey("sections.id", ondelete="SET NULL"), nullable=True, index=True)
+    section_name: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
 
     name: Mapped[str] = mapped_column(String(180), nullable=False, index=True)
     exam_type: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
@@ -28,7 +29,6 @@ class Exam(Base):
 
     academic_session = relationship("AcademicSession")
     school_class = relationship("SchoolClass")
-    section = relationship("Section")
     subjects = relationship("ExamSubject", back_populates="exam", cascade="all, delete-orphan")
 
 

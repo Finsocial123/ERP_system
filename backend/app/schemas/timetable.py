@@ -100,6 +100,7 @@ class TimetableDayRead(TimetableDayBase):
 class TimetableEntryBase(BaseModel):
     class_id: int
     section_id: int | None = None
+    section_name: str | None = None
     day_id: int
     period_id: int
     subject_id: int | None = None
@@ -117,6 +118,7 @@ class TimetableEntryCreate(TimetableEntryBase):
 class TimetableEntryUpdate(BaseModel):
     class_id: int | None = None
     section_id: int | None = None
+    section_name: str | None = None
     day_id: int | None = None
     period_id: int | None = None
     subject_id: int | None = None

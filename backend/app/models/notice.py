@@ -109,5 +109,6 @@ class NoticeClassAudience(Base):
     section_id: Mapped[int | None] = mapped_column(
         ForeignKey("sections.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    section_name: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
 
     notice = relationship("Notice", back_populates="class_audiences")

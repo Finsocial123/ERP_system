@@ -18,6 +18,7 @@ class MeetingListItemOut(BaseModel):
     status: MeetingStatus  
     class_id: int | None
     section_id: int | None
+    section_name: str | None = None
     teacher_id: int | None
     created_by_user_id: int | None = None
     created_by: CreatedByOut | None 
@@ -51,6 +52,7 @@ class TeacherClassOut(BaseModel):
 class TeacherMeetingCreate(BaseModel):
     class_id: int
     section_id: int | None = None
+    section_name: str | None = None
     title: str
 
 
@@ -69,6 +71,7 @@ class MeetingCreateOut(BaseModel):
 class TeacherMeetingSchedule(BaseModel):
     class_id: int
     section_id: int | None = None
+    section_name: str | None = None
     title: str 
     scheduled_at: datetime
 

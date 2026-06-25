@@ -53,6 +53,7 @@ class FeeAssignment(Base):
     academic_session_id: Mapped[int | None] = mapped_column(ForeignKey("academic_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     class_id: Mapped[int | None] = mapped_column(ForeignKey("school_classes.id", ondelete="SET NULL"), nullable=True, index=True)
     section_id: Mapped[int | None] = mapped_column(ForeignKey("sections.id", ondelete="SET NULL"), nullable=True, index=True)
+    section_name: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     student_id: Mapped[int | None] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), nullable=True, index=True)
 
     assigned_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -66,7 +67,6 @@ class FeeAssignment(Base):
     fee_structure = relationship("FeeStructure", back_populates="assignments")
     academic_session = relationship("AcademicSession")
     school_class = relationship("SchoolClass")
-    section = relationship("Section")
     student = relationship("Student")
     records = relationship("StudentFeeRecord", back_populates="assignment")
 

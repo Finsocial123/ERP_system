@@ -13,6 +13,7 @@ class BulkAttendanceCreate(BaseModel):
     session_id: int
     class_id: int
     section_id: int | None = None
+    section_name: str | None = None
     date: date
     entries: list[AttendanceEntry]
 

@@ -9,6 +9,7 @@ class CourseCreate(BaseModel):
     description: Optional[str] = None
     class_id: int
     section_id: Optional[int] = None
+    section_name: Optional[str] = None
     subject_id: Optional[int] = None
     teacher_id: Optional[int] = None
     status: str = "PUBLISHED"
@@ -19,6 +20,7 @@ class CourseUpdate(BaseModel):
     description: Optional[str] = None
     class_id: Optional[int] = None
     section_id: Optional[int] = None
+    section_name: Optional[str] = None
     subject_id: Optional[int] = None
     teacher_id: Optional[int] = None
     status: Optional[str] = None
@@ -46,12 +48,12 @@ class CourseOut(BaseModel):
     school_id: Optional[int] = None
     class_id: Optional[int] = None
     section_id: Optional[int] = None
+    section_name: Optional[str] = None
     subject_id: Optional[int] = None
     academic_session_id: Optional[int] = None
     teacher_id: int
     teacher_name: Optional[str] = None
     class_name: Optional[str] = None
-    section_name: Optional[str] = None
     subject_name: Optional[str] = None
     academic_session_name: Optional[str] = None
     status: str = "PUBLISHED"

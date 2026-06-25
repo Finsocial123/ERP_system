@@ -38,6 +38,7 @@ class Student(Base):
     guardian_id: Mapped[int | None] = mapped_column(ForeignKey("parent_guardians.id", ondelete="SET NULL"), nullable=True)
     class_id: Mapped[int | None] = mapped_column(ForeignKey("school_classes.id", ondelete="SET NULL"), nullable=True, index=True)
     section_id: Mapped[int | None] = mapped_column(ForeignKey("sections.id", ondelete="SET NULL"), nullable=True, index=True)
+    section_name: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
 
     admission_no: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     roll_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -59,7 +60,6 @@ class Student(Base):
     academic_session = relationship("AcademicSession")
     guardian = relationship("ParentGuardian", back_populates="students")
     school_class = relationship("SchoolClass")
-    section = relationship("Section")
     user = relationship("User")
 
 
@@ -108,13 +108,13 @@ class TeacherSubject(Base):
     subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id", ondelete="CASCADE"), index=True)
     class_id: Mapped[int | None] = mapped_column(ForeignKey("school_classes.id", ondelete="SET NULL"), nullable=True, index=True)
     section_id: Mapped[int | None] = mapped_column(ForeignKey("sections.id", ondelete="SET NULL"), nullable=True, index=True)
+    section_name: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     academic_session = relationship("AcademicSession")
     teacher = relationship("Teacher", back_populates="subject_assignments")
     subject = relationship("Subject")
     school_class = relationship("SchoolClass")
-    section = relationship("Section")
 
 
 class ClassTeacherAssignment(Base):
@@ -128,10 +128,10 @@ class ClassTeacherAssignment(Base):
     teacher_id: Mapped[int] = mapped_column(ForeignKey("teachers.id", ondelete="CASCADE"), index=True)
     class_id: Mapped[int] = mapped_column(ForeignKey("school_classes.id", ondelete="CASCADE"), index=True)
     section_id: Mapped[int | None] = mapped_column(ForeignKey("sections.id", ondelete="SET NULL"), nullable=True, index=True)
+    section_name: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     academic_session_id: Mapped[int | None] = mapped_column(ForeignKey("academic_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     teacher = relationship("Teacher", back_populates="class_teacher_assignments")
     school_class = relationship("SchoolClass")
-    section = relationship("Section")
     academic_session = relationship("AcademicSession")

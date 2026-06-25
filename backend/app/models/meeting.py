@@ -43,6 +43,7 @@ class Meeting(Base):
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     class_id: Mapped[int | None] = mapped_column(ForeignKey("school_classes.id", ondelete="SET NULL"), nullable=True, index=True)
     section_id: Mapped[int | None] = mapped_column(ForeignKey("sections.id", ondelete="SET NULL"), nullable=True)
+    section_name: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     teacher_id: Mapped[int | None] = mapped_column(ForeignKey("teachers.id", ondelete="SET NULL"), nullable=True, index=True)
     record: Mapped[bool] = mapped_column(Boolean, default=True)
     recording_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -53,6 +54,5 @@ class Meeting(Base):
 )
 
     school_class = relationship("SchoolClass")
-    section = relationship("Section")
     teacher = relationship("Teacher")
     created_by = relationship("User")

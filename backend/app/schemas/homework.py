@@ -31,11 +31,11 @@ class HomeworkAssignmentRead(BaseModel):
     due_date: date
     class_id: int
     section_id: int | None = None
+    section_name: str | None = None
     subject_id: int | None = None
     teacher_id: int | None = None
     academic_session_id: int | None = None
     class_name: str | None = None
-    section_name: str | None = None
     subject_name: str | None = None
     teacher_name: str | None = None
     attachment_url: str | None = None

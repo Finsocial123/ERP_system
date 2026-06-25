@@ -4,7 +4,7 @@ from app.dependencies.auth import current_school_id, get_current_user, require_r
 from app.models.course import Course
 from app.models.enrollment import Enrollment
 from app.models.user import User, UserRole
-from app.services.lms_access import ensure_enrollment_for_user_student, get_course_or_404, student_for_user
+from app.services.lms_access import course_matches_student, ensure_enrollment_for_user_student, get_course_or_404, student_for_user
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
 router = APIRouter(prefix='/enrollments', tags=['LMS Enrollments'])
@@ -35,7 +35,7 @@ async def get_my_enrollments(school_id: int=Depends(current_school_id), current_
     courses = await async_query(db, Course).filter(Course.school_id == school_id, Course.is_active.is_(True), Course.status == 'PUBLISHED', Course.class_id == student.class_id).all()
     rows = []
     for course in courses:
-        if course.section_id is not None and course.section_id != student.section_id:
+        if not course_matches_student(course, student):
             continue
         enrollment = await ensure_enrollment_for_user_student(db, school_id, current_user, course)
         rows.append({'enrollment_id': enrollment.id, 'course_id': course.id, 'course_title': course.title, 'teacher_name': course.teacher.full_name if course.teacher else None, 'progress': enrollment.progress, 'enrolled_at': enrollment.enrolled_at})

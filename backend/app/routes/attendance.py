@@ -3,13 +3,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from app.core.database import get_async_db
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
 from app.dependencies.academic_session import selected_academic_session, require_writable_academic_session, writable_selected_academic_session, assert_item_session_is_writable
-from app.models.academic import AcademicSession, SchoolClass, Section
+from app.models.academic import AcademicSession, SchoolClass
 from app.models.attendance import AttendanceStatus, StudentAttendance
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher
 from app.models.user import User, UserRole
 from app.schemas.attendance import AttendanceRead, AttendanceUpdate, BulkAttendanceCreate, DayAttendanceRecord, StudentAttendanceSummary
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
+from app.core.sections import validate_class_section_name
 from app.services.notification_service import format_date, notify_student_record
 router = APIRouter(prefix='/attendance', tags=['Phase 4 - Attendance'], dependencies=[Depends(require_writable_academic_session)])
 ADMIN_ROLES = [UserRole.SCHOOL_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SUPER_ADMIN]
@@ -89,10 +90,7 @@ async def bulk_mark_attendance(payload: BulkAttendanceCreate, request: Request, 
     await _validate_session(db, session.id if session else payload.session_id, school_id)
     await _validate_class(db, payload.class_id, school_id)
     await _assert_teacher_can_access_class(db, school_id, current_user, payload.class_id, session.id if session else payload.session_id)
-    if payload.section_id:
-        sec = await async_query(db, Section).filter(Section.id == payload.section_id, Section.school_id == school_id).first()
-        if not sec:
-            raise HTTPException(status_code=404, detail='Section not found')
+    resolved_section_name = await validate_class_section_name(db, school_id, payload.class_id, section_name=payload.section_name, section_id=payload.section_id, session_id=session.id if session else payload.session_id)
     student_ids = [e.student_id for e in payload.entries]
     students = await async_query(db, Student).filter(Student.id.in_(student_ids), Student.school_id == school_id, Student.academic_session_id == payload.session_id).all()
     found_ids = {s.id for s in students}
@@ -113,7 +111,7 @@ async def bulk_mark_attendance(payload: BulkAttendanceCreate, request: Request, 
             if entry.status != AttendanceStatus.PRESENT.value and previous_status != entry.status and entry.student_id in students_by_id:
                 attendance_notifications.append((students_by_id[entry.student_id], entry.status))
         else:
-            record = StudentAttendance(school_id=school_id, session_id=payload.session_id, student_id=entry.student_id, class_id=payload.class_id, section_id=payload.section_id, date=payload.date, status=entry.status, note=entry.note, marked_by=current_user.id)
+            record = StudentAttendance(school_id=school_id, session_id=payload.session_id, student_id=entry.student_id, class_id=payload.class_id, section_id=None, section_name=resolved_section_name, date=payload.date, status=entry.status, note=entry.note, marked_by=current_user.id)
             db.add(record)
             results.append(record)
             if entry.status != AttendanceStatus.PRESENT.value and entry.student_id in students_by_id:
@@ -144,7 +142,8 @@ async def get_attendance_sheet(request: Request, session_id: int=Query(...), cla
     await _assert_teacher_can_access_class(db, school_id, current_user, class_id, session.id if session else session_id)
     q = async_query(db, Student).filter(Student.school_id == school_id, Student.class_id == class_id, Student.is_active.is_(True), Student.academic_session_id == session_id)
     if section_id:
-        q = q.filter(Student.section_id == section_id)
+        section_name = await validate_class_section_name(db, school_id, class_id, section_id=section_id, session_id=session.id if session else session_id)
+        q = q.filter(Student.section_name == section_name)
     students = await q.order_by(Student.roll_number, Student.first_name).all()
     existing = {a.student_id: a for a in await async_query(db, StudentAttendance).filter(StudentAttendance.school_id == school_id, StudentAttendance.class_id == class_id, StudentAttendance.date == date, StudentAttendance.session_id == session_id).all()}
     return [DayAttendanceRecord(student_id=s.id, student_name=_student_full_name(s), admission_no=s.admission_no, roll_number=s.roll_number, status=existing[s.id].status if s.id in existing else None, note=existing[s.id].note if s.id in existing else None, attendance_id=existing[s.id].id if s.id in existing else None) for s in students]
@@ -190,7 +189,8 @@ async def attendance_summary(request: Request, session_id: int=Query(...), class
     await _assert_teacher_can_access_class(db, school_id, current_user, class_id, session.id if session else session_id)
     q = async_query(db, Student).filter(Student.school_id == school_id, Student.class_id == class_id, Student.is_active.is_(True), Student.academic_session_id == session_id)
     if section_id:
-        q = q.filter(Student.section_id == section_id)
+        section_name = await validate_class_section_name(db, school_id, class_id, section_id=section_id, session_id=session.id if session else session_id)
+        q = q.filter(Student.section_name == section_name)
     students = await q.order_by(Student.first_name).all()
     student_ids = [s.id for s in students]
     if not student_ids:
@@ -217,7 +217,8 @@ async def attendance_by_date(request: Request, session_id: int=Query(...), class
     await _assert_teacher_can_access_class(db, school_id, current_user, class_id, session.id if session else session_id)
     q = async_query(db, StudentAttendance).filter(StudentAttendance.school_id == school_id, StudentAttendance.class_id == class_id, StudentAttendance.date == date, StudentAttendance.session_id == session_id)
     if section_id:
-        q = q.filter(StudentAttendance.section_id == section_id)
+        section_name = await validate_class_section_name(db, school_id, class_id, section_id=section_id, session_id=session.id if session else session_id)
+        q = q.filter(StudentAttendance.section_name == section_name)
     return await q.all()
 
 @router.get('/my', response_model=list[AttendanceRead])

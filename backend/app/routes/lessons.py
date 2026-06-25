@@ -40,6 +40,8 @@ from app.services.tools.summarizer import generate_and_save_summary
 from app.services.ai_cache import ai_cache, compute_content_hash
 from app.core.async_query import async_query
 from app.services.notification_service import notify_student_scope
+from app.models.user import UserRole
+
 
 import asyncio
 from functools import partial
@@ -468,6 +470,7 @@ async def get_lesson_summary(
     school_id: int = Depends(current_school_id),   # FIX: was missing — caused school_id=0 in cache key
     db: Annotated[AsyncSession, Depends(get_async_db)] = None,
     session_factory: Annotated[async_sessionmaker, Depends(get_session_factory)] = None,
+    current_user: User = Depends(require_roles(UserRole.STUDENT.value)),
 ):
     result = await db.execute(select(Lesson).where(Lesson.id == lesson_id))
     lesson = result.scalars().first()
@@ -499,9 +502,12 @@ async def generate_lesson_quiz(
     lesson_id: int,
     request: QuizRequest,
     school_id: int = Depends(current_school_id),
-    db: Annotated[AsyncSession, Depends(get_async_db)] = None,
+    db: AsyncSession = Depends(get_async_db),
 ):
-    result = await db.execute(select(Course).where(course_id == Course.id))
+    # result = await db.execute(select(Course).where(course_id == Course.id))
+    result = await db.execute(
+        select(Course).where(Course.id == course_id, Course.school_id == school_id)
+    )
     course = result.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail='Course not found')
@@ -532,3 +538,81 @@ async def generate_lesson_quiz(
         raise HTTPException(status_code=500, detail=str(e))
 
     return quiz
+
+
+
+
+
+
+
+
+
+
+# quiz endpoint to test the subscriptoin features
+
+
+# @router.post("/api/course/{course_id}/lessons/{lesson_id}/quiz")
+# async def generate_lesson_quiz(
+#     course_id    : int,
+#     lesson_id    : int,
+#     request      : QuizRequest,
+#     school_id    : int          = Depends(current_school_id),
+#     current_user : User         = Depends(require_roles(UserRole.STUDENT.value)),
+#     quota        : QuotaContext = Depends(require_quiz_quota),
+#     db           : AsyncSession = Depends(get_async_db),
+# ):
+#     # scope to school
+#     course = (await db.execute(
+#         select(Course).where(Course.id == course_id, Course.school_id == school_id)
+#     )).scalars().first()
+#     if not course:
+#         raise HTTPException(status_code=404, detail='Course not found')
+
+#     lesson = (await db.execute(
+#         select(Lesson).where(
+#             Lesson.id == lesson_id,
+#             Lesson.course_id == course_id,
+#         )
+#     )).scalars().first()
+#     if not lesson:
+#         raise HTTPException(status_code=404, detail='Lesson not found in this course')
+
+#     chunk_check = (await db.execute(
+#         select(LessonChunk).where(LessonChunk.lesson_id == lesson_id).limit(1)
+#     )).scalars().first()
+#     if not chunk_check:
+#         raise HTTPException(status_code=422, detail='No content found for this lesson.')
+
+#     # consume 1 generation upfront
+#     await consume(db, current_user.id, quota.subscription, FeatureKey.quiz_generation, amount=1)
+
+#     try:
+#         quiz, prompt_tokens, completion_tokens = await generate_quiz(
+#             lesson_id=lesson_id,
+#             num_questions=request.num_questions,
+#             difficulty=request.difficulty,
+#             db=db,
+#             include_answers=True,
+#             school_id=school_id,
+#         )
+#     except json.JSONDecodeError:
+#         await refund(db, current_user.id, quota.subscription, FeatureKey.quiz_generation, amount=1)
+#         raise HTTPException(status_code=500, detail='Failed to parse quiz response')
+#     except Exception as e:
+#         await refund(db, current_user.id, quota.subscription, FeatureKey.quiz_generation, amount=1)
+#         raise HTTPException(status_code=500, detail=str(e))
+
+#     # log in background only if real LLM call was made
+#     if prompt_tokens > 0 or completion_tokens > 0:
+#         asyncio.create_task(log_ai_call(
+#             db=db,
+#             user_id=current_user.id,
+#             school_id=school_id,
+#             feature_key=FeatureKey.quiz_generation,
+#             prompt_tokens=prompt_tokens,
+#             completion_tokens=completion_tokens,
+#             model="anthropic/claude-sonnet-4-5",
+#             cache_hit=False,
+#         ))
+
+#     return quiz

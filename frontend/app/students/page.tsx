@@ -169,7 +169,10 @@ export default function StudentsPage() {
         }
       : null;
 
-    return {
+    const payload: Record<string, unknown> & {
+      guardian: (Record<string, unknown> & { email?: string | null }) | null;
+      email?: string | null;
+    } = {
       admission_no: form.admission_no.trim(),
       roll_number: toNullable(form.roll_number),
       first_name: form.first_name.trim(),
@@ -190,6 +193,15 @@ export default function StudentsPage() {
       create_parent_login: form.create_parent_login,
       parent_password: form.create_parent_login && form.parent_password ? form.parent_password : null,
     };
+
+    if (editing?.user_id) {
+      delete payload.email;
+    }
+    if (editing?.guardian?.user_id && payload.guardian) {
+      delete payload.guardian.email;
+    }
+
+    return payload;
   };
 
   const save = async (event: React.FormEvent) => {
@@ -339,7 +351,17 @@ export default function StudentsPage() {
           <div><Label>First Name *</Label><Input value={form.first_name} onChange={(e) => setField("first_name", e.target.value)} required /></div>
           <div><Label>Last Name</Label><Input value={form.last_name} onChange={(e) => setField("last_name", e.target.value)} /></div>
           <div><Label>Section</Label><select className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" value={form.section_id} onChange={(e) => setField("section_id", e.target.value)}><option value="">Select section</option>{formSections.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
-          <div><Label>Email</Label><Input type="email" value={form.email} onChange={(e) => setField("email", e.target.value)} /></div>
+          <div>
+            <Label>Email</Label>
+            <Input
+              type="email"
+              value={form.email}
+              disabled={Boolean(editing?.user_id)}
+              className={editing?.user_id ? "bg-slate-100 text-slate-500" : ""}
+              onChange={(e) => setField("email", e.target.value)}
+            />
+            {editing?.user_id && <p className="mt-1 text-xs text-slate-500">Email is locked because this student has a login account.</p>}
+          </div>
           <div><Label>Phone</Label><Input value={form.phone} onChange={(e) => setField("phone", e.target.value)} /></div>
           <div><Label>Gender</Label><select className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" value={form.gender} onChange={(e) => setField("gender", e.target.value)}><option value="">Select gender</option><option>Male</option><option>Female</option><option>Other</option></select></div>
           <div><Label>Date of Birth</Label><Input type="date" value={form.date_of_birth} onChange={(e) => setField("date_of_birth", e.target.value)} /></div>
@@ -352,7 +374,17 @@ export default function StudentsPage() {
           <div><Label>Guardian Name</Label><Input value={form.guardian_full_name} onChange={(e) => setField("guardian_full_name", e.target.value)} /></div>
           <div><Label>Relation</Label><Input value={form.guardian_relation} onChange={(e) => setField("guardian_relation", e.target.value)} placeholder="Father / Mother / Guardian" /></div>
           <div><Label>Guardian Phone</Label><Input value={form.guardian_phone} onChange={(e) => setField("guardian_phone", e.target.value)} /></div>
-          <div><Label>Guardian Email</Label><Input type="email" value={form.guardian_email} onChange={(e) => setField("guardian_email", e.target.value)} /></div>
+          <div>
+            <Label>Guardian Email</Label>
+            <Input
+              type="email"
+              value={form.guardian_email}
+              disabled={Boolean(editing?.guardian?.user_id)}
+              className={editing?.guardian?.user_id ? "bg-slate-100 text-slate-500" : ""}
+              onChange={(e) => setField("guardian_email", e.target.value)}
+            />
+            {editing?.guardian?.user_id && <p className="mt-1 text-xs text-slate-500">Guardian email is locked because the parent login already exists.</p>}
+          </div>
           <div><Label>Occupation</Label><Input value={form.guardian_occupation} onChange={(e) => setField("guardian_occupation", e.target.value)} /></div>
           <div><Label>Guardian Address</Label><Input value={form.guardian_address} onChange={(e) => setField("guardian_address", e.target.value)} /></div>
 

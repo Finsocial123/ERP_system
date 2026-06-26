@@ -72,6 +72,32 @@ async def _ensure_login_id_available(db: AsyncSession, school_id: int, login_id:
         raise HTTPException(status_code=409, detail='A user with this login ID already exists in this school')
     return normalized
 
+
+def _normalized_email(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = str(value).strip().lower()
+    return cleaned or None
+
+
+def _lock_email_if_login_exists(values: dict, current_email: str | None, label: str) -> None:
+    """Prevent admin edits from changing a linked portal user's email.
+
+    Student, teacher and parent login accounts use their linked User row for
+    authentication and password reset. Once a login exists, changing the
+    profile/guardian email from the admin edit form can silently desync the
+    displayed email from the real login email. Keep the email immutable for
+    linked accounts and remove unchanged email values from the update payload so
+    the User.email column is never rewritten during admin profile edits.
+    """
+    if 'email' not in values:
+        return
+    incoming_email = _normalized_email(values.get('email'))
+    existing_email = _normalized_email(current_email)
+    if incoming_email != existing_email:
+        raise HTTPException(status_code=400, detail=f'{label} email cannot be changed after login account is created')
+    values.pop('email', None)
+
 def _parent_login_candidates(guardian: ParentGuardian, fallback_seed: str) -> list[str]:
     """Build safe parent login candidates.
 
@@ -215,6 +241,8 @@ async def update_student(student_id: int, payload: StudentUpdate, request: Reque
     student = await _get_or_404(db, Student, student_id, school_id)
     await assert_item_session_is_writable(db, school_id, student)
     values = payload.model_dump(exclude_unset=True, exclude={'guardian', 'create_parent_login', 'parent_password'})
+    if student.user_id:
+        _lock_email_if_login_exists(values, student.email, 'Student')
     if 'academic_session_id' in values:
         values['academic_session_id'] = await writable_selected_academic_session_id(db, school_id, request=request, current_user=current_user, explicit_session_id=values.get('academic_session_id'))
     class_id = values.get('class_id', student.class_id)
@@ -234,6 +262,8 @@ async def update_student(student_id: int, payload: StudentUpdate, request: Reque
     if payload.guardian is not None:
         guardian_values = payload.guardian.model_dump(exclude_unset=True)
         if student.guardian:
+            if student.guardian.user_id:
+                _lock_email_if_login_exists(guardian_values, student.guardian.email, 'Parent')
             for key, value in guardian_values.items():
                 setattr(student.guardian, key, value)
         elif guardian_values.get('full_name'):
@@ -251,8 +281,6 @@ async def update_student(student_id: int, payload: StudentUpdate, request: Reque
             user.full_name = f"{student.first_name} {student.last_name or ''}".strip()
             user.phone = student.phone
             user.login_id = normalize_login_id(student.admission_no)
-            if student.email:
-                user.email = str(student.email).lower()
             user.is_active = student.is_active
     await _commit_or_duplicate(db, 'Student admission number already exists in this school')
     student = await _get_or_404(db, Student, student.id, school_id)
@@ -453,6 +481,8 @@ async def update_teacher(teacher_id: int, payload: TeacherUpdate, current_user: 
     teacher = await _get_or_404(db, Teacher, teacher_id, school_id)
     await assert_item_session_is_writable(db, school_id, teacher)
     values = payload.model_dump(exclude_unset=True)
+    if teacher.user_id:
+        _lock_email_if_login_exists(values, teacher.email, 'Teacher')
     if 'academic_session_id' in values:
         values['academic_session_id'] = await writable_selected_academic_session_id(db, school_id, request=None, current_user=current_user, explicit_session_id=values.get('academic_session_id'))
     if 'department_id' in values:
@@ -467,8 +497,6 @@ async def update_teacher(teacher_id: int, payload: TeacherUpdate, current_user: 
             user.full_name = teacher.full_name
             user.phone = teacher.phone
             user.login_id = normalize_login_id(teacher.employee_id)
-            if teacher.email:
-                user.email = str(teacher.email).lower()
             user.is_active = teacher.is_active
     await _commit_or_duplicate(db, 'Teacher employee ID already exists in this school')
     await db.refresh(teacher)

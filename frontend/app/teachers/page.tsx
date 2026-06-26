@@ -161,21 +161,29 @@ export default function TeachersPage() {
     setEditing(null);
   };
 
-  const buildTeacherPayload = () => ({
-    employee_id: form.employee_id.trim(),
-    full_name: form.full_name.trim(),
-    email: toNullable(form.email),
-    phone: toNullable(form.phone),
-    gender: toNullable(form.gender),
-    department_id: toNullableNumber(form.department_id),
-    qualification: toNullable(form.qualification),
-    specialization: toNullable(form.specialization),
-    joining_date: toNullable(form.joining_date),
-    photo_url: toNullable(form.photo_url),
-    address: toNullable(form.address),
-    create_login: form.create_login,
-    password: form.create_login && form.password ? form.password : null,
-  });
+  const buildTeacherPayload = () => {
+    const payload: Record<string, unknown> & { email?: string | null } = {
+      employee_id: form.employee_id.trim(),
+      full_name: form.full_name.trim(),
+      email: toNullable(form.email),
+      phone: toNullable(form.phone),
+      gender: toNullable(form.gender),
+      department_id: toNullableNumber(form.department_id),
+      qualification: toNullable(form.qualification),
+      specialization: toNullable(form.specialization),
+      joining_date: toNullable(form.joining_date),
+      photo_url: toNullable(form.photo_url),
+      address: toNullable(form.address),
+      create_login: form.create_login,
+      password: form.create_login && form.password ? form.password : null,
+    };
+
+    if (editing?.user_id) {
+      delete payload.email;
+    }
+
+    return payload;
+  };
 
   const saveTeacher = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -310,7 +318,14 @@ export default function TeachersPage() {
           </div>
           <div>
             <Label>Email</Label>
-            <Input type="email" value={form.email} onChange={(e) => setField("email", e.target.value)} />
+            <Input
+              type="email"
+              value={form.email}
+              disabled={Boolean(editing?.user_id)}
+              className={editing?.user_id ? "bg-slate-100 text-slate-500" : ""}
+              onChange={(e) => setField("email", e.target.value)}
+            />
+            {editing?.user_id && <p className="mt-1 text-xs text-slate-500">Email is locked because this teacher has a login account.</p>}
           </div>
           <div>
             <Label>Phone</Label>

@@ -252,7 +252,9 @@ function TeacherMeetingForm({
 
   const selectedClass =
     classes.find(
-      (c) => `${c.class_id}-${c.section_name || c.section_id || "null"}` === selectedKey,
+      (c) =>
+        `${c.class_id}-${c.section_name || c.section_id || "null"}` ===
+        selectedKey,
     ) ?? null;
 
   async function handleCreate() {
@@ -800,12 +802,6 @@ function LaunchModal({
   joinUrl: string;
   onClose: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
-  function copy() {
-    navigator.clipboard.writeText(joinUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
   return (
     <Modal title="Meeting Ready" onClose={onClose}>
       <div className="space-y-5 text-center">
@@ -814,35 +810,23 @@ function LaunchModal({
             Your meeting is live!
           </p>
           <p className="text-slate-500 text-sm mt-1">
-            Click below to enter the classroom.
+            Participants have been notified and can join now.
           </p>
         </div>
         <button
           onClick={() => {
-            window.open(joinUrl, "_blank");
+            window.location.href = joinUrl;
             onClose();
           }}
           className="w-full py-3 bg-emerald-600 text-white rounded-xl font-semibold hover:bg-emerald-700 transition-colors"
         >
           Enter Classroom
         </button>
-        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-left space-y-2">
-          <p className="text-xs text-slate-500 font-medium">Direct join link</p>
-          <p className="text-xs text-slate-700 break-all font-mono">
-            {joinUrl}
-          </p>
-          <button
-            onClick={copy}
-            className="text-xs px-3 py-1 border border-slate-200 rounded-lg hover:bg-white transition-colors text-slate-600"
-          >
-            {copied ? " Copied!" : "Copy link"}
-          </button>
-        </div>
         <button
           onClick={onClose}
           className="w-full py-2 text-sm text-slate-400 hover:text-slate-600 transition-colors"
         >
-          Dismiss
+          Later
         </button>
       </div>
     </Modal>
@@ -981,7 +965,7 @@ export default function MeetingsPage() {
     setJoining(meetingId);
     try {
       const data = await apiFetch<JoinResponse>(`/meetings/${meetingId}/join`);
-      window.open(data.join_url, "_blank");
+      window.location.href = data.join_url; // was window.open(data.join_url, "_blank")
     } catch (e: any) {
       alert(e.message);
     } finally {

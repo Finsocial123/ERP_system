@@ -7,12 +7,14 @@ import asyncio
 
 from datetime import datetime, timezone, timedelta
 
+from app.core.database import AsyncSessionLocal
 from app.models.meeting import Meeting, MeetingType, MeetingStatus
 from app.models.people import Teacher, TeacherSubject, Student, ClassTeacherAssignment
 from app.models.academic import SchoolClass
 from app.models.user import User, UserRole
-from app.services.bbb_service import create_bbb_meeting, get_join_url, is_meeting_running, end_bbb_meeting
+from app.services.bbb_service import create_bbb_meeting, get_join_url, is_meeting_running, end_bbb_meeting, register_bbb_webhook
 from app.core.sections import validate_class_section_name, virtual_section_id_for_name
+from app.core.config import settings
 
 
 
@@ -86,6 +88,15 @@ async def create_teacher_class_meeting(
     db.add(meeting)
     await db.commit()
     await db.refresh(meeting)
+
+    try:
+        await register_bbb_webhook(
+            meeting_id=meeting_id,
+            callback_url=f"{settings.BACKEND_URL}/meetings/webhook/bbb"
+        )
+    except Exception as e:
+        print(f"[BBB Webhook] Registration error: {e}")
+
     return meeting
 
 
@@ -118,6 +129,15 @@ async def create_admin_teachers_meeting(
     db.add(meeting)
     await db.commit()
     await db.refresh(meeting)
+
+    try:
+        await register_bbb_webhook(
+            meeting_id=meeting_id,
+            callback_url=f"{settings.BACKEND_URL}/meetings/webhook/bbb"
+        )
+    except Exception as e:
+        print(f"[BBB Webhook] Registration error: {e}")
+
     return meeting
 
 
@@ -150,12 +170,13 @@ async def get_meeting_join_url(    db: AsyncSession,
         raise ValueError("Meeting not found or already ended")
 
     role_logout_urls = {
-        "TEACHER": "http://localhost:3000/teachers/meetings",
-        "STUDENT": "http://localhost:3000/students/meetings",
-        "SCHOOL_ADMIN": "http://localhost:3000/setup/meetings",
-        "SCHOOL_OWNER": "http://localhost:3000/setup/meetings",
-        "SUPER_ADMIN": "http://localhost:3000/setup/meetings",
+        "TEACHER": f"{settings.FRONTEND_URL}/teachers/meetings",
+        "STUDENT": f"{settings.FRONTEND_URL}/students/meetings",
+        "SCHOOL_ADMIN": f"{settings.FRONTEND_URL}/setup/meetings",
+        "SCHOOL_OWNER": f"{settings.FRONTEND_URL}/setup/meetings",
+        "SUPER_ADMIN": f"{settings.FRONTEND_URL}/setup/meetings",
     }
+    
     logout_url = role_logout_urls.get(user_role, "http://localhost:3000")
 
     password = meeting.moderator_password if is_moderator else meeting.attendee_password
@@ -498,3 +519,27 @@ async def cancel_scheduled_meeting(
     await db.delete(meeting)
     await db.commit()
     return meeting
+
+
+
+async def sync_live_meetings():
+    print("[Sync] Poller running...")
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Meeting).where(Meeting.status == MeetingStatus.LIVE)
+            )
+            live_meetings = result.scalars().all()
+            for meeting in live_meetings:
+                try:
+                    running = await is_meeting_running(meeting.bbb_meeting_id)
+                    if not running:
+                        meeting.status = MeetingStatus.ENDED    
+                        meeting.ended_at = datetime.utcnow()
+                        print(f"[Sync] Meeting {meeting.id} marked ENDED via poll")
+                except Exception as e:
+                    print(f"[Sync] Failed checking meeting {meeting.id}: {e}")
+            await db.commit()
+    except Exception as e:
+        print(f"[Sync] Poll cycle failed: {e}")
+    

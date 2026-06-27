@@ -479,7 +479,7 @@ export default function StudentMeetingsPage() {
     setJoining(meetingId);
     try {
       const data = await apiFetch<JoinResponse>(`/meetings/${meetingId}/join`);
-      window.open(data.join_url, "_blank");
+      window.location.href = data.join_url;
     } catch (e: any) {
       alert(e.message);
     } finally {

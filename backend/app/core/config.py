@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_COOKIE_PATH: str = "/auth"
     BACKEND_CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
     FRONTEND_BASE_URL: str = "http://localhost:3000"
-
+    BACKEND_URL: str = "http://localhost:8000"
     # Redis — optional; if missing, caching is silently disabled
     REDIS_URL: str = "redis://localhost:6379/0"
 

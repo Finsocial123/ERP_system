@@ -19,9 +19,9 @@ from app.core.database import Base
 from app.models.school import School
 
 
-# ---------------------------------------------------------------------------
+
 # Enums
-# ---------------------------------------------------------------------------
+
 
 class SubscriptionStatus(str, enum.Enum):
     active    = "active"
@@ -49,11 +49,11 @@ class FeatureKey(str, enum.Enum):
     quiz_generation = "quiz_generation"  # tokens
 
 
-# ---------------------------------------------------------------------------
+
 # SubscriptionPlan
 # You define these once — seed manually in DB.
 # School admins pick from these plans.
-# ---------------------------------------------------------------------------
+
 
 class SubscriptionPlan(Base):
     __tablename__ = "subscription_plans"
@@ -75,10 +75,10 @@ class SubscriptionPlan(Base):
     allocations : Mapped[list["PlanAllocation"]] = relationship(back_populates="plan", cascade="all, delete-orphan")
 
 
-# ---------------------------------------------------------------------------
+
 # PlanAllocation
 # Defines what each role gets under a specific plan.
-# ---------------------------------------------------------------------------
+
 
 class PlanAllocation(Base):
     __tablename__ = "plan_allocations"
@@ -105,10 +105,10 @@ class PlanAllocation(Base):
     plan : Mapped["SubscriptionPlan"] = relationship(back_populates="allocations")
 
 
-# ---------------------------------------------------------------------------
+
 # SubscriptionPayment
 # Tracks Razorpay payment for a subscription purchase.
-# ---------------------------------------------------------------------------
+
 
 class SubscriptionPayment(Base):
     __tablename__ = "subscription_payments"
@@ -145,11 +145,11 @@ class SubscriptionPayment(Base):
     paid_by     : Mapped["User"]             = relationship("User")
 
 
-# ---------------------------------------------------------------------------
+
 # Subscription
 # One active subscription per school at a time.
 # Created automatically when payment is verified.
-# ---------------------------------------------------------------------------
+
 
 class Subscription(Base):
     __tablename__ = "subscription"
@@ -190,11 +190,11 @@ class Subscription(Base):
         )
 
 
-# ---------------------------------------------------------------------------
+
 # FeatureAllocation
 # Copied from PlanAllocation when a subscription is activated.
 # Snapshot — changes to PlanAllocation don't affect active subscriptions.
-# ---------------------------------------------------------------------------
+
 
 class FeatureAllocation(Base):
     __tablename__ = "feature_allocation"
@@ -222,9 +222,9 @@ class FeatureAllocation(Base):
     subscription : Mapped["Subscription"] = relationship(back_populates="allocations")
 
 
-# ---------------------------------------------------------------------------
+
 # UserFeatureUsage
-# ---------------------------------------------------------------------------
+
 
 class UserFeatureUsage(Base):
     __tablename__ = "user_feature_usage"
@@ -255,9 +255,8 @@ class UserFeatureUsage(Base):
     subscription : Mapped["Subscription"] = relationship(back_populates="usages")
 
 
-# ---------------------------------------------------------------------------
+
 # AICallLog
-# ---------------------------------------------------------------------------
 
 class AICallLog(Base):
     __tablename__ = "ai_call_logs"
@@ -274,12 +273,12 @@ class AICallLog(Base):
     created_at        : Mapped[datetime]  = mapped_column(DateTime, default=datetime.utcnow)
 
 
-# ---------------------------------------------------------------------------
+
 # build_allocations
 # Called after Subscription is created.
 # Copies PlanAllocation rows into FeatureAllocation (snapshot).
 # plan.allocations must be loaded before calling this.
-# ---------------------------------------------------------------------------
+
 
 def build_allocations(
     subscription: Subscription,
@@ -304,74 +303,3 @@ def build_allocations(
         for alloc in plan_allocations
     ]
 
-
-# # ---------------------------------------------------------------------------
-# # Seed SQL — run once in Supabase SQL editor
-# # Adjust prices and limits to match your business model.
-# # ---------------------------------------------------------------------------
-# SEED_SQL = """
-# -- Plans
-# INSERT INTO subscription_plans (name, description, price_paise, duration_days, is_active)
-# VALUES
-#   ('Basic',      'Essential AI features for small schools',   99900,  365, true),
-#   ('Pro',        'Advanced AI for growing schools',          199900,  365, true),
-#   ('Enterprise', 'Unlimited AI for large institutions',      499900,  365, true)
-# ON CONFLICT (name) DO NOTHING;
-
-# -- Basic plan allocations
-# INSERT INTO plan_allocations (plan_id, role, feature_key, limit_value, is_unlimited)
-# SELECT p.id, 'student', 'chatbot_query',   20000,  false FROM subscription_plans p WHERE p.name = 'Basic'
-# UNION ALL
-# SELECT p.id, 'student', 'quiz_generation', 50000,  false FROM subscription_plans p WHERE p.name = 'Basic'
-# UNION ALL
-# SELECT p.id, 'teacher', 'notice_post',     50000,  false FROM subscription_plans p WHERE p.name = 'Basic'
-# UNION ALL
-# SELECT p.id, 'teacher', 'ai_curriculum',   100000, false FROM subscription_plans p WHERE p.name = 'Basic'
-# UNION ALL
-# SELECT p.id, 'teacher', 'video_upload',    7200,   false FROM subscription_plans p WHERE p.name = 'Basic'
-# UNION ALL
-# SELECT p.id, 'admin',   'notice_post',     50000,  false FROM subscription_plans p WHERE p.name = 'Basic'
-# UNION ALL
-# SELECT p.id, 'admin',   'ai_curriculum',   100000, false FROM subscription_plans p WHERE p.name = 'Basic'
-# UNION ALL
-# SELECT p.id, 'admin',   'video_upload',    7200,   false FROM subscription_plans p WHERE p.name = 'Basic'
-# ON CONFLICT DO NOTHING;
-
-# -- Pro plan allocations
-# INSERT INTO plan_allocations (plan_id, role, feature_key, limit_value, is_unlimited)
-# SELECT p.id, 'student', 'chatbot_query',   50000,  false FROM subscription_plans p WHERE p.name = 'Pro'
-# UNION ALL
-# SELECT p.id, 'student', 'quiz_generation', 100000, false FROM subscription_plans p WHERE p.name = 'Pro'
-# UNION ALL
-# SELECT p.id, 'teacher', 'notice_post',     150000, false FROM subscription_plans p WHERE p.name = 'Pro'
-# UNION ALL
-# SELECT p.id, 'teacher', 'ai_curriculum',   300000, false FROM subscription_plans p WHERE p.name = 'Pro'
-# UNION ALL
-# SELECT p.id, 'teacher', 'video_upload',    14400,  false FROM subscription_plans p WHERE p.name = 'Pro'
-# UNION ALL
-# SELECT p.id, 'admin',   'notice_post',     150000, false FROM subscription_plans p WHERE p.name = 'Pro'
-# UNION ALL
-# SELECT p.id, 'admin',   'ai_curriculum',   300000, false FROM subscription_plans p WHERE p.name = 'Pro'
-# UNION ALL
-# SELECT p.id, 'admin',   'video_upload',    14400,  false FROM subscription_plans p WHERE p.name = 'Pro'
-# ON CONFLICT DO NOTHING;
-
-# -- Enterprise plan allocations (unlimited)
-# INSERT INTO plan_allocations (plan_id, role, feature_key, limit_value, is_unlimited)
-# SELECT p.id, 'student', 'chatbot_query',   0, true FROM subscription_plans p WHERE p.name = 'Enterprise'
-# UNION ALL
-# SELECT p.id, 'student', 'quiz_generation', 0, true FROM subscription_plans p WHERE p.name = 'Enterprise'
-# UNION ALL
-# SELECT p.id, 'teacher', 'notice_post',     0, true FROM subscription_plans p WHERE p.name = 'Enterprise'
-# UNION ALL
-# SELECT p.id, 'teacher', 'ai_curriculum',   0, true FROM subscription_plans p WHERE p.name = 'Enterprise'
-# UNION ALL
-# SELECT p.id, 'teacher', 'video_upload',    0, true FROM subscription_plans p WHERE p.name = 'Enterprise'
-# UNION ALL
-# SELECT p.id, 'admin',   'notice_post',     0, true FROM subscription_plans p WHERE p.name = 'Enterprise'
-# UNION ALL
-# SELECT p.id, 'admin',   'ai_curriculum',   0, true FROM subscription_plans p WHERE p.name = 'Enterprise'
-# UNION ALL
-# SELECT p.id, 'admin',   'video_upload',    0, true FROM subscription_plans p WHERE p.name = 'Enterprise'
-# ON CONFLICT DO NOTHING;
-# """

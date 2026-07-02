@@ -1,5 +1,3 @@
-
-
 from datetime import datetime
 from typing import Optional
 
@@ -7,10 +5,89 @@ from pydantic import BaseModel, Field, model_validator
 
 
 
+# Plan schemas
+
+
+class PlanAllocationResponse(BaseModel):
+    role         : str
+    feature_key  : str
+    limit_value  : int
+    is_unlimited : bool
+    unit         : str = ""
+
+    model_config = {"from_attributes": True}
+
+    @model_validator(mode="after")
+    def set_unit(self) -> "PlanAllocationResponse":
+        unit_map = {
+            "chatbot_query"  : "tokens",
+            "notice_post"    : "tokens",
+            "ai_curriculum"  : "tokens",
+            "video_upload"   : "seconds",
+            "quiz_generation": "tokens",
+        }
+        self.unit = unit_map.get(self.feature_key, "units")
+        return self
+
+
+class PlanResponse(BaseModel):
+    """Returned from GET /plans — what school admin sees when choosing a plan."""
+    id            : int
+    name          : str
+    description   : Optional[str]
+    price_paise   : int
+    duration_days : int
+    is_active     : bool
+    allocations   : list[PlanAllocationResponse] = []
+
+    # Human-readable price
+    price_display : str = ""
+
+    model_config = {"from_attributes": True}
+
+    @model_validator(mode="after")
+    def set_price_display(self) -> "PlanResponse":
+        rupees = self.price_paise / 100
+        self.price_display = f"₹{rupees:,.0f}"
+        return self
+
+
+
+# Razorpay schemas
+
+
+class SubscriptionOrderCreate(BaseModel):
+    """POST /razorpay/create-order — school admin picks a plan and initiates payment."""
+    plan_id : int = Field(..., description="ID of the plan to purchase")
+
+
+class SubscriptionOrderResponse(BaseModel):
+    """Returned after creating a Razorpay order — frontend uses this to open checkout."""
+    order_id      : str
+    amount        : int    # in paise
+    currency      : str
+    key           : str    # Razorpay key_id for frontend
+    plan_id       : int
+    plan_name     : str
+    price_display : str
+
+
+class SubscriptionVerify(BaseModel):
+    """POST /razorpay/verify-payment — sent after Razorpay checkout succeeds."""
+    razorpay_order_id   : str
+    razorpay_payment_id : str
+    razorpay_signature  : str
+    plan_id             : int
+
+
+
+# Subscription schemas (existing, unchanged)
+
+
 class SubscriptionCreate(BaseModel):
-    """POST /subscriptions  — admin creates a subscription for a school."""
+    """Manual creation — super admin only, bypasses payment."""
     school_id  : int      = Field(..., description="ID of the school being subscribed")
-    plan_name  : str      = Field(..., min_length=1, max_length=100, description="e.g. 'Standard', 'Pro'")
+    plan_id    : int      = Field(..., description="ID of the plan")
     started_at : datetime = Field(..., description="When the subscription begins (UTC)")
     expires_at : datetime = Field(..., description="When the subscription ends (UTC)")
 
@@ -22,9 +99,9 @@ class SubscriptionCreate(BaseModel):
 
 
 class SubscriptionResponse(BaseModel):
-    """Returned after creating or fetching a subscription."""
     id         : int
     school_id  : int
+    plan_id    : int
     plan_name  : str
     status     : str
     started_at : datetime
@@ -35,7 +112,6 @@ class SubscriptionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-
 class FeatureAllocationResponse(BaseModel):
     id              : int
     subscription_id : int
@@ -43,8 +119,6 @@ class FeatureAllocationResponse(BaseModel):
     feature_key     : str
     limit_value     : int
     is_unlimited    : bool
-
-    # Human-readable unit label derived from feature_key
     unit            : str = ""
 
     model_config = {"from_attributes": True}
@@ -52,50 +126,40 @@ class FeatureAllocationResponse(BaseModel):
     @model_validator(mode="after")
     def set_unit(self) -> "FeatureAllocationResponse":
         unit_map = {
-            "chatbot_query" : "tokens",
-            "notice_post"   : "posts",
-            "ai_curriculum" : "generations",
-            "video_upload"  : "seconds",
+            "chatbot_query"  : "tokens",
+            "notice_post"    : "tokens",
+            "ai_curriculum"  : "tokens",
+            "video_upload"   : "seconds",
+            "quiz_generation": "tokens",
         }
         self.unit = unit_map.get(self.feature_key, "units")
         return self
 
 
 class SubscriptionDetailResponse(SubscriptionResponse):
-    """Full subscription with its allocations — for admin detail view."""
     allocations: list[FeatureAllocationResponse] = []
 
 
 
+# Quota schemas (existing, updated with quiz_generation display)
+
 
 class QuotaStatusResponse(BaseModel):
-    """
-    Returned from GET /subscriptions/my-quota?feature=chatbot_query
-    Safe to expose to any authenticated user for their own feature.
-    """
-    feature_key              : str
-    limit                    : Optional[int]      # None if unlimited
-    used                     : int
-    remaining                : Optional[int]      # None if unlimited
-    is_unlimited             : bool
-    has_active_subscription  : bool
-    subscription_expires_at  : Optional[datetime]
-
-    # Human-friendly display values — computed from raw numbers
-    limit_display     : str = ""
-    used_display      : str = ""
-    remaining_display : str = ""
+    feature_key             : str
+    limit                   : Optional[int]
+    used                    : int
+    remaining               : Optional[int]
+    is_unlimited            : bool
+    has_active_subscription : bool
+    subscription_expires_at : Optional[datetime]
+    limit_display           : str = ""
+    used_display            : str = ""
+    remaining_display       : str = ""
 
     model_config = {"from_attributes": False}
 
     @model_validator(mode="after")
     def build_display(self) -> "QuotaStatusResponse":
-        """
-        Convert raw values to human-readable strings based on feature type.
-        chatbot_query  → token counts  (e.g. "4,500 / 20,000 tokens")
-        video_upload   → minutes       (e.g. "45 / 120 min")
-        others         → plain counts  (e.g. "3 / 10")
-        """
         fk = self.feature_key
 
         if self.is_unlimited:
@@ -114,17 +178,14 @@ class QuotaStatusResponse(BaseModel):
         used      = self.used      or 0
         remaining = self.remaining or 0
 
-        if fk == "chatbot_query":
-            self.limit_display     = f"{limit:,} tokens"
-            self.used_display      = f"{used:,} tokens"
-            self.remaining_display = f"{remaining:,} tokens"
-
-        elif fk == "video_upload":
-            # stored as seconds, display as minutes
+        if fk == "video_upload":
             self.limit_display     = f"{limit // 60} min"
             self.used_display      = f"{used // 60} min"
             self.remaining_display = f"{remaining // 60} min"
-
+        elif fk in ("chatbot_query", "notice_post", "ai_curriculum", "quiz_generation"):
+            self.limit_display     = f"{limit:,} tokens"
+            self.used_display      = f"{used:,} tokens"
+            self.remaining_display = f"{remaining:,} tokens"
         else:
             self.limit_display     = str(limit)
             self.used_display      = str(used)
@@ -134,16 +195,12 @@ class QuotaStatusResponse(BaseModel):
 
 
 class AllQuotasResponse(BaseModel):
-    """All quota statuses for the current user — one dict per feature they have access to."""
-    user_id  : int
-    school_id: int
-    quotas   : list[QuotaStatusResponse]
-
-
+    user_id   : int
+    school_id : int
+    quotas    : list[QuotaStatusResponse]
 
 
 class FeatureUsageSummary(BaseModel):
-    """Usage for one feature across all users in the school."""
     feature_key    : str
     role           : str
     total_used     : int
@@ -153,31 +210,22 @@ class FeatureUsageSummary(BaseModel):
     @model_validator(mode="after")
     def set_unit(self) -> "FeatureUsageSummary":
         unit_map = {
-            "chatbot_query" : "tokens",
-            "notice_post"   : "posts",
-            "ai_curriculum" : "generations",
-            "video_upload"  : "seconds",
+            "chatbot_query"  : "tokens",
+            "notice_post"    : "tokens",
+            "ai_curriculum"  : "tokens",
+            "video_upload"   : "seconds",
+            "quiz_generation": "tokens",
         }
         self.unit = unit_map.get(self.feature_key, "units")
         return self
 
 
 class SchoolUsageSummaryResponse(BaseModel):
-    """
-    Returned from GET /subscriptions/school-summary
-    Admin-only. Shows the active subscription + aggregated usage per feature.
-    """
-    subscription    : Optional[SubscriptionResponse]
-    usage_by_feature: list[FeatureUsageSummary]
-
-
+    subscription     : Optional[SubscriptionResponse]
+    usage_by_feature : list[FeatureUsageSummary]
 
 
 class AllocationUpdateRequest(BaseModel):
-    """
-    PATCH /subscriptions/{sub_id}/allocations/{alloc_id}
-    Admin can bump or reduce a role's limit without recreating the subscription.
-    """
     limit_value  : Optional[int]  = Field(None, gt=0)
     is_unlimited : Optional[bool] = None
 

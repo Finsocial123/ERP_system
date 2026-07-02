@@ -89,6 +89,7 @@ export default function TeachersPage() {
   const subjectById = useMemo(() => new Map(subjects.map((item) => [item.id, item.name])), [subjects]);
   const classById = useMemo(() => new Map(classes.map((item) => [item.id, item.name])), [classes]);
   const sectionById = useMemo(() => new Map(sections.map((item) => [item.id, item.name])), [sections]);
+  const sectionLabel = (item: { section_id?: number | null; section_name?: string | null }) => item.section_name || (item.section_id ? sectionById.get(item.section_id) : "") || "";
   const sessionById = useMemo(() => new Map(sessions.map((item) => [item.id, item.name])), [sessions]);
   const teacherById = useMemo(() => new Map(teachers.map((item) => [item.id, item.full_name])), [teachers]);
 
@@ -160,21 +161,29 @@ export default function TeachersPage() {
     setEditing(null);
   };
 
-  const buildTeacherPayload = () => ({
-    employee_id: form.employee_id.trim(),
-    full_name: form.full_name.trim(),
-    email: toNullable(form.email),
-    phone: toNullable(form.phone),
-    gender: toNullable(form.gender),
-    department_id: toNullableNumber(form.department_id),
-    qualification: toNullable(form.qualification),
-    specialization: toNullable(form.specialization),
-    joining_date: toNullable(form.joining_date),
-    photo_url: toNullable(form.photo_url),
-    address: toNullable(form.address),
-    create_login: form.create_login,
-    password: form.create_login && form.password ? form.password : null,
-  });
+  const buildTeacherPayload = () => {
+    const payload: Record<string, unknown> & { email?: string | null } = {
+      employee_id: form.employee_id.trim(),
+      full_name: form.full_name.trim(),
+      email: toNullable(form.email),
+      phone: toNullable(form.phone),
+      gender: toNullable(form.gender),
+      department_id: toNullableNumber(form.department_id),
+      qualification: toNullable(form.qualification),
+      specialization: toNullable(form.specialization),
+      joining_date: toNullable(form.joining_date),
+      photo_url: toNullable(form.photo_url),
+      address: toNullable(form.address),
+      create_login: form.create_login,
+      password: form.create_login && form.password ? form.password : null,
+    };
+
+    if (editing?.user_id) {
+      delete payload.email;
+    }
+
+    return payload;
+  };
 
   const saveTeacher = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -309,7 +318,14 @@ export default function TeachersPage() {
           </div>
           <div>
             <Label>Email</Label>
-            <Input type="email" value={form.email} onChange={(e) => setField("email", e.target.value)} />
+            <Input
+              type="email"
+              value={form.email}
+              disabled={Boolean(editing?.user_id)}
+              className={editing?.user_id ? "bg-slate-100 text-slate-500" : ""}
+              onChange={(e) => setField("email", e.target.value)}
+            />
+            {editing?.user_id && <p className="mt-1 text-xs text-slate-500">Email is locked because this teacher has a login account.</p>}
           </div>
           <div>
             <Label>Phone</Label>
@@ -481,7 +497,7 @@ export default function TeachersPage() {
           <div className="mt-4 space-y-2">
             {subjectAssignments.length === 0 ? <p className="text-sm text-slate-500">Select a teacher to view assignments.</p> : subjectAssignments.map((item) => (
               <div key={item.id} className="flex items-center justify-between rounded-xl border border-slate-200 p-3 text-sm">
-                <span>{subjectById.get(item.subject_id) || item.subject_id} {item.class_id ? `• ${classById.get(item.class_id)}` : ""} {item.section_id ? `• ${sectionById.get(item.section_id)}` : ""}</span>
+                <span>{subjectById.get(item.subject_id) || item.subject_id} {item.class_id ? `• ${classById.get(item.class_id)}` : ""} {sectionLabel(item) ? `• ${sectionLabel(item)}` : ""}</span>
                 <button onClick={() => removeSubjectAssignment(item)} className="text-red-600 hover:underline">Remove</button>
               </div>
             ))}
@@ -526,7 +542,7 @@ export default function TeachersPage() {
           <div className="mt-4 space-y-2">
             {classTeacherAssignments.length === 0 ? <p className="text-sm text-slate-500">No class teacher assignments yet.</p> : classTeacherAssignments.map((item) => (
               <div key={item.id} className="flex items-center justify-between rounded-xl border border-slate-200 p-3 text-sm">
-                <span>{teacherById.get(item.teacher_id) || item.teacher_id} → {classById.get(item.class_id) || item.class_id} {item.section_id ? `• ${sectionById.get(item.section_id)}` : ""} {item.academic_session_id ? `• ${sessionById.get(item.academic_session_id)}` : ""}</span>
+                <span>{teacherById.get(item.teacher_id) || item.teacher_id} → {classById.get(item.class_id) || item.class_id} {sectionLabel(item) ? `• ${sectionLabel(item)}` : ""} {item.academic_session_id ? `• ${sessionById.get(item.academic_session_id)}` : ""}</span>
                 <button onClick={() => removeClassTeacherAssignment(item)} className="text-red-600 hover:underline">Remove</button>
               </div>
             ))}

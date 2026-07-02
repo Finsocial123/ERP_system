@@ -11,6 +11,7 @@ import {
   Plus,
   RefreshCw,
   Send,
+  Mail,
   Trash2,
   X,
   Globe,
@@ -22,6 +23,8 @@ import {
   createChatSession,
   getChatMessages,
   getChatSessions,
+  sendChatAnswerEmail,
+  sendChatAnswerTelegram,
   streamLessonChatMessage,
 } from "@/lib/chatApi";
 import { apiFetch } from "@/lib/api";
@@ -57,6 +60,18 @@ type LocalMessage = {
   content: string;
   created_at?: string | null;
   isEnhanced?: boolean;
+  suggestions?: string[];
+};
+
+type ShareChannel = "email" | "telegram";
+
+type ShareDraft = {
+  channel: ShareChannel;
+  messageId: string;
+  content: string;
+  email: string;
+  subject: string;
+  telegramChatId: string;
 };
 
 type Props = {
@@ -304,6 +319,13 @@ export default function CourseLessonChat({
               ),
             );
           },
+          onSuggestedQuestions: (suggestions) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId ? { ...m, suggestions } : m,
+              ),
+            );
+          },
           onToken: (token) => {
             answer += token;
             setMessages((prev) =>
@@ -327,6 +349,9 @@ export default function CourseLessonChat({
         );
       }
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return;
+      }
       setError(err instanceof Error ? err.message : "Failed to send question");
       setMessages((prev) => prev.filter((m) => m.id !== assistantId));
     } finally {
@@ -500,6 +525,115 @@ function ChatInner({
   setLanguage,
 }: InnerProps) {
   const [optsOpen, setOptsOpen] = useState(false);
+  const [shareDraft, setShareDraft] = useState<ShareDraft | null>(null);
+  const [shareSending, setShareSending] = useState(false);
+  const [shareError, setShareError] = useState("");
+  const [shareNotice, setShareNotice] = useState("");
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const openShareTool = (channel: ShareChannel, msg: LocalMessage) => {
+    const defaultSubject = lesson.title
+      ? `AI Tutor response - ${lesson.title}`
+      : "AI Tutor response";
+
+    setShareDraft({
+      channel,
+      messageId: msg.id,
+      content: msg.content,
+      email: "",
+      subject: defaultSubject,
+      telegramChatId: "",
+    });
+    setShareError("");
+    setShareNotice("");
+  };
+
+  const updateShareDraft = (patch: Partial<ShareDraft>) => {
+    setShareDraft((prev) => (prev ? { ...prev, ...patch } : prev));
+  };
+
+  const findLastAssistantMessage = () =>
+    [...messages]
+      .reverse()
+      .find((msg) => msg.role === "assistant" && msg.content.trim());
+
+  const latestAssistantId = findLastAssistantMessage()?.id ?? null;
+
+  const fillInputWithSuggestion = (suggestion: string) => {
+    setQuestion(suggestion);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const openShareToolFromCommand = (): boolean => {
+    const clean = question.trim();
+    const wantsSend = /(send|share|forward|bhej|भेज)/i.test(clean);
+    const wantsEmail = /(email|mail)/i.test(clean);
+    const wantsTelegram = /telegram/i.test(clean);
+
+    if (!wantsSend || (!wantsEmail && !wantsTelegram)) return false;
+
+    const lastAssistant = findLastAssistantMessage();
+    if (!lastAssistant) {
+      setShareNotice("No AI response is available to send yet.");
+      setQuestion("");
+      return true;
+    }
+
+    const emailMatch = clean.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    const chatMatch = clean.match(
+      /(?:chat\s*id|chat_id|telegram)\s*[:=\-]?\s*(-?\d{5,}|@[A-Za-z0-9_]{5,})/i,
+    );
+
+    openShareTool(wantsTelegram ? "telegram" : "email", lastAssistant);
+    setShareDraft((prev) =>
+      prev
+        ? {
+            ...prev,
+            email: emailMatch?.[0] || prev.email,
+            telegramChatId: chatMatch?.[1] || prev.telegramChatId,
+          }
+        : prev,
+    );
+    setQuestion("");
+    return true;
+  };
+
+  const handleSubmitFromInput = () => {
+    if (openShareToolFromCommand()) return;
+    submitQuestion();
+  };
+
+  const submitShareTool = async () => {
+    if (!shareDraft || shareSending) return;
+    setShareSending(true);
+    setShareError("");
+    setShareNotice("");
+
+    try {
+      const response =
+        shareDraft.channel === "email"
+          ? await sendChatAnswerEmail({
+              content: shareDraft.content,
+              toEmail: shareDraft.email.trim() || undefined,
+              subject: shareDraft.subject.trim() || undefined,
+              lessonTitle: lesson.title,
+              courseTitle,
+            })
+          : await sendChatAnswerTelegram({
+              content: shareDraft.content,
+              chatId: shareDraft.telegramChatId.trim() || undefined,
+              lessonTitle: lesson.title,
+              courseTitle,
+            });
+
+      setShareNotice(response.message || "AI response sent successfully.");
+      setShareDraft(null);
+    } catch (err) {
+      setShareError(err instanceof Error ? err.message : "Failed to send AI response");
+    } finally {
+      setShareSending(false);
+    }
+  };
 
   return (
     <>
@@ -575,6 +709,48 @@ function ChatInner({
           font-size: 0.65rem; font-weight: 700; color: #7c3aed;
           margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.05em;
         }
+        .clc-share-actions {
+          display: flex; align-items: center; gap: 6px; margin-top: 8px;
+          padding-top: 7px; border-top: 1px solid #e2e8f0;
+        }
+        .clc-share-btn {
+          border: 1px solid #e2e8f0; background: white; color: #475569;
+          border-radius: 999px; padding: 4px 8px; font-size: 0.68rem;
+          font-weight: 700; display: inline-flex; align-items: center; gap: 4px;
+          cursor: pointer; transition: background 0.12s, color 0.12s;
+        }
+        .clc-share-btn:hover { background: #ede9fe; color: #6d28d9; border-color: #c4b5fd; }
+        .clc-share-notice {
+          margin: 8px 10px 0; padding: 8px 10px; border-radius: 10px;
+          background: #ecfdf5; color: #047857; border: 1px solid #bbf7d0;
+          font-size: 0.74rem; font-weight: 600;
+        }
+        .clc-share-panel {
+          margin: 0 10px 8px; padding: 10px; border-radius: 12px;
+          border: 1px solid #ddd6fe; background: #faf5ff;
+          display: flex; flex-direction: column; gap: 8px; flex-shrink: 0;
+        }
+        .clc-share-panel-title {
+          display: flex; align-items: center; gap: 6px;
+          font-size: 0.76rem; font-weight: 800; color: #4c1d95;
+        }
+        .clc-share-field {
+          width: 100%; border: 1px solid #d8b4fe; border-radius: 9px;
+          padding: 7px 9px; font-size: 0.76rem; outline: none; background: white;
+        }
+        .clc-share-help { font-size: 0.68rem; color: #7c3aed; margin: -3px 0 0; }
+        .clc-share-error {
+          font-size: 0.7rem; color: #b91c1c; background: #fee2e2;
+          border: 1px solid #fecaca; padding: 6px 8px; border-radius: 8px;
+        }
+        .clc-share-actions-row { display: flex; justify-content: flex-end; gap: 7px; }
+        .clc-share-cancel, .clc-share-send {
+          border: none; border-radius: 9px; padding: 7px 11px; font-size: 0.72rem;
+          font-weight: 800; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+        }
+        .clc-share-cancel { background: white; color: #64748b; border: 1px solid #e2e8f0; }
+        .clc-share-send { background: #7c3aed; color: white; }
+        .clc-share-send:disabled { background: #c4b5fd; cursor: not-allowed; }
 
         /* ── Input bar ── */
         .clc-input-bar {
@@ -644,6 +820,25 @@ function ChatInner({
           border: 1px solid #e9d5ff; border-radius: 6px;
           padding: 3px 6px; margin-bottom: 5px;
           text-transform: uppercase;
+        }
+
+        .clc-suggestions {
+          margin-top: 8px; padding-top: 8px; border-top: 1px solid #e2e8f0;
+          display: flex; flex-direction: column; gap: 6px;
+        }
+        .clc-suggestions-title {
+          display: flex; align-items: center; gap: 5px;
+          color: #7c3aed; font-size: 0.66rem; font-weight: 800;
+          text-transform: uppercase; letter-spacing: 0.04em;
+        }
+        .clc-suggestion-btn {
+          width: 100%; text-align: left; border: 1px solid #ddd6fe;
+          background: #ffffff; color: #334155; border-radius: 10px;
+          padding: 7px 9px; font-size: 0.72rem; line-height: 1.35;
+          cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s;
+        }
+        .clc-suggestion-btn:hover {
+          background: #f5f3ff; border-color: #a78bfa; color: #5b21b6;
         }
 
         /* ── History panel ── */
@@ -920,14 +1115,127 @@ function ChatInner({
                         <div className="clc-dot" />
                       </div>
                     ) : null}
+
+                    {msg.role === "assistant" && msg.content.trim() && (
+                      <div className="clc-share-actions">
+                        <button
+                          type="button"
+                          className="clc-share-btn"
+                          onClick={() => openShareTool("email", msg)}
+                          title="Send this AI response to email"
+                        >
+                          <Mail size={11} /> Email
+                        </button>
+                        <button
+                          type="button"
+                          className="clc-share-btn"
+                          onClick={() => openShareTool("telegram", msg)}
+                          title="Send this AI response to Telegram"
+                        >
+                          <Send size={11} /> Telegram
+                        </button>
+                      </div>
+                    )}
+
+                    {msg.role === "assistant" &&
+                      msg.id === latestAssistantId &&
+                      !sending &&
+                      msg.suggestions &&
+                      msg.suggestions.length > 0 && (
+                        <div className="clc-suggestions">
+                          <div className="clc-suggestions-title">
+                            <Sparkles size={10} /> Suggested questions
+                          </div>
+                          {msg.suggestions.map((suggestion) => (
+                            <button
+                              key={suggestion}
+                              type="button"
+                              className="clc-suggestion-btn"
+                              onClick={() => fillInputWithSuggestion(suggestion)}
+                            >
+                              {suggestion}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                   </div>
                 </div>
               ))}
               <div ref={bottomRef} />
             </div>
 
+            {shareNotice && <div className="clc-share-notice">{shareNotice}</div>}
+
+            {shareDraft && (
+              <div className="clc-share-panel">
+                <div className="clc-share-panel-title">
+                  {shareDraft.channel === "email" ? (
+                    <Mail size={14} />
+                  ) : (
+                    <Send size={14} />
+                  )}
+                  Send AI response to {shareDraft.channel === "email" ? "Email" : "Telegram"}
+                </div>
+
+                {shareDraft.channel === "email" ? (
+                  <>
+                    <input
+                      className="clc-share-field"
+                      type="email"
+                      value={shareDraft.email}
+                      onChange={(e) => updateShareDraft({ email: e.target.value })}
+                      placeholder="Recipient email (blank = current login email)"
+                    />
+                    <input
+                      className="clc-share-field"
+                      value={shareDraft.subject}
+                      onChange={(e) => updateShareDraft({ subject: e.target.value })}
+                      placeholder="Email subject"
+                    />
+                  </>
+                ) : (
+                  <>
+                    <input
+                      className="clc-share-field"
+                      value={shareDraft.telegramChatId}
+                      onChange={(e) =>
+                        updateShareDraft({ telegramChatId: e.target.value })
+                      }
+                      placeholder="Telegram chat ID (blank = backend default)"
+                    />
+                    <p className="clc-share-help">
+                      Telegram user/group must start your bot first, otherwise Telegram will block the message.
+                    </p>
+                  </>
+                )}
+
+                {shareError && <div className="clc-share-error">{shareError}</div>}
+
+                <div className="clc-share-actions-row">
+                  <button
+                    type="button"
+                    className="clc-share-cancel"
+                    onClick={() => setShareDraft(null)}
+                    disabled={shareSending}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="clc-share-send"
+                    onClick={submitShareTool}
+                    disabled={shareSending}
+                  >
+                    {shareSending && <Loader2 size={12} className="clc-spin" />}
+                    Send
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* <div className="clc-input-bar">
               <textarea
+                ref={inputRef}
                 className="clc-textarea"
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
@@ -936,7 +1244,7 @@ function ChatInner({
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    submitQuestion();
+                    handleSubmitFromInput();
                   }
                 }}
               />
@@ -953,7 +1261,7 @@ function ChatInner({
                 <button
                   type="button"
                   className="clc-send-btn"
-                  onClick={submitQuestion}
+                  onClick={handleSubmitFromInput}
                   disabled={!question.trim()}
                   style={{
                     background: !question.trim() ? "#f1f5f9" : "#7c3aed",
@@ -967,6 +1275,7 @@ function ChatInner({
 
             <div className="clc-input-bar">
               <textarea
+                ref={inputRef}
                 className="clc-textarea"
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
@@ -975,7 +1284,7 @@ function ChatInner({
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    submitQuestion();
+                    handleSubmitFromInput();
                   }
                 }}
               />
@@ -1073,7 +1382,7 @@ function ChatInner({
                 <button
                   type="button"
                   className="clc-send-btn"
-                  onClick={submitQuestion}
+                  onClick={handleSubmitFromInput}
                   disabled={!question.trim()}
                   style={{
                     background: !question.trim() ? "#f1f5f9" : "#7c3aed",

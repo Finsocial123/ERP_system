@@ -17,6 +17,7 @@ export const AUTH_PROFILE_UPDATED_EVENT = "erp_auth_profile_updated";
 export const AUTH_TOKEN_REFRESHED_EVENT = "erp_auth_token_refreshed";
 export const AUTH_LOGGED_OUT_EVENT = "erp_auth_logged_out";
 export const ACADEMIC_SESSION_CHANGED_EVENT = "erp_academic_session_changed";
+export const NOTIFICATIONS_UPDATED_EVENT = "erp_notifications_updated";
 
 let refreshPromise: Promise<string | null> | null = null;
 
@@ -158,6 +159,31 @@ function buildUrl(path: string) {
   return path.startsWith("http://") || path.startsWith("https://") ? path : `${API_BASE}${path}`;
 }
 
+function shouldRefreshNotificationsAfterWrite(path: string) {
+  const normalizedPath = normalizeApiPath(path).split("?")[0];
+
+  // Only refresh the global bell for modules that can create/update in-app notifications.
+  // This avoids refreshing notification count after unrelated writes like student status, fee form edits, etc.
+  return (
+    normalizedPath.startsWith("/communication") ||
+    normalizedPath.startsWith("/homework") ||
+    normalizedPath.startsWith("/assignments") ||
+    normalizedPath.startsWith("/exams") ||
+    normalizedPath.startsWith("/meetings") ||
+    normalizedPath.startsWith("/notice") ||
+    normalizedPath.startsWith("/courses") ||
+    normalizedPath.startsWith("/lessons") ||
+    normalizedPath.startsWith("/attendance")
+  );
+}
+
+function dispatchNotificationRefreshIfNeeded(path: string, method: string) {
+  if (typeof window === "undefined" || method === "GET") return;
+  if (shouldRefreshNotificationsAfterWrite(path)) {
+    window.dispatchEvent(new Event(NOTIFICATIONS_UPDATED_EVENT));
+  }
+}
+
 async function doFetchWithAuth(path: string, options: RequestInit, tokenOverride?: string | null) {
   const token = tokenOverride ?? getToken();
   const headers = new Headers(options.headers);
@@ -217,9 +243,7 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   }
 
   const method = (options.method || "GET").toUpperCase();
-  if (typeof window !== "undefined" && method !== "GET") {
-    window.dispatchEvent(new Event("erp_notifications_updated"));
-  }
+  dispatchNotificationRefreshIfNeeded(path, method);
 
   return data as T;
 }
@@ -293,9 +317,7 @@ function xhrUpload<T>(path: string, formData: FormData, options: ApiUploadOption
         return;
       }
 
-      if (typeof window !== "undefined" && String(method).toUpperCase() !== "GET") {
-        window.dispatchEvent(new Event("erp_notifications_updated"));
-      }
+      dispatchNotificationRefreshIfNeeded(path, String(method).toUpperCase());
 
       resolve(data as T);
     };
@@ -331,9 +353,7 @@ export async function apiUpload<T>(path: string, formData: FormData, options: Ap
   }
 
   const method = (fetchOptions.method || "POST").toUpperCase();
-  if (typeof window !== "undefined" && method !== "GET") {
-    window.dispatchEvent(new Event("erp_notifications_updated"));
-  }
+  dispatchNotificationRefreshIfNeeded(path, method);
 
   return data as T;
 }

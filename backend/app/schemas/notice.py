@@ -22,7 +22,8 @@ class AvailableClassOut(BaseModel):
 class NoticeClassAudienceOut(BaseModel):
     id: int
     class_id: int
-    section_id: int
+    section_id: int | None = None
+    section_name: str | None = None
 
     model_config = {"from_attributes": True} 
 

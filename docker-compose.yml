@@ -1,0 +1,114 @@
+# ---------------------------------------------------------------------------
+# School ERP — local development stack
+# ---------------------------------------------------------------------------
+# This file lives in PROJECT ROOT (same level as backend/ and frontend/).
+#
+# docker-compose does NOT automatically load backend/.env or
+# frontend/.env.local on its own — Compose only auto-loads a `.env` sitting
+# next to docker-compose.yml itself (for variable substitution in THIS file,
+# like ${SECRET_KEY} below). The `env_file:` keys under each service are
+# what actually inject backend/.env and frontend/.env.local INTO those
+# containers. This is intentional and matches your existing file layout —
+# no need to duplicate secrets into a third root-level .env.
+#
+# Run:    docker compose up --build
+# Stop:   docker compose down
+# Reset:  docker compose down -v   (wipes local DB/Redis data too)
+# ---------------------------------------------------------------------------
+
+services:
+
+  # -------------------------------------------------------------------------
+  # FastAPI backend
+  # -------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      # Loads every variable already in backend/.env into the container —
+      # your OPENROUTER_API_KEY, RAZORPAY keys, etc. live there, untouched.
+      - ./backend/.env
+    environment:
+      # These OVERRIDE whatever is in backend/.env, specifically because
+      # they must point at the Docker service names ("db", "redis"), not
+      # whatever DATABASE_URL/REDIS_URL you use for local non-Docker runs.
+      # Everything else in backend/.env (API keys, etc.) passes through
+      # unchanged from the env_file above.
+      
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      
+      redis:
+        condition: service_healthy
+    volumes:
+      # Live-reload mount for local dev. Comment out for an image-exact test.
+      - ./backend/app:/app/app
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # PostgreSQL with pgvector — local stand-in for RDS
+  # -------------------------------------------------------------------------
+  # db:
+  #   image: pgvector/pgvector:pg16
+  #   environment:
+  #     POSTGRES_USER: erp_user
+  #     POSTGRES_PASSWORD: erp_password
+  #     POSTGRES_DB: erp_db
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - erp_postgres_data:/var/lib/postgresql/data
+  #     - ./init.sql:/docker-entrypoint-initdb.d/init.sql  # ← add this line
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U erp_user -d erp_db"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 10
+  #   restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # Redis — local stand-in for ElastiCache
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - erp_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # Next.js frontend (optional — uncomment to run frontend in Compose too)
+  # -------------------------------------------------------------------------
+  # Your next.config.ts uses `output: 'export'`, meaning production builds
+  # are static files served via S3/CloudFront, NOT a running Node server.
+  # For LOCAL DEV ONLY, `next dev` still runs as a normal server, which is
+  # what this service does. Don't use this pattern for production — that's
+  # what the S3 static export deployment (discussed separately) is for.
+  #
+  # frontend:
+  #   image: node:20-slim
+  #   working_dir: /app
+  #   command: sh -c "npm install && npm run dev"
+  #   ports:
+  #     - "3000:3000"
+  #   env_file:
+  #     - ./frontend/.env.local
+  #   volumes:
+  #     - ./frontend:/app
+  #     - /app/node_modules
+  #   depends_on:
+  #     - backend
+  #   restart: unless-stopped
+
+volumes:
+  # erp_postgres_data:
+  erp_redis_data:

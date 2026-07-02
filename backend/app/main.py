@@ -53,12 +53,43 @@ from app.routes import (
     meetings, assignments, chats, courses, enrollments, lessons, progress,
 )
 
+# from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from app.core.database import get_async_db
+from app.services.meeting_service import sync_live_meetings
+
 if settings.RUN_STARTUP_MIGRATIONS:
     Base.metadata.create_all(bind=engine)
     run_startup_migrations(engine)
 
 app = FastAPI(title="School ERP Phase 9 API", version="9.0.0")
 
+#schedular for meeting
+# add it after deploying db to aws cause it needs ipv4 and 
+# supbase doens't have that
+# scheduler = AsyncIOScheduler()
+
+# @app.on_event("startup")
+# async def start_scheduler():
+#     scheduler.add_job(
+#         sync_live_meetings,
+#         "interval",
+#         minutes=5,
+#     )
+#     scheduler.start()
+
+# @app.on_event("shutdown")
+# async def stop_scheduler():
+#     scheduler.stop()
+
+@app.get("/health", tags=["Health"])
+async def health():
+    """
+    Liveness check for Docker HEALTHCHECK and the AWS ALB target group.
+    Intentionally does NOT touch the database or Redis — a slow/degraded
+    DB shouldn't cause the ALB to kill and restart a otherwise-healthy
+    container. Keep this fast and dependency-free.
+    """
+    return {"status": "ok"}
 
 @app.middleware("http")
 async def log_request_time(request: Request, call_next):

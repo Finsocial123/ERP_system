@@ -163,6 +163,119 @@ def _ensure_academic_session_scoping(engine) -> None:
     _create_postgres_unique_indexes(engine)
 
 
+
+def _ensure_class_sections_dependency_fields(engine) -> None:
+    """Move section dependency to SchoolClass.sections + section_name fields.
+
+    The legacy sections table and section_id columns stay during this phase only
+    so foreign keys/old rows do not break. All new feature logic should use the
+    new text fields and validate against school_classes.sections.
+    """
+    if not _table_exists(engine, "school_classes"):
+        return
+
+    _add_column(engine, "school_classes", "sections", "sections TEXT")
+
+    section_name_tables = [
+        "students",
+        "student_attendance",
+        "teacher_subjects",
+        "class_teacher_assignments",
+        "homework_assignments",
+        "exams",
+        "timetable_entries",
+        "fee_assignments",
+        "courses",
+        "meetings",
+        "notice_class_audiences",
+    ]
+    existing_section_name_tables = [name for name in section_name_tables if _table_exists(engine, name)]
+    for table_name in existing_section_name_tables:
+        _add_column(engine, table_name, "section_name", "section_name VARCHAR(80)")
+
+    index_specs = [
+        ("students", "ix_students_school_session_class_section_name", ["school_id", "academic_session_id", "class_id", "section_name"]),
+        ("student_attendance", "ix_attendance_school_session_class_section_name", ["school_id", "session_id", "class_id", "section_name"]),
+        ("teacher_subjects", "ix_teacher_subjects_school_session_class_section_name", ["school_id", "academic_session_id", "class_id", "section_name"]),
+        ("class_teacher_assignments", "ix_class_teachers_school_session_class_section_name", ["school_id", "academic_session_id", "class_id", "section_name"]),
+        ("homework_assignments", "ix_homework_school_session_class_section_name", ["school_id", "academic_session_id", "class_id", "section_name"]),
+        ("exams", "ix_exams_school_session_class_section_name", ["school_id", "academic_session_id", "class_id", "section_name"]),
+        ("timetable_entries", "ix_timetable_school_session_class_section_name", ["school_id", "academic_session_id", "class_id", "section_name"]),
+        ("fee_assignments", "ix_fee_assignments_school_session_class_section_name", ["school_id", "academic_session_id", "class_id", "section_name"]),
+        ("courses", "ix_courses_school_session_class_section_name", ["school_id", "academic_session_id", "class_id", "section_name"]),
+        ("meetings", "ix_meetings_school_session_class_section_name", ["school_id", "academic_session_id", "class_id", "section_name"]),
+        ("notice_class_audiences", "ix_notice_audience_class_section_name", ["class_id", "section_name"]),
+    ]
+    for table_name, index_name, columns in index_specs:
+        existing_columns = _columns(engine, table_name)
+        if table_name in existing_section_name_tables and all(column in existing_columns for column in columns):
+            _execute_sql(engine, f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({', '.join(columns)})")
+
+    if not _table_exists(engine, "sections"):
+        return
+
+    if engine.dialect.name == "postgresql":
+        _execute_sql(
+            engine,
+            """
+            UPDATE school_classes AS c
+            SET sections = source.section_names
+            FROM (
+                SELECT class_id, string_agg(name, ', ' ORDER BY lower(name)) AS section_names
+                FROM sections
+                WHERE is_active IS TRUE
+                GROUP BY class_id
+            ) AS source
+            WHERE c.id = source.class_id
+              AND (c.sections IS NULL OR btrim(c.sections) = '')
+            """,
+        )
+        for table_name in existing_section_name_tables:
+            _execute_sql(
+                engine,
+                f"""
+                UPDATE {table_name} AS target
+                SET section_name = s.name
+                FROM sections AS s
+                WHERE target.section_id = s.id
+                  AND (target.section_name IS NULL OR btrim(target.section_name) = '')
+                """,
+            )
+    else:
+        _execute_sql(
+            engine,
+            """
+            UPDATE school_classes
+            SET sections = (
+                SELECT group_concat(name, ', ')
+                FROM sections
+                WHERE sections.class_id = school_classes.id
+                  AND sections.is_active = 1
+            )
+            WHERE (sections IS NULL OR trim(sections) = '')
+              AND EXISTS (
+                SELECT 1
+                FROM sections
+                WHERE sections.class_id = school_classes.id
+                  AND sections.is_active = 1
+              )
+            """,
+        )
+        for table_name in existing_section_name_tables:
+            _execute_sql(
+                engine,
+                f"""
+                UPDATE {table_name}
+                SET section_name = (
+                    SELECT sections.name
+                    FROM sections
+                    WHERE sections.id = {table_name}.section_id
+                )
+                WHERE (section_name IS NULL OR trim(section_name) = '')
+                  AND section_id IS NOT NULL
+                """,
+            )
+
 def _ensure_video_watch_progress_table(engine) -> None:
     """Ensure lesson video watch progress persists on existing VPS databases."""
     if not _table_exists(engine, "users") or not _table_exists(engine, "lessons"):
@@ -262,6 +375,7 @@ def run_startup_migrations(engine) -> None:
     _add_column(engine, "exam_subjects", "timetable_note", "timetable_note TEXT")
 
     _ensure_academic_session_scoping(engine)
+    _ensure_class_sections_dependency_fields(engine)
     _ensure_video_watch_progress_table(engine)
 
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

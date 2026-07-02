@@ -14,6 +14,7 @@ class HomeworkAssignment(Base):
     teacher_id: Mapped[int | None] = mapped_column(ForeignKey("teachers.id", ondelete="SET NULL"), nullable=True, index=True)
     class_id: Mapped[int] = mapped_column(ForeignKey("school_classes.id", ondelete="CASCADE"), index=True)
     section_id: Mapped[int | None] = mapped_column(ForeignKey("sections.id", ondelete="SET NULL"), nullable=True, index=True)
+    section_name: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     subject_id: Mapped[int | None] = mapped_column(ForeignKey("subjects.id", ondelete="SET NULL"), nullable=True, index=True)
     academic_session_id: Mapped[int | None] = mapped_column(ForeignKey("academic_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
 
@@ -28,7 +29,6 @@ class HomeworkAssignment(Base):
 
     teacher = relationship("Teacher")
     school_class = relationship("SchoolClass")
-    section = relationship("Section")
     subject = relationship("Subject")
     academic_session = relationship("AcademicSession")
     submissions = relationship("HomeworkSubmission", back_populates="homework", cascade="all, delete-orphan")

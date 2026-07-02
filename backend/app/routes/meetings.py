@@ -1,5 +1,6 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query
+import json
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, case, func, or_
 from sqlalchemy.orm import joinedload
@@ -12,6 +13,8 @@ from app.models.meeting import Meeting, MeetingStatus, MeetingType
 from app.services import meeting_service
 from app.schemas.meetings import MeetingListOut, TeacherClassOut, TeacherMeetingCreate, AdminMeetingCreate, MeetingCreateOut, TeacherMeetingSchedule, AdminMeetingSchedule, MeetingListItemOut
 from app.services.notification_service import notify_roles, notify_student_scope
+from app.core.config import settings
+
 router = APIRouter(prefix='/meetings', tags=['Meetings'])
 
 @router.get('/stats')
@@ -45,7 +48,7 @@ async def teacher_create_class_meeting(
     if not teacher:
         raise HTTPException(403, 'No teacher profile found for this user')
     try:
-        meeting = await meeting_service.create_teacher_class_meeting(db=db, school_id=current_user.school_id, teacher_id=teacher.id, class_id=payload.class_id, section_id=payload.section_id, title=payload.title, created_by_user_id=current_user.id)
+        meeting = await meeting_service.create_teacher_class_meeting(db=db, school_id=current_user.school_id, teacher_id=teacher.id, class_id=payload.class_id, section_id=payload.section_id, section_name=payload.section_name, title=payload.title, created_by_user_id=current_user.id)
     except PermissionError as e:
         raise HTTPException(403, str(e))
     except Exception as e:
@@ -174,7 +177,7 @@ async def schedule_teacher_class_meeting(
     try:
         meeting = await meeting_service.schedule_teacher_class_meeting(
             db=db, school_id=current_user.school_id, teacher_id=teacher.id,
-            class_id=payload.class_id, section_id=payload.section_id,
+            class_id=payload.class_id, section_id=payload.section_id, section_name=payload.section_name,
             title=payload.title, scheduled_at=payload.scheduled_at,
             created_by_user_id=current_user.id,
         )
@@ -376,4 +379,55 @@ async def end_meeting(meeting_id: int, db: AsyncSession=Depends(get_async_db), c
     except (ValueError, PermissionError) as e:
         raise HTTPException(403, str(e))
     return {'message': 'Meeting ended', 'meeting_id': meeting.id}
+
+
+
+
+@router.post("/webhook/bbb", status_code=200)
+async def bbb_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_async_db)
+):
+    try:
+        form = await request.form()
+        raw_event = form.get("event")
+        if not raw_event:
+            return {"status": "ignored"}
+        
+        events = json.loads(raw_event)
+        # BBB always sends a list
+        if not isinstance(events, list):
+            events = [events]
+    except Exception as e:
+        print(f"[BBB Webhook] Failed to parse payload: {e}")
+        return {"status": "ignored"}
+
+    for event_item in events:
+        event_id = event_item.get("data", {}).get("id")
+        if event_id != "meeting-ended":
+            continue
+
+        ext_meeting_id = (
+            event_item.get("data", {})
+                .get("attributes", {})
+                .get("meeting", {})
+                .get("external-meeting-id")
+        )
+        if not ext_meeting_id:
+            continue
+
+        result = await db.execute(
+            select(Meeting).where(
+                Meeting.bbb_meeting_id == ext_meeting_id,
+                Meeting.status == MeetingStatus.LIVE,
+            )
+        )
+        meeting = result.scalar_one_or_none()
+        if meeting:
+            meeting.status = MeetingStatus.ENDED
+            meeting.ended_at = datetime.utcnow()
+            await db.commit()
+            print(f"[BBB Webhook] Meeting {meeting.id} marked ENDED")
+
+    return {"status": "ok"}
 

@@ -18,6 +18,7 @@ export async function getChatMessages(
 type StreamCallbacks = {
   onToken: (token: string) => void;
   onEnhancedPrompt?: (content: string) => void;
+  onSuggestedQuestions?: (questions: string[]) => void;
   onStatus?: (status: string) => void;
 };
 
@@ -46,6 +47,7 @@ export async function streamLessonChatMessage(params: {
 }): Promise<void> {
   const res = await authFetch(`/sessions/${params.sessionId}/messages`, {
     method: "POST",
+    signal: params.signal,
     headers: {
       "Content-Type": "application/json",
     },
@@ -99,11 +101,19 @@ export async function streamLessonChatMessage(params: {
         error?: string;
         status?: string;
         enhanced_prompt?: string;
+        suggested_questions?: unknown;
       };
 
       if (payload.error) throw new Error(payload.error);
       if (payload.enhanced_prompt)
         params.callbacks.onEnhancedPrompt?.(payload.enhanced_prompt);
+      if (Array.isArray(payload.suggested_questions)) {
+        const questions = payload.suggested_questions
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean);
+        if (questions.length) params.callbacks.onSuggestedQuestions?.(questions);
+      }
       if (payload.status) params.callbacks.onStatus?.(payload.status);
       if (payload.token) params.callbacks.onToken(payload.token);
     }
@@ -116,12 +126,62 @@ export async function streamLessonChatMessage(params: {
       error?: string;
       status?: string;
       enhanced_prompt?: string;
+      suggested_questions?: unknown;
     };
 
     if (payload.error) throw new Error(payload.error);
     if (payload.enhanced_prompt)
       params.callbacks.onEnhancedPrompt?.(payload.enhanced_prompt);
+    if (Array.isArray(payload.suggested_questions)) {
+      const questions = payload.suggested_questions
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (questions.length) params.callbacks.onSuggestedQuestions?.(questions);
+    }
     if (payload.status) params.callbacks.onStatus?.(payload.status);
     if (payload.token) params.callbacks.onToken(payload.token);
   }
+}
+
+export type ChatShareResponse = {
+  ok: boolean;
+  channel: "email" | "telegram" | string;
+  message: string;
+};
+
+export async function sendChatAnswerEmail(params: {
+  content: string;
+  toEmail?: string;
+  subject?: string;
+  lessonTitle?: string;
+  courseTitle?: string;
+}): Promise<ChatShareResponse> {
+  return apiFetch<ChatShareResponse>("/sessions/share/email", {
+    method: "POST",
+    body: JSON.stringify({
+      content: params.content,
+      to_email: params.toEmail || null,
+      subject: params.subject || null,
+      lesson_title: params.lessonTitle || null,
+      course_title: params.courseTitle || null,
+    }),
+  });
+}
+
+export async function sendChatAnswerTelegram(params: {
+  content: string;
+  chatId?: string;
+  lessonTitle?: string;
+  courseTitle?: string;
+}): Promise<ChatShareResponse> {
+  return apiFetch<ChatShareResponse>("/sessions/share/telegram", {
+    method: "POST",
+    body: JSON.stringify({
+      content: params.content,
+      chat_id: params.chatId || null,
+      lesson_title: params.lessonTitle || null,
+      course_title: params.courseTitle || null,
+    }),
+  });
 }

@@ -121,6 +121,12 @@ export default function TimetableManager() {
     return meta.sections.filter((item) => item.extra === viewClassId);
   }, [meta, viewClassId]);
 
+  const sectionIdForName = (classId?: number | null, sectionName?: string | null) => {
+    if (!meta || !classId || !sectionName) return null;
+    const match = meta.sections.find((item) => item.extra === String(classId) && item.name.trim().toLowerCase() === sectionName.trim().toLowerCase());
+    return match?.id ?? null;
+  };
+
   const loadData = async () => {
     setLoading(true);
     setError("");
@@ -274,7 +280,7 @@ export default function TimetableManager() {
     setEntryForm({
       academic_session_id: item.academic_session_id ? String(item.academic_session_id) : "",
       class_id: String(item.class_id),
-      section_id: item.section_id ? String(item.section_id) : "",
+      section_id: item.section_name ? String(sectionIdForName(item.class_id, item.section_name) ?? "") : item.section_id ? String(item.section_id) : "",
       day_id: String(item.day_id),
       period_id: String(item.period_id),
       subject_id: item.subject_id ? String(item.subject_id) : "",

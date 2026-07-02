@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "httpx": "^3.0.1",
+    "xmltodict": "^1.0.5"
+  }
+}

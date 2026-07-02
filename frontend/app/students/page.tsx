@@ -35,6 +35,9 @@ type StudentForm = {
   parent_password: string;
 };
 
+type StudentStatusFilter = "ACTIVE" | "DELETED" | "SUSPENDED" | "ALL";
+type StudentToast = { type: "success" | "error"; message: string };
+
 const emptyForm: StudentForm = {
   admission_no: "",
   roll_number: "",
@@ -70,6 +73,16 @@ function toNullableNumber(value: string) {
   return value === "" ? null : Number(value);
 }
 
+function studentStatusClass(student: Student) {
+  if (!student.is_active || student.status === "DELETED") {
+    return "bg-red-50 text-red-700";
+  }
+  if (student.status === "SUSPENDED") {
+    return "bg-amber-50 text-amber-700";
+  }
+  return "bg-green-50 text-green-700";
+}
+
 export default function StudentsPage() {
   const [students, setStudents] = useState<Student[]>([]);
   const [classes, setClasses] = useState<AcademicClass[]>([]);
@@ -78,6 +91,9 @@ export default function StudentsPage() {
   const [editing, setEditing] = useState<Student | null>(null);
   const [search, setSearch] = useState("");
   const [classFilter, setClassFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StudentStatusFilter>("ACTIVE");
+  const [pendingDeactivate, setPendingDeactivate] = useState<Student | null>(null);
+  const [toast, setToast] = useState<StudentToast | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -86,6 +102,18 @@ export default function StudentsPage() {
   const classNameById = useMemo(() => new Map(classes.map((item) => [item.id, item.name])), [classes]);
   const sectionNameById = useMemo(() => new Map(sections.map((item) => [item.id, item.name])), [sections]);
   const formSections = useMemo(() => sections.filter((item) => !form.class_id || item.class_id === Number(form.class_id)), [sections, form.class_id]);
+  const sectionIdForName = (classId?: number | null, sectionName?: string | null) => {
+    if (!classId || !sectionName) return null;
+    const match = sections.find((item) => item.class_id === classId && item.name.trim().toLowerCase() === sectionName.trim().toLowerCase());
+    return match?.id ?? null;
+  };
+  const studentSectionLabel = (student: Student) => student.section_name || (student.section_id ? sectionNameById.get(student.section_id) : "") || "";
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   const setField = (name: keyof StudentForm, value: string | boolean) => {
     setForm((prev) => ({ ...prev, [name]: value, ...(name === "class_id" ? { section_id: "" } : {}) }));
@@ -104,6 +132,8 @@ export default function StudentsPage() {
       const params = new URLSearchParams();
       if (search.trim()) params.set("search", search.trim());
       if (classFilter) params.set("class_id", classFilter);
+      if (statusFilter !== "ALL") params.set("status", statusFilter);
+      if (statusFilter !== "ACTIVE") params.set("include_inactive", "true");
       const data = await apiFetch<Student[]>(`/students${params.toString() ? `?${params}` : ""}`);
       setStudents(data);
     } catch (err) {
@@ -120,7 +150,7 @@ export default function StudentsPage() {
   useEffect(() => {
     loadStudents();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classFilter]);
+  }, [classFilter, statusFilter]);
 
   const reset = () => {
     setForm(emptyForm);
@@ -139,7 +169,10 @@ export default function StudentsPage() {
         }
       : null;
 
-    return {
+    const payload: Record<string, unknown> & {
+      guardian: (Record<string, unknown> & { email?: string | null }) | null;
+      email?: string | null;
+    } = {
       admission_no: form.admission_no.trim(),
       roll_number: toNullable(form.roll_number),
       first_name: form.first_name.trim(),
@@ -160,6 +193,15 @@ export default function StudentsPage() {
       create_parent_login: form.create_parent_login,
       parent_password: form.create_parent_login && form.parent_password ? form.parent_password : null,
     };
+
+    if (editing?.user_id) {
+      delete payload.email;
+    }
+    if (editing?.guardian?.user_id && payload.guardian) {
+      delete payload.guardian.email;
+    }
+
+    return payload;
   };
 
   const save = async (event: React.FormEvent) => {
@@ -188,6 +230,7 @@ export default function StudentsPage() {
         setTemporaryCredential(messages.join(" | "));
       }
       reset();
+      setToast({ type: "success", message: editing ? "Student updated successfully." : "Student added successfully." });
       await loadStudents();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Student save failed");
@@ -213,7 +256,7 @@ export default function StudentsPage() {
       address: student.address ?? "",
       admission_date: student.admission_date ?? "",
       class_id: student.class_id ? String(student.class_id) : "",
-      section_id: student.section_id ? String(student.section_id) : "",
+      section_id: student.section_name ? String(sectionIdForName(student.class_id, student.section_name) ?? "") : student.section_id ? String(student.section_id) : "",
       guardian_full_name: student.guardian?.full_name ?? "",
       guardian_relation: student.guardian?.relation ?? "",
       guardian_email: student.guardian?.email ?? "",
@@ -228,14 +271,42 @@ export default function StudentsPage() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const deactivate = async (student: Student) => {
-    if (!confirm(`Deactivate ${student.first_name}?`)) return;
+  const requestDeactivate = (student: Student) => {
+    setError("");
+    setPendingDeactivate(student);
+  };
+
+  const confirmDeactivate = async () => {
+    if (!pendingDeactivate) return;
+    setSaving(true);
     setError("");
     try {
-      await apiFetch(`/students/${student.id}`, { method: "DELETE" });
+      await apiFetch(`/students/${pendingDeactivate.id}`, { method: "DELETE" });
+      setToast({ type: "success", message: `${pendingDeactivate.first_name} has been deactivated.` });
+      setPendingDeactivate(null);
       await loadStudents();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to deactivate student");
+      const message = err instanceof Error ? err.message : "Failed to deactivate student";
+      setError(message);
+      setToast({ type: "error", message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const activate = async (student: Student) => {
+    setSaving(true);
+    setError("");
+    try {
+      await apiFetch<Student>(`/students/${student.id}/activate`, { method: "PATCH" });
+      setToast({ type: "success", message: `${student.first_name} has been activated.` });
+      await loadStudents();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to activate student";
+      setError(message);
+      setToast({ type: "error", message });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -266,6 +337,12 @@ export default function StudentsPage() {
         <p className="mt-1 text-sm text-slate-500">Add student profiles, guardian details and optional student login accounts.</p>
       </div>
 
+      {toast && (
+        <div className={`fixed right-5 top-5 z-50 rounded-2xl border px-4 py-3 text-sm font-semibold shadow-lg ${toast.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-red-200 bg-red-50 text-red-700"}`}>
+          {toast.message}
+        </div>
+      )}
+
       <Card>
         <form onSubmit={save} className="grid gap-4 md:grid-cols-3">
           <div><Label>Admission No *</Label><Input value={form.admission_no} onChange={(e) => setField("admission_no", e.target.value)} required /></div>
@@ -274,7 +351,17 @@ export default function StudentsPage() {
           <div><Label>First Name *</Label><Input value={form.first_name} onChange={(e) => setField("first_name", e.target.value)} required /></div>
           <div><Label>Last Name</Label><Input value={form.last_name} onChange={(e) => setField("last_name", e.target.value)} /></div>
           <div><Label>Section</Label><select className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" value={form.section_id} onChange={(e) => setField("section_id", e.target.value)}><option value="">Select section</option>{formSections.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
-          <div><Label>Email</Label><Input type="email" value={form.email} onChange={(e) => setField("email", e.target.value)} /></div>
+          <div>
+            <Label>Email</Label>
+            <Input
+              type="email"
+              value={form.email}
+              disabled={Boolean(editing?.user_id)}
+              className={editing?.user_id ? "bg-slate-100 text-slate-500" : ""}
+              onChange={(e) => setField("email", e.target.value)}
+            />
+            {editing?.user_id && <p className="mt-1 text-xs text-slate-500">Email is locked because this student has a login account.</p>}
+          </div>
           <div><Label>Phone</Label><Input value={form.phone} onChange={(e) => setField("phone", e.target.value)} /></div>
           <div><Label>Gender</Label><select className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" value={form.gender} onChange={(e) => setField("gender", e.target.value)}><option value="">Select gender</option><option>Male</option><option>Female</option><option>Other</option></select></div>
           <div><Label>Date of Birth</Label><Input type="date" value={form.date_of_birth} onChange={(e) => setField("date_of_birth", e.target.value)} /></div>
@@ -287,7 +374,17 @@ export default function StudentsPage() {
           <div><Label>Guardian Name</Label><Input value={form.guardian_full_name} onChange={(e) => setField("guardian_full_name", e.target.value)} /></div>
           <div><Label>Relation</Label><Input value={form.guardian_relation} onChange={(e) => setField("guardian_relation", e.target.value)} placeholder="Father / Mother / Guardian" /></div>
           <div><Label>Guardian Phone</Label><Input value={form.guardian_phone} onChange={(e) => setField("guardian_phone", e.target.value)} /></div>
-          <div><Label>Guardian Email</Label><Input type="email" value={form.guardian_email} onChange={(e) => setField("guardian_email", e.target.value)} /></div>
+          <div>
+            <Label>Guardian Email</Label>
+            <Input
+              type="email"
+              value={form.guardian_email}
+              disabled={Boolean(editing?.guardian?.user_id)}
+              className={editing?.guardian?.user_id ? "bg-slate-100 text-slate-500" : ""}
+              onChange={(e) => setField("guardian_email", e.target.value)}
+            />
+            {editing?.guardian?.user_id && <p className="mt-1 text-xs text-slate-500">Guardian email is locked because the parent login already exists.</p>}
+          </div>
           <div><Label>Occupation</Label><Input value={form.guardian_occupation} onChange={(e) => setField("guardian_occupation", e.target.value)} /></div>
           <div><Label>Guardian Address</Label><Input value={form.guardian_address} onChange={(e) => setField("guardian_address", e.target.value)} /></div>
 
@@ -322,9 +419,10 @@ export default function StudentsPage() {
 
       <Card className="mt-6">
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 md:grid-cols-3">
             <div><Label>Search student</Label><Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Name, admission no, roll no" /></div>
             <div><Label>Filter by class</Label><select className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" value={classFilter} onChange={(e) => setClassFilter(e.target.value)}><option value="">All classes</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
+            <div><Label>Status</Label><select className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as StudentStatusFilter)}><option value="ACTIVE">Active</option><option value="DELETED">Deactivated</option><option value="SUSPENDED">Suspended</option><option value="ALL">All students</option></select></div>
           </div>
           <Button type="button" onClick={loadStudents}><span className="inline-flex items-center gap-2"><Search size={16} /> Search</span></Button>
         </div>
@@ -337,7 +435,7 @@ export default function StudentsPage() {
                 <tr key={student.id} className="hover:bg-slate-50">
                   <td className="px-4 py-3 font-medium text-slate-900">{student.first_name} {student.last_name}<p className="text-xs font-normal text-slate-500">{student.email || student.phone || "-"}</p></td>
                   <td className="px-4 py-3 text-slate-600">{student.admission_no}{student.roll_number ? ` / Roll ${student.roll_number}` : ""}</td>
-                  <td className="px-4 py-3 text-slate-600">{student.class_id ? classNameById.get(student.class_id) : "-"} {student.section_id ? `- ${sectionNameById.get(student.section_id)}` : ""}</td>
+                  <td className="px-4 py-3 text-slate-600">{student.class_id ? classNameById.get(student.class_id) : "-"} {studentSectionLabel(student) ? `- ${studentSectionLabel(student)}` : ""}</td>
                   <td className="px-4 py-3 text-slate-600">
                     {student.guardian?.full_name || "-"}
                     {student.guardian?.user_id && <p className="text-xs text-green-700">Parent login created</p>}
@@ -346,11 +444,15 @@ export default function StudentsPage() {
                     <p>Student: {student.user_id ? "Created" : "No login"}</p>
                     <p className="text-xs">Parent: {student.guardian?.user_id ? "Created" : "No login"}</p>
                   </td>
-                  <td className="px-4 py-3"><span className="rounded-full bg-green-50 px-2 py-1 text-xs font-semibold text-green-700">{student.status}</span></td>
+                  <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${studentStatusClass(student)}`}>{student.status}</span></td>
                   <td className="flex flex-wrap gap-2 px-4 py-3">
                     <button onClick={() => startEdit(student)} className="rounded-lg border border-slate-200 p-2 hover:bg-slate-100" title="Edit student"><Edit2 size={15} /></button>
                     {student.guardian && !student.guardian.user_id && <button onClick={() => createParentLogin(student)} className="rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100">Parent Login</button>}
-                    <button onClick={() => deactivate(student)} className="rounded-lg border border-red-200 p-2 text-red-600 hover:bg-red-50" title="Deactivate student"><Trash2 size={15} /></button>
+                    {student.is_active ? (
+                      <button onClick={() => requestDeactivate(student)} className="rounded-lg border border-red-200 p-2 text-red-600 hover:bg-red-50" title="Deactivate student"><Trash2 size={15} /></button>
+                    ) : (
+                      <button onClick={() => activate(student)} className="rounded-lg border border-emerald-200 px-2 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50" title="Activate student">Activate</button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -358,6 +460,21 @@ export default function StudentsPage() {
           </table>
         </div>
       </Card>
+
+      {pendingDeactivate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 px-4">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+            <h2 className="text-lg font-bold text-slate-900">Deactivate student?</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              {pendingDeactivate.first_name} {pendingDeactivate.last_name || ""} will be hidden from active student lists. Admin can activate this student again from the Deactivated status filter.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setPendingDeactivate(null)} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50" disabled={saving}>Cancel</button>
+              <button type="button" onClick={confirmDeactivate} className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60" disabled={saving}>{saving ? "Deactivating..." : "Deactivate"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }

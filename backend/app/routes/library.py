@@ -9,6 +9,7 @@ from app.models.user import User, UserRole
 from app.schemas.common import MessageResponse
 from app.schemas.library import BookCreate, BookRead, BookUpdate, IssueCreate, IssueRead, LibraryStats, MarkFinePaid, ReturnBook
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from app.core.async_query import async_query
 router = APIRouter(prefix='/library', tags=['Phase 11 - Library'])
 ADMIN_ROLES = [UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN]
@@ -175,7 +176,20 @@ async def list_issues(status_filter: str | None=Query(default=None, alias='statu
 @router.get('/issues/overdue', response_model=list[IssueRead])
 async def overdue_issues(school_id: int=Depends(current_school_id), _: User=Depends(require_roles(*STAFF_ROLES)), db: AsyncSession=Depends(get_async_db)):
     today = date.today()
-    issues = await async_query(db, BookIssue).filter(BookIssue.school_id == school_id, BookIssue.status.in_([IssueStatus.ISSUED.value, IssueStatus.OVERDUE.value]), BookIssue.due_date < today).order_by(BookIssue.due_date).all()
+    
+    issues = await async_query(db, BookIssue)\
+        .options(
+            selectinload(BookIssue.book)
+        )\
+        .filter(
+            BookIssue.school_id == school_id,
+            BookIssue.status.in_(
+                [IssueStatus.ISSUED.value, IssueStatus.OVERDUE.value]
+            ),
+            BookIssue.due_date < today
+        )\
+        .order_by(BookIssue.due_date)\
+        .all()
     return [_issue_to_read(i, today) for i in issues]
 
 @router.get('/issues/my', response_model=list[IssueRead])

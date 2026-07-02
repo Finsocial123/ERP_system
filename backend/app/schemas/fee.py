@@ -83,6 +83,7 @@ class FeeAssignmentCreate(BaseModel):
     academic_session_id: int | None = None
     class_id: int | None = None
     section_id: int | None = None
+    section_name: str | None = Field(default=None, max_length=80)
     student_id: int | None = None
     assigned_amount: float | None = Field(default=None, gt=0)
     due_date: date | None = None

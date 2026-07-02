@@ -161,6 +161,12 @@ export default function CourseManager({ mode }: Props) {
     return meta.subjects.filter((subject) => subject.extra === courseForm.class_id);
   }, [courseForm.class_id, meta]);
 
+  const sectionIdForName = (classId?: number | null, sectionName?: string | null) => {
+    if (!meta || !classId || !sectionName) return null;
+    const match = meta.sections.find((item) => item.extra === String(classId) && item.name.trim().toLowerCase() === sectionName.trim().toLowerCase());
+    return match?.id ?? null;
+  };
+
   const visibleCourses = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return courses;
@@ -258,7 +264,7 @@ export default function CourseManager({ mode }: Props) {
       title: course.title,
       description: course.description || "",
       class_id: course.class_id ? String(course.class_id) : "",
-      section_id: course.section_id ? String(course.section_id) : "",
+      section_id: course.section_name ? String(sectionIdForName(course.class_id, course.section_name) ?? "") : course.section_id ? String(course.section_id) : "",
       subject_id: course.subject_id ? String(course.subject_id) : "",
       teacher_id: course.teacher_id ? String(course.teacher_id) : "",
       status: course.status || "PUBLISHED",

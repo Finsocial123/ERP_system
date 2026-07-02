@@ -8,7 +8,7 @@ from app.core.database import get_async_db
 from app.core.cloudinary_upload import upload_teacher_profile_photo_to_cloudinary
 from app.dependencies.auth import get_current_user
 from app.dependencies.academic_session import selected_academic_session
-from app.models.academic import AcademicSession, SchoolClass, Section, Subject
+from app.models.academic import AcademicSession, SchoolClass, Subject
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.school import School
 from app.models.user import User, UserRole
@@ -16,6 +16,7 @@ from app.schemas.profile import ProfileResponse, ProfileUpdate
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.core.async_query import async_query
+from app.core.sections import parse_section_names
 router = APIRouter(prefix='/profile', tags=['Profile'])
 ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
 ALLOWED_PROFILE_PHOTO_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp'}
@@ -46,15 +47,13 @@ def _session_scoped_query(query, model, session_id: int | None):
 
 async def _maps(db: AsyncSession, school_id: int, session_id: int | None = None) -> dict[str, dict[int, Any]]:
     class_query = _session_scoped_query(async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id), SchoolClass, session_id)
-    section_query = _session_scoped_query(async_query(db, Section).filter(Section.school_id == school_id), Section, session_id)
     subject_query = _session_scoped_query(async_query(db, Subject).filter(Subject.school_id == school_id), Subject, session_id)
     teacher_query = _session_scoped_query(async_query(db, Teacher).filter(Teacher.school_id == school_id), Teacher, session_id)
     classes = await class_query.all()
-    sections = await section_query.all()
     subjects = await subject_query.all()
     teachers = await teacher_query.all()
     sessions = await async_query(db, AcademicSession).filter(AcademicSession.school_id == school_id).all()
-    return {'classes': {item.id: item for item in classes}, 'sections': {item.id: item for item in sections}, 'subjects': {item.id: item for item in subjects}, 'teachers': {item.id: item for item in teachers}, 'sessions': {item.id: item for item in sessions}}
+    return {'classes': {item.id: item for item in classes}, 'sections': {}, 'subjects': {item.id: item for item in subjects}, 'teachers': {item.id: item for item in teachers}, 'sessions': {item.id: item for item in sessions}}
 
 def _class_name(class_id: int | None, maps: dict[str, dict[int, Any]]) -> str | None:
     item = maps['classes'].get(class_id or 0)
@@ -75,7 +74,7 @@ def _teacher_name(teacher_id: int | None, maps: dict[str, dict[int, Any]]) -> st
     return item.full_name if item else None
 
 def _student_payload(student: Student, maps: dict[str, dict[int, Any]]) -> dict[str, Any]:
-    return {'id': student.id, 'name': _full_student_name(student), 'admission_no': student.admission_no, 'roll_number': student.roll_number, 'email': student.email, 'phone': student.phone, 'class_id': student.class_id, 'class_name': _class_name(student.class_id, maps), 'section_id': student.section_id, 'section_name': _section_name(student.section_id, maps), 'status': student.status, 'is_active': student.is_active}
+    return {'id': student.id, 'name': _full_student_name(student), 'admission_no': student.admission_no, 'roll_number': student.roll_number, 'email': student.email, 'phone': student.phone, 'class_id': student.class_id, 'class_name': _class_name(student.class_id, maps), 'section_id': student.section_id, 'section_name': student.section_name, 'status': student.status, 'is_active': student.is_active}
 
 def _teacher_payload(teacher: Teacher, maps: dict[str, dict[int, Any]] | None=None) -> dict[str, Any]:
     return {'id': teacher.id, 'name': teacher.full_name, 'employee_id': teacher.employee_id, 'email': teacher.email, 'phone': teacher.phone, 'department_id': teacher.department_id, 'photo_url': teacher.photo_url, 'status': teacher.status, 'is_active': teacher.is_active}
@@ -94,7 +93,6 @@ def _student_eager_options():
     return (
         selectinload(Student.guardian),
         selectinload(Student.school_class),
-        selectinload(Student.section),
     )
 
 
@@ -158,25 +156,25 @@ async def _find_parent_guardians_for_user(db: AsyncSession, user: User) -> list[
         return []
     return await async_query(db, ParentGuardian).filter(ParentGuardian.school_id == user.school_id, ParentGuardian.is_active.is_(True), func.lower(ParentGuardian.email).in_(identifiers)).order_by(ParentGuardian.id.asc()).all()
 
-async def _class_teacher_items(db: AsyncSession, school_id: int, class_id: int | None, section_id: int | None, maps: dict[str, dict[int, Any]], session_id: int | None = None) -> list[dict[str, Any]]:
+async def _class_teacher_items(db: AsyncSession, school_id: int, class_id: int | None, section_id: int | None, maps: dict[str, dict[int, Any]], session_id: int | None = None, section_name: str | None = None) -> list[dict[str, Any]]:
     if class_id is None:
         return []
-    query = async_query(db, ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.class_id == class_id, or_(ClassTeacherAssignment.section_id == section_id, ClassTeacherAssignment.section_id.is_(None)))
+    query = async_query(db, ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.class_id == class_id, or_(ClassTeacherAssignment.section_name == section_name, ClassTeacherAssignment.section_name.is_(None)))
     query = _session_scoped_query(query, ClassTeacherAssignment, session_id)
     items = []
     for row in await query.order_by(ClassTeacherAssignment.id.asc()).all():
         session = maps['sessions'].get(row.academic_session_id or 0)
-        items.append({'id': row.id, 'teacher_id': row.teacher_id, 'teacher_name': _teacher_name(row.teacher_id, maps), 'class_id': row.class_id, 'class_name': _class_name(row.class_id, maps), 'section_id': row.section_id, 'section_name': _section_name(row.section_id, maps) or 'All Sections', 'academic_session_id': row.academic_session_id, 'academic_session_name': session.name if session else None})
+        items.append({'id': row.id, 'teacher_id': row.teacher_id, 'teacher_name': _teacher_name(row.teacher_id, maps), 'class_id': row.class_id, 'class_name': _class_name(row.class_id, maps), 'section_id': row.section_id, 'section_name': row.section_name or 'All Sections', 'academic_session_id': row.academic_session_id, 'academic_session_name': session.name if session else None})
     return items
 
-async def _subject_teacher_items(db: AsyncSession, school_id: int, class_id: int | None, section_id: int | None, maps: dict[str, dict[int, Any]], session_id: int | None = None) -> list[dict[str, Any]]:
+async def _subject_teacher_items(db: AsyncSession, school_id: int, class_id: int | None, section_id: int | None, maps: dict[str, dict[int, Any]], session_id: int | None = None, section_name: str | None = None) -> list[dict[str, Any]]:
     if class_id is None:
         return []
-    query = async_query(db, TeacherSubject).filter(TeacherSubject.school_id == school_id, TeacherSubject.class_id == class_id, or_(TeacherSubject.section_id == section_id, TeacherSubject.section_id.is_(None)))
+    query = async_query(db, TeacherSubject).filter(TeacherSubject.school_id == school_id, TeacherSubject.class_id == class_id, or_(TeacherSubject.section_name == section_name, TeacherSubject.section_name.is_(None)))
     query = _session_scoped_query(query, TeacherSubject, session_id)
     items = []
     for row in await query.order_by(TeacherSubject.id.asc()).all():
-        items.append({'id': row.id, 'teacher_id': row.teacher_id, 'teacher_name': _teacher_name(row.teacher_id, maps), 'subject_id': row.subject_id, 'subject_name': _subject_name(row.subject_id, maps), 'class_id': row.class_id, 'class_name': _class_name(row.class_id, maps), 'section_id': row.section_id, 'section_name': _section_name(row.section_id, maps) or 'All Sections'})
+        items.append({'id': row.id, 'teacher_id': row.teacher_id, 'teacher_name': _teacher_name(row.teacher_id, maps), 'subject_id': row.subject_id, 'subject_name': _subject_name(row.subject_id, maps), 'class_id': row.class_id, 'class_name': _class_name(row.class_id, maps), 'section_id': row.section_id, 'section_name': row.section_name or 'All Sections'})
     return items
 
 async def _build_student_profile(db: AsyncSession, user: User, maps: dict[str, dict[int, Any]], session_id: int | None = None) -> dict[str, Any]:
@@ -184,7 +182,7 @@ async def _build_student_profile(db: AsyncSession, user: User, maps: dict[str, d
     if not student:
         return {'student': None, 'message': 'Student record is not linked to this login yet.'}
     guardian = student.guardian
-    return {'student': {**_student_payload(student, maps), 'gender': student.gender, 'date_of_birth': student.date_of_birth.isoformat() if student.date_of_birth else None, 'blood_group': student.blood_group, 'photo_url': student.photo_url, 'address': student.address, 'admission_date': student.admission_date.isoformat() if student.admission_date else None}, 'guardian': _guardian_payload(guardian) if guardian else None, 'class_teachers': await _class_teacher_items(db, user.school_id, student.class_id, student.section_id, maps, session_id), 'subject_teachers': await _subject_teacher_items(db, user.school_id, student.class_id, student.section_id, maps, session_id)}
+    return {'student': {**_student_payload(student, maps), 'gender': student.gender, 'date_of_birth': student.date_of_birth.isoformat() if student.date_of_birth else None, 'blood_group': student.blood_group, 'photo_url': student.photo_url, 'address': student.address, 'admission_date': student.admission_date.isoformat() if student.admission_date else None}, 'guardian': _guardian_payload(guardian) if guardian else None, 'class_teachers': await _class_teacher_items(db, user.school_id, student.class_id, student.section_id, maps, session_id, student.section_name), 'subject_teachers': await _subject_teacher_items(db, user.school_id, student.class_id, student.section_id, maps, session_id, student.section_name)}
 
 async def _build_parent_profile(db: AsyncSession, user: User, maps: dict[str, dict[int, Any]], session_id: int | None = None) -> dict[str, Any]:
     guardians = await _find_parent_guardians_for_user(db, user)
@@ -193,20 +191,20 @@ async def _build_parent_profile(db: AsyncSession, user: User, maps: dict[str, di
     if guardian_ids:
         student_query = _session_scoped_query(async_query(db, Student).options(*_student_eager_options()).filter(Student.school_id == user.school_id, Student.guardian_id.in_(guardian_ids), Student.is_active.is_(True)), Student, session_id)
         students = await student_query.order_by(Student.first_name.asc(), Student.admission_no.asc()).all()
-        children = [{**_student_payload(student, maps), 'class_teachers': await _class_teacher_items(db, user.school_id, student.class_id, student.section_id, maps, session_id), 'subject_teachers': await _subject_teacher_items(db, user.school_id, student.class_id, student.section_id, maps, session_id)} for student in students]
+        children = [{**_student_payload(student, maps), 'class_teachers': await _class_teacher_items(db, user.school_id, student.class_id, student.section_id, maps, session_id, student.section_name), 'subject_teachers': await _subject_teacher_items(db, user.school_id, student.class_id, student.section_id, maps, session_id, student.section_name)} for student in students]
     primary_guardian = guardians[0] if guardians else None
     return {'guardian': _guardian_payload(primary_guardian) if primary_guardian else None, 'guardians': [_guardian_payload(item) for item in guardians], 'children': children, 'children_count': len(children), 'message': None if guardians else 'No guardian record is linked to this parent login yet.'}
 
-def _scope_key(class_id: int | None, section_id: int | None) -> tuple[int | None, int | None]:
-    return (class_id, section_id)
+def _scope_key(class_id: int | None, section_name: str | None) -> tuple[int | None, str | None]:
+    return (class_id, section_name)
 
-async def _students_for_scope(db: AsyncSession, school_id: int, class_id: int | None, section_id: int | None, maps: dict[str, dict[int, Any]], session_id: int | None = None) -> list[dict[str, Any]]:
+async def _students_for_scope(db: AsyncSession, school_id: int, class_id: int | None, section_name: str | None, maps: dict[str, dict[int, Any]], session_id: int | None = None) -> list[dict[str, Any]]:
     if class_id is None:
         return []
     query = async_query(db, Student).options(*_student_eager_options()).filter(Student.school_id == school_id, Student.class_id == class_id, Student.is_active.is_(True))
     query = _session_scoped_query(query, Student, session_id)
-    if section_id is not None:
-        query = query.filter(Student.section_id == section_id)
+    if section_name:
+        query = query.filter(Student.section_name == section_name)
     return [_student_payload(item, maps) for item in await query.order_by(Student.first_name.asc(), Student.admission_no.asc()).all()]
 
 async def _build_teacher_profile(db: AsyncSession, user: User, maps: dict[str, dict[int, Any]], session_id: int | None = None) -> dict[str, Any]:
@@ -217,23 +215,23 @@ async def _build_teacher_profile(db: AsyncSession, user: User, maps: dict[str, d
     subject_query = _session_scoped_query(async_query(db, TeacherSubject).filter(TeacherSubject.school_id == user.school_id, TeacherSubject.teacher_id == teacher.id), TeacherSubject, session_id)
     class_teacher_rows = await class_teacher_query.order_by(ClassTeacherAssignment.id.asc()).all()
     subject_rows = await subject_query.order_by(TeacherSubject.id.asc()).all()
-    assigned_scopes: dict[tuple[int | None, int | None], dict[str, Any]] = {}
+    assigned_scopes: dict[tuple[int | None, str | None], dict[str, Any]] = {}
     class_teacher_items = []
     for row in class_teacher_rows:
         session = maps['sessions'].get(row.academic_session_id or 0)
-        item = {'id': row.id, 'class_id': row.class_id, 'class_name': _class_name(row.class_id, maps), 'section_id': row.section_id, 'section_name': _section_name(row.section_id, maps) or 'All Sections', 'academic_session_id': row.academic_session_id, 'academic_session_name': session.name if session else None}
+        item = {'id': row.id, 'class_id': row.class_id, 'class_name': _class_name(row.class_id, maps), 'section_id': row.section_id, 'section_name': row.section_name or 'All Sections', 'academic_session_id': row.academic_session_id, 'academic_session_name': session.name if session else None}
         class_teacher_items.append(item)
-        assigned_scopes[_scope_key(row.class_id, row.section_id)] = item
+        assigned_scopes[_scope_key(row.class_id, row.section_name)] = item
     subject_items = []
     for row in subject_rows:
-        item = {'id': row.id, 'subject_id': row.subject_id, 'subject_name': _subject_name(row.subject_id, maps), 'class_id': row.class_id, 'class_name': _class_name(row.class_id, maps), 'section_id': row.section_id, 'section_name': _section_name(row.section_id, maps) or 'All Sections'}
+        item = {'id': row.id, 'subject_id': row.subject_id, 'subject_name': _subject_name(row.subject_id, maps), 'class_id': row.class_id, 'class_name': _class_name(row.class_id, maps), 'section_id': row.section_id, 'section_name': row.section_name or 'All Sections'}
         subject_items.append(item)
         if row.class_id is not None:
-            assigned_scopes.setdefault(_scope_key(row.class_id, row.section_id), item)
+            assigned_scopes.setdefault(_scope_key(row.class_id, row.section_name), item)
     classes = []
-    for class_id, section_id in sorted(assigned_scopes.keys(), key=lambda value: (value[0] or 0, value[1] or 0)):
-        students = await _students_for_scope(db, user.school_id, class_id, section_id, maps, session_id)
-        classes.append({'class_id': class_id, 'class_name': _class_name(class_id, maps), 'section_id': section_id, 'section_name': _section_name(section_id, maps) or 'All Sections', 'total_students': len(students), 'students': students})
+    for class_id, section_name in sorted(assigned_scopes.keys(), key=lambda value: (value[0] or 0, value[1] or "")):
+        students = await _students_for_scope(db, user.school_id, class_id, section_name, maps, session_id)
+        classes.append({'class_id': class_id, 'class_name': _class_name(class_id, maps), 'section_id': None, 'section_name': section_name or 'All Sections', 'total_students': len(students), 'students': students})
     return {'teacher': {**_teacher_payload(teacher, maps), 'gender': teacher.gender, 'qualification': teacher.qualification, 'specialization': teacher.specialization, 'joining_date': teacher.joining_date.isoformat() if teacher.joining_date else None, 'photo_url': teacher.photo_url, 'address': teacher.address}, 'class_teacher_assignments': class_teacher_items, 'subject_assignments': subject_items, 'assigned_classes': classes}
 
 async def _active_parent_count(db: AsyncSession, school_id: int, session_id: int | None = None) -> int:
@@ -249,7 +247,6 @@ async def _active_parent_count(db: AsyncSession, school_id: int, session_id: int
 
 async def _build_admin_profile(db: AsyncSession, school_id: int, maps: dict[str, dict[int, Any]], session_id: int | None = None) -> dict[str, Any]:
     classes = [item for item in maps['classes'].values() if item.is_active]
-    sections = [item for item in maps['sections'].values() if item.is_active]
     student_query = _session_scoped_query(async_query(db, Student).filter(Student.school_id == school_id, Student.is_active.is_(True)), Student, session_id)
     teacher_query = _session_scoped_query(async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True)), Teacher, session_id)
     teacher_subject_query = _session_scoped_query(async_query(db, TeacherSubject).filter(TeacherSubject.school_id == school_id), TeacherSubject, session_id)
@@ -259,8 +256,9 @@ async def _build_admin_profile(db: AsyncSession, school_id: int, maps: dict[str,
     teacher_subjects = await teacher_subject_query.all()
     class_teachers = await class_teacher_query.all()
     sections_by_class: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for section in sections:
-        sections_by_class[section.class_id].append({'id': section.id, 'name': section.name, 'is_active': section.is_active})
+    for school_class in classes:
+        for index, section_name in enumerate(parse_section_names(school_class.sections), start=1):
+            sections_by_class[school_class.id].append({'id': index, 'name': section_name, 'is_active': True})
     students_by_class: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for student in students:
         if student.class_id is not None:
@@ -269,11 +267,11 @@ async def _build_admin_profile(db: AsyncSession, school_id: int, maps: dict[str,
     for row in teacher_subjects:
         if row.class_id is None:
             continue
-        subject_teachers_by_class[row.class_id].append({'id': row.id, 'teacher_id': row.teacher_id, 'teacher_name': _teacher_name(row.teacher_id, maps), 'subject_id': row.subject_id, 'subject_name': _subject_name(row.subject_id, maps), 'section_id': row.section_id, 'section_name': _section_name(row.section_id, maps) or 'All Sections'})
+        subject_teachers_by_class[row.class_id].append({'id': row.id, 'teacher_id': row.teacher_id, 'teacher_name': _teacher_name(row.teacher_id, maps), 'subject_id': row.subject_id, 'subject_name': _subject_name(row.subject_id, maps), 'section_id': row.section_id, 'section_name': row.section_name or 'All Sections'})
     class_teachers_by_class: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in class_teachers:
         session = maps['sessions'].get(row.academic_session_id or 0)
-        class_teachers_by_class[row.class_id].append({'id': row.id, 'teacher_id': row.teacher_id, 'teacher_name': _teacher_name(row.teacher_id, maps), 'section_id': row.section_id, 'section_name': _section_name(row.section_id, maps) or 'All Sections', 'academic_session_id': row.academic_session_id, 'academic_session_name': session.name if session else None})
+        class_teachers_by_class[row.class_id].append({'id': row.id, 'teacher_id': row.teacher_id, 'teacher_name': _teacher_name(row.teacher_id, maps), 'section_id': row.section_id, 'section_name': row.section_name or 'All Sections', 'academic_session_id': row.academic_session_id, 'academic_session_name': session.name if session else None})
     class_items = []
     for school_class in sorted(classes, key=lambda item: item.name):
         class_students = students_by_class.get(school_class.id, [])

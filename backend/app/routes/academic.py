@@ -1,13 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.async_query import async_query
 from app.core.database import get_async_db
+from app.core.sections import class_section_options, format_section_names, parse_section_names
 from app.dependencies.academic_session import selected_academic_session_id, writable_selected_academic_session_id, assert_item_session_is_writable
 from app.dependencies.auth import current_school_id, get_current_user, require_school_admin
 from app.models.academic import AcademicSession, Department, SchoolClass, Section, Subject
-from app.models.people import ClassTeacherAssignment, Teacher, TeacherSubject
+from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.user import User
 from app.schemas.academic import (
     AcademicSessionCreate,
@@ -101,6 +103,88 @@ async def _validate_class(db: AsyncSession, class_id: int | None, school_id: int
     return item
 
 
+
+
+async def _replicate_previous_active_students(
+    db: AsyncSession,
+    school_id: int,
+    source_session_id: int | None,
+    target_session_id: int,
+    class_map: dict[int, int],
+    section_map: dict[int, int],
+) -> None:
+    """Copy active student rows into the new academic session.
+
+    The new session gets its own Student rows, so edits like class/section change
+    stay isolated from the previous session. Guardian rows are also copied so
+    guardian edits in the new session do not mutate older-session records. Login
+    users are intentionally reused, so students/parents keep the same credentials.
+    """
+    if not source_session_id or source_session_id == target_session_id:
+        return
+
+    existing_admission_numbers = {
+        row.admission_no
+        for row in await async_query(db, Student).filter(
+            Student.school_id == school_id,
+            Student.academic_session_id == target_session_id,
+        ).all()
+    }
+
+    students = await async_query(db, Student).options(selectinload(Student.guardian)).filter(
+        Student.school_id == school_id,
+        Student.academic_session_id == source_session_id,
+        Student.is_active.is_(True),
+    ).order_by(Student.id.asc()).all()
+
+    for old in students:
+        if old.admission_no in existing_admission_numbers:
+            continue
+
+        new_guardian_id = None
+        if old.guardian:
+            guardian = ParentGuardian(
+                school_id=school_id,
+                user_id=old.guardian.user_id,
+                full_name=old.guardian.full_name,
+                relation=old.guardian.relation,
+                email=old.guardian.email,
+                phone=old.guardian.phone,
+                alternate_phone=old.guardian.alternate_phone,
+                occupation=old.guardian.occupation,
+                address=old.guardian.address,
+                is_active=old.guardian.is_active,
+            )
+            db.add(guardian)
+            await db.flush()
+            new_guardian_id = guardian.id
+
+        db.add(Student(
+            school_id=school_id,
+            academic_session_id=target_session_id,
+            user_id=old.user_id,
+            guardian_id=new_guardian_id,
+            class_id=class_map.get(old.class_id) if old.class_id else None,
+            section_id=section_map.get(old.section_id) if old.section_id else None,
+            section_name=old.section_name,
+            admission_no=old.admission_no,
+            roll_number=old.roll_number,
+            first_name=old.first_name,
+            last_name=old.last_name,
+            email=old.email,
+            phone=old.phone,
+            gender=old.gender,
+            date_of_birth=old.date_of_birth,
+            blood_group=old.blood_group,
+            photo_url=old.photo_url,
+            address=old.address,
+            admission_date=old.admission_date,
+            status=old.status,
+            is_active=old.is_active,
+        ))
+        existing_admission_numbers.add(old.admission_no)
+
+
 async def _replicate_previous_active_setup(
     db: AsyncSession,
     school_id: int,
@@ -146,6 +230,7 @@ async def _replicate_previous_active_setup(
             department_id=dept_map.get(old.department_id) if old.department_id else None,
             name=old.name,
             code=old.code,
+            sections=old.sections,
             is_active=old.is_active,
         )
         db.add(new)
@@ -188,6 +273,7 @@ async def _replicate_previous_active_setup(
             class_id=new_class_id,
             name=old.name,
             code=old.code,
+            sections=old.sections,
             is_active=old.is_active,
         )
         db.add(new)
@@ -256,6 +342,15 @@ async def _replicate_previous_active_setup(
             class_id=class_id,
             section_id=section_map.get(old.section_id) if old.section_id else None,
         ))
+
+    await _replicate_previous_active_students(
+        db=db,
+        school_id=school_id,
+        source_session_id=source_session_id,
+        target_session_id=target_session_id,
+        class_map=class_map,
+        section_map=section_map,
+    )
 
 
 @router.get("/academic-sessions", response_model=list[AcademicSessionRead])
@@ -346,6 +441,8 @@ async def create_department(
     session_id = await _session_id_for_payload(db, current_user.school_id, request, current_user, payload.academic_session_id)
     data = payload.model_dump()
     data["academic_session_id"] = session_id
+    if "sections" in data:
+        data["sections"] = format_section_names(data.get("sections"))
     item = Department(school_id=current_user.school_id, **data)
     db.add(item)
     await _commit_or_duplicate(db, "Department already exists in this academic session")
@@ -410,6 +507,8 @@ async def create_class(
     await _validate_department(db, payload.department_id, current_user.school_id, session_id)
     data = payload.model_dump()
     data["academic_session_id"] = session_id
+    if "sections" in data:
+        data["sections"] = format_section_names(data.get("sections"))
     item = SchoolClass(school_id=current_user.school_id, **data)
     db.add(item)
     await _commit_or_duplicate(db, "Class already exists in this academic session")
@@ -434,6 +533,8 @@ async def update_class(
         values["academic_session_id"] = session_id
     if "department_id" in values:
         await _validate_department(db, values.get("department_id"), current_user.school_id, session_id)
+    if "sections" in values:
+        values["sections"] = format_section_names(values.get("sections"))
     for key, value in values.items():
         setattr(item, key, value)
     await _commit_or_duplicate(db, "Class already exists in this academic session")
@@ -463,12 +564,19 @@ async def list_sections(
     db: AsyncSession = Depends(get_async_db),
 ):
     session_id = await selected_academic_session_id(db, school_id, request=request, current_user=current_user)
-    query = async_query(db, Section).filter(Section.school_id == school_id)
-    if session_id is not None:
-        query = query.filter(Section.academic_session_id == session_id)
-    if class_id is not None:
-        query = query.filter(Section.class_id == class_id)
-    return await query.order_by(Section.id.desc()).all()
+    return await class_section_options(db, school_id, session_id=session_id, class_id=class_id)
+
+
+async def _find_virtual_section_or_404(
+    db: AsyncSession,
+    school_id: int,
+    item_id: int,
+    session_id: int | None = None,
+):
+    for option in await class_section_options(db, school_id, session_id=session_id):
+        if option.id == item_id:
+            return option
+    raise HTTPException(status_code=404, detail="Section not found in class sections")
 
 
 @router.post("/sections", response_model=SectionRead, status_code=status.HTTP_201_CREATED)
@@ -479,14 +587,14 @@ async def create_section(
     db: AsyncSession = Depends(get_async_db),
 ):
     session_id = await _session_id_for_payload(db, current_user.school_id, request, current_user, payload.academic_session_id)
-    await _validate_class(db, payload.class_id, current_user.school_id, session_id)
-    data = payload.model_dump()
-    data["academic_session_id"] = session_id
-    item = Section(school_id=current_user.school_id, **data)
-    db.add(item)
-    await _commit_or_duplicate(db, "Section already exists in this academic session")
-    await db.refresh(item)
-    return item
+    school_class = await _validate_class(db, payload.class_id, current_user.school_id, session_id)
+    names = parse_section_names(school_class.sections)
+    if payload.name.strip().casefold() not in {name.casefold() for name in names}:
+        names.append(payload.name.strip()[:80])
+    school_class.sections = format_section_names(names)
+    await _commit_or_duplicate(db, "Class sections could not be saved")
+    option = (await class_section_options(db, current_user.school_id, session_id=session_id, class_id=school_class.id))[-1]
+    return option
 
 
 @router.put("/sections/{item_id}", response_model=SectionRead)
@@ -497,33 +605,34 @@ async def update_section(
     current_user: User = Depends(require_school_admin),
     db: AsyncSession = Depends(get_async_db),
 ):
-    item = await _get_or_404(db, Section, item_id, current_user.school_id)
-    await assert_item_session_is_writable(db, current_user.school_id, item)
-    values = payload.model_dump(exclude_unset=True)
-    session_id = values.get("academic_session_id", item.academic_session_id)
-    if "academic_session_id" in values:
-        session_id = await _session_id_for_payload(db, current_user.school_id, request, current_user, values.get("academic_session_id"))
-        values["academic_session_id"] = session_id
-    if "class_id" in values:
-        await _validate_class(db, values.get("class_id"), current_user.school_id, session_id)
-    for key, value in values.items():
-        setattr(item, key, value)
-    await _commit_or_duplicate(db, "Section already exists in this academic session")
-    await db.refresh(item)
-    return item
+    session_id = await _session_id_for_payload(db, current_user.school_id, request, current_user, payload.academic_session_id)
+    option = await _find_virtual_section_or_404(db, current_user.school_id, item_id, session_id=session_id)
+    target_class_id = payload.class_id or option.class_id
+    school_class = await _validate_class(db, target_class_id, current_user.school_id, session_id)
+    names = parse_section_names(school_class.sections)
+    old_key = option.name.casefold()
+    new_name = (payload.name or option.name).strip()[:80]
+    names = [new_name if name.casefold() == old_key else name for name in names]
+    school_class.sections = format_section_names(names)
+    await _commit_or_duplicate(db, "Class sections could not be saved")
+    updated = [row for row in await class_section_options(db, current_user.school_id, session_id=session_id, class_id=school_class.id) if row.name.casefold() == new_name.casefold()]
+    return updated[0] if updated else option
 
 
 @router.delete("/sections/{item_id}", response_model=MessageResponse)
 async def delete_section(
     item_id: int,
+    request: Request,
     current_user: User = Depends(require_school_admin),
     db: AsyncSession = Depends(get_async_db),
 ):
-    item = await _get_or_404(db, Section, item_id, current_user.school_id)
-    await assert_item_session_is_writable(db, current_user.school_id, item)
-    await db.delete(item)
+    session_id = await selected_academic_session_id(db, current_user.school_id, request=request, current_user=current_user)
+    option = await _find_virtual_section_or_404(db, current_user.school_id, item_id, session_id=session_id)
+    school_class = await _validate_class(db, option.class_id, current_user.school_id, option.academic_session_id)
+    names = [name for name in parse_section_names(school_class.sections) if name.casefold() != option.name.casefold()]
+    school_class.sections = format_section_names(names)
     await db.commit()
-    return {"message": "Section deleted"}
+    return {"message": "Section removed from class"}
 
 
 @router.get("/subjects", response_model=list[SubjectRead])

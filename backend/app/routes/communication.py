@@ -1,7 +1,7 @@
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -63,6 +63,21 @@ def _csv_to_roles(value: str | None) -> list[str]:
 def _audience_allows(audience_csv: str | None, user: User) -> bool:
     roles = set(_csv_to_roles(audience_csv))
     return not roles or user.role in roles or _is_admin(user)
+
+
+def _audience_filter(audience_column, user: User):
+    """SQL filter for CSV audience_roles without loading all rows into Python."""
+    if _is_admin(user):
+        return true()
+    role = user.role
+    return or_(
+        audience_column.is_(None),
+        audience_column == '',
+        audience_column == role,
+        audience_column.like(f'{role},%'),
+        audience_column.like(f'%,{role},%'),
+        audience_column.like(f'%,{role}'),
+    )
 
 
 def _user_mini(user: User | None) -> UserMini | None:
@@ -129,9 +144,9 @@ def _notification_out(item: InAppNotification, read_ids: set[int]) -> Notificati
     return NotificationOut.model_validate(item, from_attributes=True).model_copy(update={'is_read': item.id in read_ids, 'author': _user_mini(item.author)})
 
 
-def _visible_notification_query(db: AsyncSession, user: User):
+def _visible_notification_filters(user: User):
     now = datetime.utcnow()
-    return async_query(db, InAppNotification).options(selectinload(InAppNotification.author)).filter(
+    return (
         InAppNotification.school_id == _school_id(user),
         or_(InAppNotification.expires_at.is_(None), InAppNotification.expires_at > now),
         or_(InAppNotification.target_user_id.is_(None), InAppNotification.target_user_id == user.id),
@@ -139,6 +154,21 @@ def _visible_notification_query(db: AsyncSession, user: User):
     )
 
 
+def _visible_notification_query(db: AsyncSession, user: User):
+    return async_query(db, InAppNotification).options(selectinload(InAppNotification.author)).filter(*_visible_notification_filters(user))
+
+
+async def _unread_notifications_count(db: AsyncSession, user: User) -> int:
+    read_join = and_(
+        InAppNotificationRead.notification_id == InAppNotification.id,
+        InAppNotificationRead.user_id == user.id,
+    )
+    result = await db.execute(
+        select(func.count(InAppNotification.id))
+        .outerjoin(InAppNotificationRead, read_join)
+        .where(*_visible_notification_filters(user), InAppNotificationRead.id.is_(None))
+    )
+    return int(result.scalar() or 0)
 
 
 async def _load_announcement_for_response(db: AsyncSession, item_id: int) -> Announcement:
@@ -241,9 +271,9 @@ async def list_announcements(status_filter: CommunicationStatus | None=Query(def
         q = q.filter(Announcement.status == status_filter.value)
     elif not _is_admin(current_user):
         q = q.filter(Announcement.status == CommunicationStatus.PUBLISHED.value)
-    items = await q.order_by(Announcement.created_at.desc()).all()
-    visible = [item for item in items if _audience_allows(item.audience_roles, current_user)]
-    return [_announcement_out(item) for item in visible[skip:skip + limit]]
+    q = q.filter(_audience_filter(Announcement.audience_roles, current_user))
+    items = await q.order_by(Announcement.created_at.desc()).offset(skip).limit(limit).all()
+    return [_announcement_out(item) for item in items]
 
 
 @router.patch('/announcements/{announcement_id}', response_model=AnnouncementOut)
@@ -306,9 +336,9 @@ async def list_events(from_date: date | None=Query(default=None), status_filter:
         q = q.filter(SchoolEvent.status == status_filter.value)
     elif not _is_admin(current_user):
         q = q.filter(SchoolEvent.status == CommunicationStatus.PUBLISHED.value)
-    items = await q.order_by(SchoolEvent.event_date.asc(), SchoolEvent.start_time.asc()).all()
-    visible = [item for item in items if _audience_allows(item.audience_roles, current_user)]
-    return [_event_out(item) for item in visible[skip:skip + limit]]
+    q = q.filter(_audience_filter(SchoolEvent.audience_roles, current_user))
+    items = await q.order_by(SchoolEvent.event_date.asc(), SchoolEvent.start_time.asc()).offset(skip).limit(limit).all()
+    return [_event_out(item) for item in items]
 
 
 @router.patch('/events/{event_id}', response_model=EventOut)
@@ -390,6 +420,12 @@ async def create_notification(payload: NotificationCreate, current_user: User=De
     return _notification_out(await _load_notification_for_response(db, item.id), set())
 
 
+
+@router.get('/notifications/unread-count')
+async def unread_notifications_count(current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
+    return {'count': await _unread_notifications_count(db, current_user)}
+
+
 @router.get('/notifications', response_model=list[NotificationOut])
 async def list_notifications(unread_only: bool=Query(default=False), skip: int=Query(default=0, ge=0), limit: int=Query(default=30, ge=1, le=100), current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
     query = _visible_notification_query(db, current_user).order_by(InAppNotification.created_at.desc())
@@ -433,18 +469,15 @@ async def mark_all_notifications_read(current_user: User=Depends(get_current_use
 async def communication_overview(current_user: User=Depends(get_current_user), db: AsyncSession=Depends(get_async_db)):
     school_id = _school_id(current_user)
     today = date.today()
+    announcement_query = async_query(db, func.count(Announcement.id)).filter(Announcement.school_id == school_id)
+    event_query = async_query(db, func.count(SchoolEvent.id)).filter(SchoolEvent.school_id == school_id, SchoolEvent.event_date >= today)
     if _is_admin(current_user):
-        announcements = await async_query(db, func.count(Announcement.id)).filter(Announcement.school_id == school_id).scalar() or 0
-        upcoming_events = await async_query(db, func.count(SchoolEvent.id)).filter(SchoolEvent.school_id == school_id, SchoolEvent.event_date >= today).scalar() or 0
+        announcements = await announcement_query.scalar() or 0
+        upcoming_events = await event_query.scalar() or 0
         open_complaints = await async_query(db, func.count(Complaint.id)).filter(Complaint.school_id == school_id, Complaint.status.in_([ComplaintStatus.SUBMITTED.value, ComplaintStatus.UNDER_REVIEW.value])).scalar() or 0
     else:
-        announcements = len(await list_announcements(CommunicationStatus.PUBLISHED, 0, 1000, current_user, db))
-        upcoming_events = len(await list_events(today, CommunicationStatus.PUBLISHED, 0, 1000, current_user, db))
+        announcements = await announcement_query.filter(Announcement.status == CommunicationStatus.PUBLISHED.value, _audience_filter(Announcement.audience_roles, current_user)).scalar() or 0
+        upcoming_events = await event_query.filter(SchoolEvent.status == CommunicationStatus.PUBLISHED.value, _audience_filter(SchoolEvent.audience_roles, current_user)).scalar() or 0
         open_complaints = await async_query(db, func.count(Complaint.id)).filter(Complaint.school_id == school_id, Complaint.created_by == current_user.id, Complaint.status.in_([ComplaintStatus.SUBMITTED.value, ComplaintStatus.UNDER_REVIEW.value])).scalar() or 0
-    visible_notifications = await _visible_notification_query(db, current_user).all()
-    notification_ids = [item.id for item in visible_notifications]
-    read_ids: set[int] = set()
-    if notification_ids:
-        read_ids = {row[0] for row in await async_query(db, InAppNotificationRead.notification_id).filter(InAppNotificationRead.user_id == current_user.id, InAppNotificationRead.notification_id.in_(notification_ids)).all()}
-    unread_notifications = len([item for item in visible_notifications if item.id not in read_ids])
+    unread_notifications = await _unread_notifications_count(db, current_user)
     return CommunicationOverview(announcements=announcements, upcoming_events=upcoming_events, open_complaints=open_complaints, unread_notifications=unread_notifications)

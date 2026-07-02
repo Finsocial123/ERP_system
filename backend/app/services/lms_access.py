@@ -3,12 +3,13 @@ from fastapi import HTTPException, status
 from sqlalchemy import select, or_, func
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.academic import AcademicSession, SchoolClass, Section, Subject
+from app.models.academic import AcademicSession, SchoolClass, Subject
 from app.models.course import Course
 from app.models.enrollment import Enrollment
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.user import User, UserRole
 from app.core.async_query import async_query
+from app.core.sections import validate_class_section_name
 ADMIN_ROLES = {UserRole.SUPER_ADMIN.value, UserRole.SCHOOL_OWNER.value, UserRole.SCHOOL_ADMIN.value}
 MANAGER_ROLES = (UserRole.SUPER_ADMIN, UserRole.SCHOOL_OWNER, UserRole.SCHOOL_ADMIN, UserRole.TEACHER)
 LEARNER_ROLES = (UserRole.STUDENT, UserRole.PARENT)
@@ -36,10 +37,48 @@ async def teacher_for_user(db: AsyncSession, school_id: int, user: User) -> Teac
         return None
     return await async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True), or_(*conditions)).first()
 
+# async def student_for_user(db: AsyncSession, school_id: int, user: User) -> Student | None:
+#     student = await async_query(db, Student).options(joinedload(Student.school_class), joinedload(Student.section)).filter(Student.school_id == school_id, Student.user_id == user.id).first()
+#     if student:
+#         return student
+#     conditions = []
+#     if user.email:
+#         conditions.append(Student.email == user.email)
+#     if user.phone:
+#         conditions.append(Student.phone == user.phone)
+#     if user.login_id:
+#         conditions.append(Student.admission_no == user.login_id)
+#     if not conditions:
+#         return None
+#     return await async_query(db, Student).options(joinedload(Student.school_class), joinedload(Student.section)).filter(Student.school_id == school_id, Student.is_active.is_(True), or_(*conditions)).first()
+
+
+
 async def student_for_user(db: AsyncSession, school_id: int, user: User) -> Student | None:
-    student = await async_query(db, Student).options(joinedload(Student.school_class), joinedload(Student.section)).filter(Student.school_id == school_id, Student.user_id == user.id).first()
+    # Get current active session first
+    active_session = await async_query(db, AcademicSession).filter(
+        AcademicSession.school_id == school_id,
+        AcademicSession.is_active.is_(True)
+    ).first()
+    
+    session_filter = (
+        [Student.academic_session_id == active_session.id] 
+        if active_session else []
+    )
+
+    student = await async_query(db, Student).options(
+        joinedload(Student.school_class), 
+        joinedload(Student.section)
+    ).filter(
+        Student.school_id == school_id, 
+        Student.user_id == user.id,
+        *session_filter
+    ).first()
+    
     if student:
         return student
+
+    # Fallback: match by email/phone/admission_no
     conditions = []
     if user.email:
         conditions.append(Student.email == user.email)
@@ -49,7 +88,17 @@ async def student_for_user(db: AsyncSession, school_id: int, user: User) -> Stud
         conditions.append(Student.admission_no == user.login_id)
     if not conditions:
         return None
-    return await async_query(db, Student).options(joinedload(Student.school_class), joinedload(Student.section)).filter(Student.school_id == school_id, Student.is_active.is_(True), or_(*conditions)).first()
+
+    return await async_query(db, Student).options(
+        joinedload(Student.school_class), 
+        joinedload(Student.section)
+    ).filter(
+        Student.school_id == school_id, 
+        Student.is_active.is_(True),
+        *session_filter,
+        or_(*conditions)
+    ).first()
+
 
 async def children_for_parent(db: AsyncSession, school_id: int, user: User) -> list[Student]:
     guardians = []
@@ -66,7 +115,7 @@ async def children_for_parent(db: AsyncSession, school_id: int, user: User) -> l
     guardian_ids = [guardian.id for guardian in guardians]
     if not guardian_ids:
         return []
-    return await async_query(db, Student).options(joinedload(Student.school_class), joinedload(Student.section)).filter(Student.school_id == school_id, Student.guardian_id.in_(guardian_ids), Student.is_active.is_(True)).order_by(Student.first_name.asc(), Student.id.asc()).all()
+    return await async_query(db, Student).options(joinedload(Student.school_class)).filter(Student.school_id == school_id, Student.guardian_id.in_(guardian_ids), Student.is_active.is_(True)).order_by(Student.first_name.asc(), Student.id.asc()).all()
 
 def full_student_name(student: Student) -> str:
     return f"{student.first_name} {student.last_name or ''}".strip()
@@ -79,28 +128,26 @@ async def validate_same_school(db: AsyncSession, model, item_id: int | None, sch
         raise HTTPException(status_code=404, detail=f'{field_name} not found for this school')
     return item
 
-async def validate_course_scope(db: AsyncSession, school_id: int, class_id: int, section_id: int | None, subject_id: int | None):
+async def validate_course_scope(db: AsyncSession, school_id: int, class_id: int, section_id: int | None, subject_id: int | None, section_name: str | None = None):
     school_class = await validate_same_school(db, SchoolClass, class_id, school_id, 'Class')
-    section = await validate_same_school(db, Section, section_id, school_id, 'Section')
+    resolved_section_name = await validate_class_section_name(db, school_id, class_id, section_name=section_name, section_id=section_id)
     subject = await validate_same_school(db, Subject, subject_id, school_id, 'Subject')
-    if section and section.class_id != class_id:
-        raise HTTPException(status_code=400, detail='Selected section does not belong to selected class')
     if subject and subject.class_id != class_id:
         raise HTTPException(status_code=400, detail='Selected subject is not assigned to the selected class')
-    return (school_class, section, subject)
+    return (school_class, resolved_section_name, subject)
 
-async def teacher_has_scope(db: AsyncSession, school_id: int, teacher: Teacher, class_id: int, section_id: int | None, subject_id: int | None) -> bool:
+async def teacher_has_scope(db: AsyncSession, school_id: int, teacher: Teacher, class_id: int, section_id: int | None, subject_id: int | None, section_name: str | None = None) -> bool:
     subject_query = async_query(db, TeacherSubject).filter(TeacherSubject.school_id == school_id, TeacherSubject.teacher_id == teacher.id)
     assignment_count = await subject_query.count() + await async_query(db, ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id).count()
     if assignment_count == 0:
         return True
-    subject_match_query = subject_query.filter(or_(TeacherSubject.class_id == class_id, TeacherSubject.class_id.is_(None)), or_(TeacherSubject.section_id == section_id, TeacherSubject.section_id.is_(None)))
+    subject_match_query = subject_query.filter(or_(TeacherSubject.class_id == class_id, TeacherSubject.class_id.is_(None)), or_(TeacherSubject.section_name == section_name, TeacherSubject.section_name.is_(None)))
     if subject_id is not None:
         subject_match_query = subject_match_query.filter(TeacherSubject.subject_id == subject_id)
     subject_match = await subject_match_query.first()
     if subject_match:
         return True
-    class_teacher_match = await async_query(db, ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id, ClassTeacherAssignment.class_id == class_id, or_(ClassTeacherAssignment.section_id == section_id, ClassTeacherAssignment.section_id.is_(None))).first()
+    class_teacher_match = await async_query(db, ClassTeacherAssignment).filter(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id, ClassTeacherAssignment.class_id == class_id, or_(ClassTeacherAssignment.section_name == section_name, ClassTeacherAssignment.section_name.is_(None))).first()
     return bool(class_teacher_match)
 
 def course_matches_student(course: Course, student: Student) -> bool:
@@ -123,13 +170,11 @@ def course_matches_student(course: Course, student: Student) -> bool:
     if not class_matches:
         return False
 
-    if course.section_id is None:
+    if not course.section_name and course.section_id is None:
         return True
-    if course.section_id == student.section_id:
-        return True
-    course_section = course.__dict__.get("section")
-    student_section = student.__dict__.get("section")
-    return bool(course_section and student_section and course_section.name == student_section.name)
+    if course.section_name:
+        return (student.section_name or "").casefold() == course.section_name.casefold()
+    return course.section_id == student.section_id
 
 async def get_course_or_404(db: AsyncSession, school_id: int, course_id: int) -> Course:
     # Load every relationship used by the LMS course detail/payload code up front.
@@ -138,7 +183,6 @@ async def get_course_or_404(db: AsyncSession, school_id: int, course_id: int) ->
     course = await async_query(db, Course).options(
         joinedload(Course.teacher),
         joinedload(Course.school_class),
-        joinedload(Course.section),
         joinedload(Course.subject),
         joinedload(Course.academic_session),
     ).filter(Course.id == course_id, Course.school_id == school_id, Course.is_active.is_(True)).first()
@@ -158,7 +202,7 @@ async def can_manage_course(db: AsyncSession, school_id: int, user: User, course
     teacher = await teacher_for_user(db, school_id, user)
     if not teacher or course.class_id is None:
         return False
-    return await teacher_has_scope(db, school_id, teacher, course.class_id, course.section_id, course.subject_id)
+    return await teacher_has_scope(db, school_id, teacher, course.class_id, course.section_id, course.subject_id, course.section_name)
 
 async def ensure_can_manage_course(db: AsyncSession, school_id: int, user: User, course: Course) -> None:
     if not await can_manage_course(db, school_id, user, course):
@@ -200,8 +244,7 @@ async def async_get_course_or_404(db: AsyncSession, school_id: int, course_id: i
         .options(
             joinedload(Course.teacher),
             joinedload(Course.school_class),
-            joinedload(Course.section),
-            joinedload(Course.subject),
+                joinedload(Course.subject),
             joinedload(Course.academic_session),
         )
         .where(Course.id == course_id, Course.school_id == school_id, Course.is_active.is_(True))
@@ -228,20 +271,20 @@ async def async_teacher_for_user(db: AsyncSession, school_id: int, user: User) -
     result = await db.execute(select(Teacher).where(Teacher.school_id == school_id, Teacher.is_active.is_(True), or_(*conditions)))
     return result.scalars().first()
 
-async def async_teacher_has_scope(db: AsyncSession, school_id: int, teacher: Teacher, class_id: int, section_id: int | None, subject_id: int | None) -> bool:
+async def async_teacher_has_scope(db: AsyncSession, school_id: int, teacher: Teacher, class_id: int, section_id: int | None, subject_id: int | None, section_name: str | None = None) -> bool:
     subject_count_result = await db.execute(select(func.count()).select_from(TeacherSubject).where(TeacherSubject.school_id == school_id, TeacherSubject.teacher_id == teacher.id))
     subject_count = subject_count_result.scalar()
     class_count_result = await db.execute(select(func.count()).select_from(ClassTeacherAssignment).where(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id))
     class_count = class_count_result.scalar()
     if subject_count + class_count == 0:
         return True
-    subject_match_query = select(TeacherSubject).where(TeacherSubject.school_id == school_id, TeacherSubject.teacher_id == teacher.id, or_(TeacherSubject.class_id == class_id, TeacherSubject.class_id.is_(None)), or_(TeacherSubject.section_id == section_id, TeacherSubject.section_id.is_(None)))
+    subject_match_query = select(TeacherSubject).where(TeacherSubject.school_id == school_id, TeacherSubject.teacher_id == teacher.id, or_(TeacherSubject.class_id == class_id, TeacherSubject.class_id.is_(None)), or_(TeacherSubject.section_name == section_name, TeacherSubject.section_name.is_(None)))
     if subject_id is not None:
         subject_match_query = subject_match_query.where(TeacherSubject.subject_id == subject_id)
     subject_result = await db.execute(subject_match_query)
     if subject_result.scalars().first():
         return True
-    class_result = await db.execute(select(ClassTeacherAssignment).where(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id, ClassTeacherAssignment.class_id == class_id, or_(ClassTeacherAssignment.section_id == section_id, ClassTeacherAssignment.section_id.is_(None))))
+    class_result = await db.execute(select(ClassTeacherAssignment).where(ClassTeacherAssignment.school_id == school_id, ClassTeacherAssignment.teacher_id == teacher.id, ClassTeacherAssignment.class_id == class_id, or_(ClassTeacherAssignment.section_name == section_name, ClassTeacherAssignment.section_name.is_(None))))
     return bool(class_result.scalars().first())
 
 async def async_can_manage_course(db: AsyncSession, school_id: int, user: User, course: Course) -> bool:
@@ -256,7 +299,7 @@ async def async_can_manage_course(db: AsyncSession, school_id: int, user: User, 
     teacher = await async_teacher_for_user(db, school_id, user)
     if not teacher or course.class_id is None:
         return False
-    return await async_teacher_has_scope(db, school_id, teacher, course.class_id, course.section_id, course.subject_id)
+    return await async_teacher_has_scope(db, school_id, teacher, course.class_id, course.section_id, course.subject_id, course.section_name)
 
 async def async_ensure_can_manage_course(db: AsyncSession, school_id: int, user: User, course: Course) -> None:
     if not await async_can_manage_course(db, school_id, user, course):

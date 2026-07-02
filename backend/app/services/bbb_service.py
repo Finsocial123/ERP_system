@@ -12,6 +12,24 @@ def _checksum(call: str, params: dict) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()
 
 
+async def register_bbb_webhook(meeting_id: str, callback_url: str) -> None:
+    params = {
+        "meetingID": meeting_id,
+        "callbackURL": callback_url,
+    }
+    params["checksum"] = _checksum("hooks/create", params)
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{settings.BBB_URL}/hooks/create", params=params)
+
+    result = xmltodict.parse(r.text).get("response", {})
+    if result.get("returncode") != "SUCCESS":
+        print(f"[BBB Webhook] Registration failed for {meeting_id}: {result.get("message")}")
+    else: 
+        print(f"[BBB Webhook] Registered successfully for {meeting_id}")
+    
+
+
+
 async def create_bbb_meeting(
     meeting_id: str,
     title: str,

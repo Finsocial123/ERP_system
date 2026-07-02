@@ -9,7 +9,7 @@ from sqlalchemy.orm import joinedload
 from app.core.database import get_async_db
 from app.dependencies.academic_session import selected_academic_session, require_writable_academic_session, writable_selected_academic_session, assert_item_session_is_writable
 from app.dependencies.auth import current_school_id, get_current_user, require_roles
-from app.models.academic import AcademicSession, SchoolClass, Section, Subject
+from app.models.academic import AcademicSession, SchoolClass, Subject
 from app.models.homework import HomeworkAssignment, HomeworkSubmission
 from app.models.people import ClassTeacherAssignment, ParentGuardian, Student, Teacher, TeacherSubject
 from app.models.user import User, UserRole
@@ -18,6 +18,7 @@ from app.schemas.common import MessageResponse
 from app.schemas.homework import HomeworkAssignmentRead, HomeworkCheckPayload, HomeworkMetaItem, HomeworkMetaResponse, HomeworkSubmissionRead, HomeworkStats, ParentHomeworkRead, StudentHomeworkRead
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.async_query import async_query
+from app.core.sections import class_section_options, validate_class_section_name
 from app.services.notification_service import (
     format_date,
     notify_student_record,
@@ -97,15 +98,13 @@ async def _validate_same_school(db: AsyncSession, model, item_id: int | None, sc
         raise HTTPException(status_code=404, detail=f'{field_name} not found for this school')
     return item
 
-async def _validate_assignment_scope(db: AsyncSession, school_id: int, class_id: int, section_id: int | None, subject_id: int | None):
+async def _validate_assignment_scope(db: AsyncSession, school_id: int, class_id: int, section_id: int | None, section_name: str | None, subject_id: int | None, session_id: int | None = None):
     school_class = await _validate_same_school(db, SchoolClass, class_id, school_id, 'Class')
-    section = await _validate_same_school(db, Section, section_id, school_id, 'Section')
+    resolved_section_name = await validate_class_section_name(db, school_id, class_id, section_name=section_name, section_id=section_id, session_id=session_id)
     subject = await _validate_same_school(db, Subject, subject_id, school_id, 'Subject')
-    if section and section.class_id != class_id:
-        raise HTTPException(status_code=400, detail='Selected section does not belong to selected class')
     if subject and subject.class_id != class_id:
         raise HTTPException(status_code=400, detail='Selected subject does not belong to selected class')
-    return (school_class, section, subject)
+    return (school_class, resolved_section_name, subject)
 
 def _parse_form_date(value: str) -> date:
     try:
@@ -117,7 +116,9 @@ def _student_query_for_assignment(db: AsyncSession, assignment: HomeworkAssignme
     query = async_query(db, Student).filter(Student.school_id == assignment.school_id, Student.class_id == assignment.class_id, Student.is_active.is_(True))
     if assignment.academic_session_id is not None:
         query = query.filter(Student.academic_session_id == assignment.academic_session_id)
-    if assignment.section_id is not None:
+    if assignment.section_name:
+        query = query.filter(Student.section_name == assignment.section_name)
+    elif assignment.section_id is not None:
         query = query.filter(Student.section_id == assignment.section_id)
     return query.order_by(Student.roll_number.asc(), Student.first_name.asc())
 
@@ -150,16 +151,7 @@ async def _assignment_payload(db: AsyncSession, assignment: HomeworkAssignment) 
         ).first()
         class_name = school_class.name if school_class else None
 
-    section_name = None
-    if assignment.section_id is not None:
-        if 'section' not in unloaded:
-            section_name = assignment.section.name if assignment.section else None
-        else:
-            section = await async_query(db, Section).filter(
-                Section.id == assignment.section_id,
-                Section.school_id == assignment.school_id,
-            ).first()
-            section_name = section.name if section else None
+    section_name = assignment.section_name
 
     subject_name = None
     if assignment.subject_id is not None:
@@ -229,6 +221,8 @@ def _is_assignment_for_student(assignment: HomeworkAssignment, student: Student)
         return False
     if assignment.academic_session_id is not None and student.academic_session_id != assignment.academic_session_id:
         return False
+    if assignment.section_name:
+        return (student.section_name or "").casefold() == assignment.section_name.casefold()
     return assignment.section_id is None or assignment.section_id == student.section_id
 
 async def _save_upload(file: UploadFile | None, folder: str) -> tuple[str | None, str | None]:
@@ -271,30 +265,24 @@ async def homework_meta(request: Request, school_id: int=Depends(current_school_
     session = await selected_academic_session(db, school_id, request=request, current_user=current_user)
     session_id = session.id if session else None
     class_query = async_query(db, SchoolClass).filter(SchoolClass.school_id == school_id, SchoolClass.is_active.is_(True))
-    section_query = async_query(db, Section).filter(Section.school_id == school_id, Section.is_active.is_(True))
     subject_query = async_query(db, Subject).filter(Subject.school_id == school_id, Subject.is_active.is_(True))
     if session_id is not None:
         class_query = class_query.filter(SchoolClass.academic_session_id == session_id)
-        section_query = section_query.filter(Section.academic_session_id == session_id)
         subject_query = subject_query.filter(Subject.academic_session_id == session_id)
     class_query = class_query.order_by(SchoolClass.name.asc())
-    section_query = section_query.order_by(Section.name.asc())
     subject_query = subject_query.order_by(Subject.name.asc())
     if current_user.role == UserRole.TEACHER.value:
         teacher = await _teacher_for_user(db, school_id, current_user, session.id if session else None)
         scopes = await _teacher_scope_hint(db, school_id, teacher, session_id)
         class_ids = {class_id for class_id, _ in scopes if class_id is not None}
-        section_ids = {section_id for _, section_id in scopes if section_id is not None}
         if class_ids:
             class_query = class_query.filter(SchoolClass.id.in_(class_ids))
             subject_query = subject_query.filter(Subject.class_id.in_(class_ids))
-        if section_ids:
-            section_query = section_query.filter(Section.id.in_(section_ids))
     teacher_query = async_query(db, Teacher).filter(Teacher.school_id == school_id, Teacher.is_active.is_(True))
     if session_id is not None:
         teacher_query = teacher_query.filter(Teacher.academic_session_id == session_id)
     teachers = await teacher_query.order_by(Teacher.full_name.asc()).all()
-    return HomeworkMetaResponse(classes=[HomeworkMetaItem(id=item.id, name=item.name, extra=item.code) for item in await class_query.all()], sections=[HomeworkMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in await section_query.all()], subjects=[HomeworkMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in await subject_query.all()], teachers=[HomeworkMetaItem(id=item.id, name=item.full_name, extra=item.employee_id) for item in teachers], current_academic_session_id=session.id if session else None)
+    return HomeworkMetaResponse(classes=[HomeworkMetaItem(id=item.id, name=item.name, extra=item.code) for item in await class_query.all()], sections=[HomeworkMetaItem(id=item.id, name=item.name, extra=item.extra) for item in await class_section_options(db, school_id, session_id=session_id)], subjects=[HomeworkMetaItem(id=item.id, name=item.name, extra=str(item.class_id)) for item in await subject_query.all()], teachers=[HomeworkMetaItem(id=item.id, name=item.full_name, extra=item.employee_id) for item in teachers], current_academic_session_id=session.id if session else None)
 
 @router.get('/assignments', response_model=list[HomeworkAssignmentRead])
 async def list_assignments(request: Request, class_id: int | None=Query(default=None), section_id: int | None=Query(default=None), subject_id: int | None=Query(default=None), search: str | None=Query(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
@@ -310,21 +298,24 @@ async def list_assignments(request: Request, class_id: int | None=Query(default=
         query = query.filter(HomeworkAssignment.teacher_id == teacher.id)
     if class_id is not None:
         query = query.filter(HomeworkAssignment.class_id == class_id)
-    if section_id is not None:
+    if section_id is not None and class_id is not None:
+        section_name = await validate_class_section_name(db, school_id, class_id, section_id=section_id, session_id=session_id)
+        query = query.filter(HomeworkAssignment.section_name == section_name)
+    elif section_id is not None:
         query = query.filter(HomeworkAssignment.section_id == section_id)
     if subject_id is not None:
         query = query.filter(HomeworkAssignment.subject_id == subject_id)
     if search:
         like = f'%{search.strip()}%'
         query = query.filter(or_(HomeworkAssignment.title.ilike(like), HomeworkAssignment.description.ilike(like)))
-    assignments = await query.options(joinedload(HomeworkAssignment.school_class), joinedload(HomeworkAssignment.section), joinedload(HomeworkAssignment.subject), joinedload(HomeworkAssignment.teacher)).order_by(HomeworkAssignment.created_at.desc()).all()
+    assignments = await query.options(joinedload(HomeworkAssignment.school_class), joinedload(HomeworkAssignment.subject), joinedload(HomeworkAssignment.teacher)).order_by(HomeworkAssignment.created_at.desc()).all()
     return [await _assignment_payload(db, assignment) for assignment in assignments]
 
 @router.post('/assignments', response_model=HomeworkAssignmentRead, status_code=status.HTTP_201_CREATED)
-async def create_assignment(request: Request, title: str=Form(..., min_length=2, max_length=180), description: str | None=Form(default=None), due_date: str=Form(...), class_id: int=Form(...), section_id: int | None=Form(default=None), subject_id: int | None=Form(default=None), teacher_id: int | None=Form(default=None), attachment: UploadFile | None=File(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
-    await _validate_assignment_scope(db, school_id, class_id, section_id, subject_id)
+async def create_assignment(request: Request, title: str=Form(..., min_length=2, max_length=180), description: str | None=Form(default=None), due_date: str=Form(...), class_id: int=Form(...), section_id: int | None=Form(default=None), section_name: str | None=Form(default=None), subject_id: int | None=Form(default=None), teacher_id: int | None=Form(default=None), attachment: UploadFile | None=File(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
     parsed_due_date = _parse_form_date(due_date)
     session = await writable_selected_academic_session(db, school_id, request=request, current_user=current_user)
+    _, resolved_section_name, _ = await _validate_assignment_scope(db, school_id, class_id, section_id, section_name, subject_id, session.id if session else None)
     assigned_teacher_id = teacher_id
     if current_user.role == UserRole.TEACHER.value:
         teacher = await _teacher_for_user(db, school_id, current_user, session.id if session else None)
@@ -334,7 +325,7 @@ async def create_assignment(request: Request, title: str=Form(..., min_length=2,
     elif assigned_teacher_id is not None:
         await _validate_same_school(db, Teacher, assigned_teacher_id, school_id, 'Teacher')
     attachment_url, attachment_filename = await _save_upload(attachment, 'assignments')
-    assignment = HomeworkAssignment(school_id=school_id, teacher_id=assigned_teacher_id, class_id=class_id, section_id=section_id, subject_id=subject_id, academic_session_id=session.id if session else None, title=title.strip(), description=description.strip() if description else None, due_date=parsed_due_date, attachment_url=attachment_url, attachment_filename=attachment_filename)
+    assignment = HomeworkAssignment(school_id=school_id, teacher_id=assigned_teacher_id, class_id=class_id, section_id=None, section_name=resolved_section_name, subject_id=subject_id, academic_session_id=session.id if session else None, title=title.strip(), description=description.strip() if description else None, due_date=parsed_due_date, attachment_url=attachment_url, attachment_filename=attachment_filename)
     db.add(assignment)
     await db.flush()
     await notify_student_scope(
@@ -356,17 +347,18 @@ async def create_assignment(request: Request, title: str=Form(..., min_length=2,
     return await _assignment_payload(db, assignment)
 
 @router.put('/assignments/{assignment_id}', response_model=HomeworkAssignmentRead)
-async def update_assignment(assignment_id: int, title: str=Form(..., min_length=2, max_length=180), description: str | None=Form(default=None), due_date: str=Form(...), class_id: int=Form(...), section_id: int | None=Form(default=None), subject_id: int | None=Form(default=None), attachment: UploadFile | None=File(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
+async def update_assignment(assignment_id: int, title: str=Form(..., min_length=2, max_length=180), description: str | None=Form(default=None), due_date: str=Form(...), class_id: int=Form(...), section_id: int | None=Form(default=None), section_name: str | None=Form(default=None), subject_id: int | None=Form(default=None), attachment: UploadFile | None=File(default=None), school_id: int=Depends(current_school_id), current_user: User=Depends(require_roles(*MANAGER_ROLES)), db: AsyncSession=Depends(get_async_db)):
     assignment = await _get_assignment_or_404(db, school_id, assignment_id)
     await assert_item_session_is_writable(db, school_id, assignment)
     if not await _can_manage_assignment(db, school_id, current_user, assignment):
         raise HTTPException(status_code=403, detail='You can update only your own homework')
-    await _validate_assignment_scope(db, school_id, class_id, section_id, subject_id)
+    _, resolved_section_name, _ = await _validate_assignment_scope(db, school_id, class_id, section_id, section_name, subject_id, assignment.academic_session_id)
     assignment.title = title.strip()
     assignment.description = description.strip() if description else None
     assignment.due_date = _parse_form_date(due_date)
     assignment.class_id = class_id
-    assignment.section_id = section_id
+    assignment.section_id = None
+    assignment.section_name = resolved_section_name
     assignment.subject_id = subject_id
     attachment_url, attachment_filename = await _save_upload(attachment, 'assignments')
     if attachment_url:
@@ -419,7 +411,7 @@ async def list_student_homework(request: Request, status_filter: str | None=Quer
     student = await _student_for_user(db, school_id, current_user, session_id)
     if not student:
         return []
-    assignment_query = async_query(db, HomeworkAssignment).options(joinedload(HomeworkAssignment.school_class), joinedload(HomeworkAssignment.section), joinedload(HomeworkAssignment.subject), joinedload(HomeworkAssignment.teacher)).filter(HomeworkAssignment.school_id == school_id, HomeworkAssignment.class_id == student.class_id, HomeworkAssignment.is_active.is_(True), or_(HomeworkAssignment.section_id.is_(None), HomeworkAssignment.section_id == student.section_id))
+    assignment_query = async_query(db, HomeworkAssignment).options(joinedload(HomeworkAssignment.school_class), joinedload(HomeworkAssignment.subject), joinedload(HomeworkAssignment.teacher)).filter(HomeworkAssignment.school_id == school_id, HomeworkAssignment.class_id == student.class_id, HomeworkAssignment.is_active.is_(True), or_(HomeworkAssignment.section_name.is_(None), HomeworkAssignment.section_name == student.section_name))
     if session_id is not None:
         assignment_query = assignment_query.filter(HomeworkAssignment.academic_session_id == session_id)
     assignments = await assignment_query.order_by(HomeworkAssignment.due_date.asc(), HomeworkAssignment.created_at.desc()).all()
@@ -527,7 +519,7 @@ async def list_parent_homework(request: Request, child_id: int | None=Query(defa
         children = [child for child in children if child.id == child_id]
     rows: list[ParentHomeworkRead] = []
     for child in children:
-        assignment_query = async_query(db, HomeworkAssignment).filter(HomeworkAssignment.school_id == school_id, HomeworkAssignment.class_id == child.class_id, HomeworkAssignment.is_active.is_(True), or_(HomeworkAssignment.section_id.is_(None), HomeworkAssignment.section_id == child.section_id))
+        assignment_query = async_query(db, HomeworkAssignment).filter(HomeworkAssignment.school_id == school_id, HomeworkAssignment.class_id == child.class_id, HomeworkAssignment.is_active.is_(True), or_(HomeworkAssignment.section_name.is_(None), HomeworkAssignment.section_name == child.section_name))
         if session_id is not None:
             assignment_query = assignment_query.filter(HomeworkAssignment.academic_session_id == session_id)
         assignments = await assignment_query.order_by(HomeworkAssignment.due_date.asc(), HomeworkAssignment.created_at.desc()).all()

@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import UserRole
 from app.models.subscription import AICallLog
 from app.models.subscription import (
-    DEFAULT_ALLOCATIONS,
     FeatureAllocation,
     FeatureKey,
     RoleKey,
@@ -112,20 +111,32 @@ async def _get_or_create_usage(
 async def create_subscription(
     db: AsyncSession,
     school_id: int,
-    plan_name: str,
+    plan_id: int,
     started_at: datetime,
     expires_at: datetime,
 ) -> Subscription:
+    from sqlalchemy.orm import selectinload
+    from app.models.subscription import SubscriptionPlan
+
     existing = await get_active_subscription(db, school_id)
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="School already has an active subscription. Cancel it before creating a new one.",
+            detail="School already has an active subscription.",
         )
+
+    plan = await db.get(
+        SubscriptionPlan, plan_id,
+        options=[selectinload(SubscriptionPlan.allocations)]
+    )
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found.")
 
     sub = Subscription(
         school_id=school_id,
-        plan_name=plan_name,
+        plan_id=plan_id,
+        payment_id=None,   # manual create — make payment_id Optional in model
+        plan_name=plan.name,
         status=SubscriptionStatus.active,
         started_at=started_at,
         expires_at=expires_at,
@@ -133,11 +144,10 @@ async def create_subscription(
     db.add(sub)
     await db.flush()
 
-    db.add_all(build_allocations(sub))
+    db.add_all(build_allocations(sub, plan.allocations))
     await db.commit()
     await db.refresh(sub)
     return sub
-
 
 async def get_active_subscription(
     db: AsyncSession,
@@ -348,12 +358,18 @@ async def get_school_usage_summary(
         feature_totals[key] = feature_totals.get(key, 0) + u.used_value
 
     usage_by_feature = {}
-    for row in DEFAULT_ALLOCATIONS:
-        fk = row["feature_key"].value
+
+    result2 = await db.execute(
+        select(FeatureAllocation).where(FeatureAllocation.subscription_id == sub.id)
+    )
+    allocations = result2.scalar().all()
+
+    for alloc in allocations:
+        fk = alloc.feature_key.value
         usage_by_feature[fk] = {
             "total_used": feature_totals.get(fk, 0),
-            "limit_per_user": row["limit_value"],
-            "role": row["role"].value,
+            "limit_per_user": alloc.limit_value,
+            "role": alloc.role.value,
         }
 
     return {

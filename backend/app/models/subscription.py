@@ -165,7 +165,7 @@ class Subscription(Base):
     )
     payment_id : Mapped[int] = mapped_column(
         Integer, ForeignKey("subscription_payments.id"),
-        nullable=False
+        nullable=True
     )
 
     plan_name  : Mapped[str]                = mapped_column(String(100), nullable=False)

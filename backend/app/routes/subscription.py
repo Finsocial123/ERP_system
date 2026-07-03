@@ -63,7 +63,8 @@ from app.schemas.subscription import (
     SubscriptionVerify,
 )
 
-router = APIRouter()
+
+router = APIRouter(prefix='/subscription', tags=['Subscription'])
 
 ADMIN_ROLES = (
     UserRole.SUPER_ADMIN.value,

@@ -50,7 +50,7 @@ from app.models import (  # noqa: F401
 from app.routes import (
     academic, attendance, reports, auth, dashboard, exams, fees, homework,
     people, schools, library, timetable, notice, communication, curriculum,
-    meetings, assignments, chats, courses, enrollments, lessons, progress,
+    meetings, assignments, chats, courses, enrollments, lessons, progress, subscription
 )
 
 # from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -158,3 +158,4 @@ app.include_router(courses.router)
 app.include_router(enrollments.router)
 app.include_router(lessons.router)
 app.include_router(progress.router)
+app.include_router(subscription.router)
